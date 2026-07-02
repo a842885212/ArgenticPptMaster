@@ -33,6 +33,12 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import reactor.core.publisher.Flux;
 
+/**
+ * {@link PptWorkflowService} 的集成测试。
+ * <p>
+ * 验证 PPT 任务的创建、源文件存储、文件扩展名校验、画布格式校验，
+ * 以及 Agent 任务在 Spring 上下文中的完整启动流程。
+ */
 @SpringBootTest
 class PptWorkflowServiceTests {
 
@@ -75,6 +81,10 @@ class PptWorkflowServiceTests {
                 """);
     }
 
+    /**
+     * 验证创建任务时，能够正确接收上传的 Markdown 源文件并将其持久化到工作区，
+     * 任务初始化后状态为 ACCEPTED / PREPARING / WAITING_CONFIRMATION 之一。
+     */
     @Test
     void createsJobAndStoresSource() {
         MockMultipartFile source = new MockMultipartFile(
@@ -96,6 +106,10 @@ class PptWorkflowServiceTests {
         assertThat(job.status()).isIn(PptJobStatus.ACCEPTED, PptJobStatus.PREPARING, PptJobStatus.WAITING_CONFIRMATION);
     }
 
+    /**
+     * 验证上传不支持的文件扩展名（如 .exe）时，
+     * 服务抛出 {@link PptJobStateException} 异常并提示不支持的文件类型。
+     */
     @Test
     void rejectsUnsupportedSourceExtension() {
         MockMultipartFile source = new MockMultipartFile(
@@ -109,6 +123,10 @@ class PptWorkflowServiceTests {
                 .hasMessage("unsupported source file extension: exe");
     }
 
+    /**
+     * 验证传入不支持的画布格式（如包含路径遍历的 "../bad"）时，
+     * 服务抛出 {@link PptJobStateException} 异常并提示不支持的格式。
+     */
     @Test
     void rejectsUnsupportedCanvasFormat() {
         MockMultipartFile source = new MockMultipartFile(
@@ -122,6 +140,13 @@ class PptWorkflowServiceTests {
                 .hasMessage("unsupported canvas format: ../bad");
     }
 
+    /**
+     * 测试用 Spring 配置类。
+     * <p>
+     * 提供 {@link AgentScopeWorkflowAgentFactory} 的 Mock Bean，
+     * 返回一个始终发出 {@link RequireExternalExecutionEvent} 事件的测试 Agent，
+     * 避免在集成测试中实际调用外部 AI Agent，使测试可独立运行。
+     */
     @TestConfiguration
     static class TestAgentConfig {
 

@@ -17,6 +17,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RequestPart;
@@ -24,6 +25,20 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
+/**
+ * PPT 任务 REST API 控制器。
+ * <p>
+ * 提供 PPT 生成任务的完整生命周期管理端点，包括：
+ * <ul>
+ *   <li>创建任务（上传源文件及指定项目名称、格式和指令）</li>
+ *   <li>查询任务状态</li>
+ *   <li>订阅任务事件（SSE 实时推送）</li>
+ *   <li>确认任务结果</li>
+ *   <li>下载生成的 PPT 文件</li>
+ * </ul>
+ * 所有端点均以 {@code /api/ppt-jobs} 为前缀。
+ * </p>
+ */
 @RestController
 @RequestMapping("/api/ppt-jobs")
 public class PptJobController {
@@ -36,6 +51,16 @@ public class PptJobController {
         this.eventPublisher = eventPublisher;
     }
 
+    /**
+     * 创建新的 PPT 生成任务。
+     * <p>接收用户上传的多个源文件、项目名称、输出格式及可选指令，异步启动 PPT 生成工作流。</p>
+     *
+     * @param files       上传的源文件列表（支持 Markdown 等格式）
+     * @param projectName 可选的项目名称
+     * @param format      PPT 输出格式，默认为 {@code ppt169}
+     * @param instruction 可选的生成指令，用于指导 PPT 内容生成
+     * @return 包含已创建任务信息的 HTTP 202 响应
+     */
     @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ResponseEntity<PptJobResponse> create(
             @RequestPart("files") List<MultipartFile> files,
@@ -46,19 +71,41 @@ public class PptJobController {
                 .body(PptJobResponse.from(workflowService.createJob(files, projectName, format, instruction)));
     }
 
+    /**
+     * 根据任务 ID 查询 PPT 任务的当前状态和详细信息。
+     *
+     * @param jobId 任务 UUID
+     * @return 任务响应 DTO，包含任务状态、源文件、事件等信息
+     */
     @GetMapping("/{jobId}")
     public PptJobResponse get(@PathVariable UUID jobId) {
         return PptJobResponse.from(workflowService.getJob(jobId));
     }
 
+    /**
+     * 订阅指定任务的 Server-Sent Events (SSE) 事件流。
+     * <p>客户端可通过此端点实时接收 PPT 生成过程中的状态变更通知。</p>
+     *
+     * @param jobId 任务 UUID
+     * @return SSE 发射器，用于推送事件流
+     */
     @GetMapping(path = "/{jobId}/events", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter events(@PathVariable UUID jobId) {
         workflowService.getJob(jobId);
         return eventPublisher.subscribe(jobId);
     }
 
+    /**
+     * 确认 PPT 生成结果。
+     * <p>在 Agent 生成内容后，用户可通过此端点提交确认结果，
+     * 包含确认 ID、审批状态、问答答案和备注信息。</p>
+     *
+     * @param jobId   任务 UUID
+     * @param request 确认请求体，包含确认 ID、审批状态、答案和评论
+     * @return 更新后的任务信息响应 DTO
+     */
     @PostMapping("/{jobId}/confirm")
-    public PptJobResponse confirm(@PathVariable UUID jobId, @Valid @org.springframework.web.bind.annotation.RequestBody ConfirmationRequest request) {
+    public PptJobResponse confirm(@PathVariable UUID jobId, @Valid @RequestBody ConfirmationRequest request) {
         return PptJobResponse.from(workflowService.submitConfirmation(
                 jobId,
                 request.confirmationId(),
@@ -67,6 +114,13 @@ public class PptJobController {
                 request.comment()));
     }
 
+    /**
+     * 下载生成的 PPT 文件。
+     * <p>根据任务 ID 获取导出文件路径，以附件形式返回给客户端。</p>
+     *
+     * @param jobId 任务 UUID
+     * @return 包含 PPT 文件资源的 HTTP 200 响应
+     */
     @GetMapping("/{jobId}/download")
     public ResponseEntity<Resource> download(@PathVariable UUID jobId) {
         Path exportPath = workflowService.exportPath(jobId);

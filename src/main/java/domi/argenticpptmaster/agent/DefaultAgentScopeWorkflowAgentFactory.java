@@ -36,6 +36,23 @@ import java.util.stream.Stream;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 
+/**
+ * AgentScope 工作流代理的默认工厂实现。
+ * <p>
+ * 该实现负责根据 {@link PptJob} 任务信息，完整构建并配置一个
+ * AgentScope 工作流代理。主要职责包括：
+ * </p>
+ * <ul>
+ *   <li>初始化 AgentScope {@link ReActAgent} 实例及其运行器</li>
+ *   <li>构建系统提示词（System Prompt），注入项目上下文和文件信息</li>
+ *   <li>注册 PPT 生成所需的工具函数（文件操作、用户确认等）</li>
+ *   <li>配置 LLM 模型参数（端点、API Key、模型名称等）</li>
+ * </ul>
+ * <p>
+ * 内部通过 {@link PptAgentTools} 提供文件操作工具，通过
+ * {@link UserPlanApprovalTool} 提供用户交互确认能力。
+ * </p>
+ */
 @Component
 public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflowAgentFactory {
 
@@ -63,6 +80,18 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
         this.events = events;
     }
 
+    /**
+     * 根据 PPT 任务创建并配置 AgentScope 工作流代理。
+     * <p>
+     * 构建过程包括：校验前置条件、初始化 Toolkit 并注册工具、
+     * 构建 ReActAgent 实例（配置模型、系统提示词、会话存储等）、
+     * 创建工具运行时上下文，最终返回一个 Lambda 包装后的
+     * {@link AgentScopeWorkflowAgent} 实例。
+     * </p>
+     *
+     * @param job PPT 任务信息
+     * @return 配置完成的 AgentScope 工作流代理实例
+     */
     @Override
     public AgentScopeWorkflowAgent create(PptJob job) {
         ensureAgentPrerequisites();
@@ -89,6 +118,13 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
         };
     }
 
+    /**
+     * 确保代理运行的前置条件满足。
+     * <p>
+     * 检查所需的 ppt-master 脚本文件是否存在，以及模型名称是否已配置。
+     * 如果前置条件不满足，则抛出 {@link IllegalStateException}。
+     * </p>
+     */
     private void ensureAgentPrerequisites() {
         if (!Files.exists(pptMasterProperties.repoPath().resolve(PROJECT_MANAGER_SCRIPT))) {
             throw new IllegalStateException("ppt-master project manager not found under " + pptMasterProperties.repoPath());
@@ -107,6 +143,15 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
         }
     }
 
+    /**
+     * 构建 LLM 模型实例。
+     * <p>
+     * 根据 {@link AgentScopeProperties} 配置的 provider 类型创建对应的
+     * AgentScope 模型实例。支持 OpenAI、DashScope 和 Ollama 三种提供者。
+     * </p>
+     *
+     * @return 配置完成的 AgentScope 模型实例
+     */
     private Model buildModel() {
         String provider = agentScopeProperties.provider().trim().toLowerCase();
         return switch (provider) {
@@ -117,6 +162,15 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
         };
     }
 
+    /**
+     * 构建 OpenAI 兼容的模型实例。
+     * <p>
+     * 使用 {@link OpenAIChatModel} 构建器，配置模型名称、API Key 和
+     * 自定义 Base URL（如代理或兼容服务）。
+     * </p>
+     *
+     * @return OpenAI 模型实例
+     */
     private Model buildOpenAiModel() {
         OpenAIChatModel.Builder builder = new OpenAIChatModel.Builder()
                 .modelName(agentScopeProperties.modelName())
@@ -130,6 +184,15 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
         return builder.build();
     }
 
+    /**
+     * 构建 DashScope（阿里通义千问）模型实例。
+     * <p>
+     * 使用 {@link DashScopeChatModel} 构建器，配置模型名称、API Key 和
+     * 自定义 Base URL。
+     * </p>
+     *
+     * @return DashScope 模型实例
+     */
     private Model buildDashScopeModel() {
         DashScopeChatModel.Builder builder = new DashScopeChatModel.Builder()
                 .modelName(agentScopeProperties.modelName())
@@ -143,6 +206,14 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
         return builder.build();
     }
 
+    /**
+     * 构建 Ollama 本地模型实例。
+     * <p>
+     * 使用 {@link OllamaChatModel} 构建器，配置模型名称和自定义 Base URL。
+     * </p>
+     *
+     * @return Ollama 模型实例
+     */
     private Model buildOllamaModel() {
         OllamaChatModel.Builder builder = new OllamaChatModel.Builder()
                 .modelName(agentScopeProperties.modelName());
@@ -152,6 +223,16 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
         return builder.build();
     }
 
+    /**
+     * 构建系统提示词（System Prompt）。
+     * <p>
+     * 生成 AI 代理的系统提示词，定义代理的角色为 ppt-master 编排代理，
+     * 指定 markdown 路线的工作流程和约束规则，包括任务执行顺序、
+     * 用户确认要求、文件产出规范等。
+     * </p>
+     *
+     * @return 系统提示词文本
+     */
     private String buildSystemPrompt() {
         return """
                 你是 ppt-master 的编排代理，当前只负责 markdown 路线：把上传文件转成 markdown 上下文，再产出 design_spec/spec_lock/notes/svg_output，最后完成后处理和导出。
@@ -172,6 +253,18 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                 """;
     }
 
+    /**
+     * PPT 代理工具运行时上下文记录。
+     * <p>
+     * 封装工具执行过程中所需的共享状态，包括 PPT 任务信息、项目配置、
+     * 命令执行器和事件记录器。
+     * </p>
+     *
+     * @param job       PPT 任务信息
+     * @param properties PPT 主配置属性
+     * @param executor   PPT Master 命令执行器
+     * @param events     工作流事件记录器
+     */
     record PptAgentToolRuntime(
             PptJob job,
             PptMasterProperties properties,
@@ -179,8 +272,33 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
             PptWorkflowEvents events) {
     }
 
+    /**
+     * PPT 代理工具集。
+     * <p>
+     * 提供给 AI 代理的工具集合，用于在 PPT 生成过程中操作项目文件系统
+     * 和执行 ppt-master 脚本。每个方法使用 {@link Tool} 注解暴露给
+     * AgentScope 框架，供 LLM 调用。
+     * </p>
+     * <p>包含的工具：</p>
+     * <ul>
+     *   <li>任务查询：describe_job</li>
+     *   <li>项目管理：init_ppt_project, import_job_sources, inspect_project_info, validate_project</li>
+     *   <li>文件操作：list_project_files, collect_source_markdown, read_project_text_file, write_project_text_file</li>
+     *   <li>后处理：split_speaker_notes, validate_svg_output, finalize_project_svg, export_project_pptx</li>
+     * </ul>
+     */
     final class PptAgentTools {
 
+        /**
+         * 描述当前 PPT 任务元数据和上传的源文件。
+         * <p>
+         * 返回任务 ID、项目名称、格式、用户指令、工作区路径、
+         * 项目路径以及源文件列表等信息。
+         * </p>
+         *
+         * @param runtime 工具运行时上下文
+         * @return 包含任务元数据和源文件信息的 Map
+         */
         @Tool(name = "describe_job", description = "Return the current PPT job metadata and uploaded source files.", readOnly = true)
         public Map<String, Object> describeJob(PptAgentToolRuntime runtime) {
             Map<String, Object> data = new LinkedHashMap<>();
@@ -200,6 +318,16 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
             return data;
         }
 
+        /**
+         * 初始化本地 ppt-master 项目目录。
+         * <p>
+         * 在当前任务的 workspace 中创建 ppt-master 项目目录结构。
+         * 如果项目已初始化（存在 README.md），则直接返回已有路径。
+         * </p>
+         *
+         * @param runtime 工具运行时上下文
+         * @return 初始化结果描述
+         */
         @Tool(name = "init_ppt_project", description = "Initialize the local ppt-master project directory for the current job.")
         public String initPptProject(PptAgentToolRuntime runtime) {
             Path projectPath = runtime.job().projectPath()
@@ -226,6 +354,16 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
             return result.output().isBlank() ? "project initialized: " + projectPath : result.output();
         }
 
+        /**
+         * 将上传的源文件导入到 ppt-master 项目的 sources 目录。
+         * <p>
+         * 如果 sources 目录中已有文件，则跳过导入以避免重复。
+         * 导入时使用 --copy 模式保留原始文件。
+         * </p>
+         *
+         * @param runtime 工具运行时上下文
+         * @return 导入结果描述
+         */
         @Tool(name = "import_job_sources", description = "Import uploaded source files into the prepared ppt-master project.")
         public String importJobSources(PptAgentToolRuntime runtime) {
             Path projectPath = runtime.job().projectPath()
@@ -254,6 +392,16 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
             return result.output().isBlank() ? "sources imported into " + sourcesDir : result.output();
         }
 
+        /**
+         * 检查当前项目工作区的状态。
+         * <p>
+         * 运行 ppt-master 的 info 命令，返回项目结构的详细信息，
+         * 用于让 AI 代理了解当前工作区的进展情况。
+         * </p>
+         *
+         * @param runtime 工具运行时上下文
+         * @return 项目状态信息文本
+         */
         @Tool(name = "inspect_project_info", description = "Run ppt-master project info to inspect the current workspace state.", readOnly = true)
         public String inspectProjectInfo(PptAgentToolRuntime runtime) {
             Path projectPath = runtime.job().projectPath()
@@ -267,6 +415,16 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
             return result.output();
         }
 
+        /**
+         * 验证 ppt-master 项目结构和导出资产。
+         * <p>
+         * 运行 ppt-master 的 validate 命令，检查项目目录结构是否完整、
+         * 导出文件是否正确生成。
+         * </p>
+         *
+         * @param runtime 工具运行时上下文
+         * @return 验证结果文本
+         */
         @Tool(name = "validate_project", description = "Validate the ppt-master project structure and exported assets.", readOnly = true)
         public String validateProject(PptAgentToolRuntime runtime) {
             Path projectPath = runtime.job().projectPath()
@@ -280,6 +438,17 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
             return result.output();
         }
 
+        /**
+         * 列出项目中的重要文件，按目录分组。
+         * <p>
+         * 遍历项目的 sources、analysis、notes、svg_output、svg_final
+         * 和 exports 子目录，返回各目录下的文件列表，帮助 AI 代理
+         * 了解项目文件结构。
+         * </p>
+         *
+         * @param runtime 工具运行时上下文
+         * @return 按目录分组的文件列表 Map
+         */
         @Tool(name = "list_project_files", description = "List key files inside the prepared project, grouped by important directories.", readOnly = true)
         public Map<String, Object> listProjectFiles(PptAgentToolRuntime runtime) {
             Path projectPath = runtime.job().projectPath()
@@ -295,6 +464,18 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
             return result;
         }
 
+        /**
+         * 从 sources/ 目录读取规范化的 Markdown 源文件。
+         * <p>
+         * 用于 markdown 生成路线，读取已转换为 Markdown 格式的源文件内容。
+         * 支持限制返回的文件数量和每个文件的字符数，避免超出上下文窗口。
+         * </p>
+         *
+         * @param maxFiles        最多包含的 Markdown 文件数量（可选，默认 20）
+         * @param maxCharsPerFile 每个文件返回的最大字符数（可选，默认 8000）
+         * @param runtime         工具运行时上下文
+         * @return 包含项目根路径和 Markdown 文件内容的 Map
+         */
         @Tool(name = "collect_source_markdown", description = "Read normalized markdown source files from sources/ for the markdown generation route.", readOnly = true)
         public Map<String, Object> collectSourceMarkdown(
                 @ToolParam(name = "maxFiles", description = "Maximum number of markdown files to include.", required = false)
@@ -332,6 +513,18 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                     "count", files.size());
         }
 
+        /**
+         * 读取项目中的文本文件用于源文件检查。
+         * <p>
+         * 根据相对于项目根目录的路径读取文件内容，包含路径穿越安全检查。
+         * 支持限制返回的字符数，避免超出上下文窗口。
+         * </p>
+         *
+         * @param relativePath 相对于项目根目录的文件路径
+         * @param maxChars     返回的最大 UTF-8 字符数（可选，默认 8000）
+         * @param runtime      工具运行时上下文
+         * @return 文件文本内容
+         */
         @Tool(name = "read_project_text_file", description = "Read a text file from the prepared project for source inspection.", readOnly = true)
         public String readProjectTextFile(
                 @ToolParam(name = "relativePath", description = "Project-relative file path to read.", required = true)
@@ -360,6 +553,19 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
             }
         }
 
+        /**
+         * 写入或覆盖项目文本文件。
+         * <p>
+         * 将内容写入项目中的指定路径，如 design_spec.md、spec_lock.md、
+         * notes/total.md 或 svg_output/*.svg。包含路径穿越和白名单检查，
+         * 只允许写入预定义的文件路径。
+         * </p>
+         *
+         * @param relativePath 相对于项目根目录的写入路径
+         * @param content      UTF-8 文本内容
+         * @param runtime      工具运行时上下文
+         * @return 包含写入结果信息的 Map（相对路径、字符数、字节数）
+         */
         @Tool(name = "write_project_text_file", description = "Write or overwrite a project text file such as design_spec.md, spec_lock.md, notes/total.md, or svg_output/*.svg.")
         public Map<String, Object> writeProjectTextFile(
                 @ToolParam(name = "relativePath", description = "Project-relative path to write.", required = true)
@@ -380,6 +586,16 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                     "bytes", content.getBytes(StandardCharsets.UTF_8).length);
         }
 
+        /**
+         * 拆分演讲者备注文件。
+         * <p>
+         * 使用 ppt-master 的 total_md_split.py 脚本将 notes/total.md
+         * 拆分为每页独立的备注文件，存储在 notes/ 目录下。
+         * </p>
+         *
+         * @param runtime 工具运行时上下文
+         * @return 拆分结果描述
+         */
         @Tool(name = "split_speaker_notes", description = "Split notes/total.md into per-slide notes files under notes/ using ppt-master total_md_split.py.")
         public String splitSpeakerNotes(PptAgentToolRuntime runtime) {
             Path projectPath = runtime.job().projectPath()
@@ -393,6 +609,16 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
             return result.output().isBlank() ? "speaker notes split completed" : result.output();
         }
 
+        /**
+         * 验证 SVG 输出质量。
+         * <p>
+         * 使用 ppt-master 的 svg_quality_checker.py 对当前项目的 SVG 输出
+         * 进行质量检查，确保 SVG 文件符合规范后再进行 finalize 和导出。
+         * </p>
+         *
+         * @param runtime 工具运行时上下文
+         * @return 验证结果描述
+         */
         @Tool(name = "validate_svg_output", description = "Run ppt-master svg_quality_checker.py against the current project before finalize/export.", readOnly = true)
         public String validateSvgOutput(PptAgentToolRuntime runtime) {
             Path projectPath = runtime.job().projectPath()
@@ -406,6 +632,16 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
             return result.output().isBlank() ? "svg quality validation passed" : result.output();
         }
 
+        /**
+         * 最终处理项目 SVG 文件。
+         * <p>
+         * 使用 ppt-master 的 finalize_svg.py 脚本将 svg_output 目录中的
+         * SVG 文件处理为最终的 svg_final 版本，包括格式调整和优化。
+         * </p>
+         *
+         * @param runtime 工具运行时上下文
+         * @return 处理结果描述
+         */
         @Tool(name = "finalize_project_svg", description = "Run ppt-master finalize_svg.py to build svg_final from svg_output.")
         public String finalizeProjectSvg(PptAgentToolRuntime runtime) {
             Path projectPath = runtime.job().projectPath()
@@ -419,6 +655,17 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
             return result.output().isBlank() ? "svg finalization completed" : result.output();
         }
 
+        /**
+         * 将 svg_final 项目导出为 PPTX 成品。
+         * <p>
+         * 检查 svg_final 目录是否存在且非空，然后使用 svg_to_pptx.py 脚本
+         * 导出 PPTX 文件。导出完成后更新任务状态为完成，并发布
+         * {@link PptJobEventType#EXPORT_READY} 事件通知外部消费者。
+         * </p>
+         *
+         * @param runtime 工具运行时上下文
+         * @return 导出结果描述
+         */
         @Tool(name = "export_project_pptx", description = "Export the prepared svg_final project into a PPTX artifact.")
         public String exportProjectPptx(PptAgentToolRuntime runtime) {
             Path projectPath = runtime.job().projectPath()
@@ -447,6 +694,17 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
             return result.output().isBlank() ? "ppt exported: " + artifact.getFileName() : result.output();
         }
 
+        /**
+         * 列出项目中指定目录下的所有相对文件路径。
+         * <p>
+         * 递归遍历指定子目录，收集所有文件的路径（相对于项目根目录）。
+         * 如果目录不存在则返回空列表。
+         * </p>
+         *
+         * @param projectPath   项目根目录的绝对路径
+         * @param directoryName 子目录名称（如 sources、notes）
+         * @return 文件中相对路径列表
+         */
         private List<String> listRelativeFiles(Path projectPath, String directoryName) {
             Path directory = projectPath.resolve(directoryName);
             if (!Files.isDirectory(directory)) {
@@ -463,6 +721,20 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
             }
         }
 
+        /**
+         * 解析可写的项目文件绝对路径。
+         * <p>
+         * 将相对路径解析为项目根目录下的绝对路径，并进行安全检查：
+         * 防止路径穿越攻击（路径必须位于项目根目录范围内），
+         * 并且只允许写入白名单中的路径（design_spec.md、spec_lock.md、
+         * notes/*、svg_output/*、analysis/*）。
+         * </p>
+         *
+         * @param runtime      工具运行时上下文
+         * @param relativePath 相对于项目根目录的文件路径
+         * @return 解析后的安全绝对路径
+         * @throws IllegalStateException 当路径穿越或不在白名单中时抛出
+         */
         private Path resolveWritableProjectFile(PptAgentToolRuntime runtime, String relativePath) {
             Path projectPath = runtime.job().projectPath()
                     .orElseThrow(() -> new IllegalStateException("job project path is not prepared"));
@@ -482,6 +754,13 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
             return target;
         }
 
+        /**
+         * 以 UTF-8 编码读取文本文件的全部内容。
+         *
+         * @param path 文件路径
+         * @return 文件文本内容
+         * @throws IllegalStateException 当读取失败时抛出
+         */
         private String readText(Path path) {
             try {
                 return Files.readString(path, StandardCharsets.UTF_8);
@@ -490,6 +769,16 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
             }
         }
 
+        /**
+         * 截断文本到指定长度。
+         * <p>
+         * 如果文本长度超过限制，则在截断处添加 "[truncated]" 标记。
+         * </p>
+         *
+         * @param text  原始文本
+         * @param limit 最大字符数
+         * @return 截断后的文本
+         */
         private String truncate(String text, int limit) {
             if (text.length() <= limit) {
                 return text;
@@ -497,6 +786,17 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
             return text.substring(0, limit) + "\n...[truncated]";
         }
 
+        /**
+         * 检测 exports 目录中最新的 PPTX 导出文件。
+         * <p>
+         * 遍历 exports 目录下的所有 .pptx 文件，按最后修改时间排序，
+         * 返回最新的文件。
+         * </p>
+         *
+         * @param projectPath 项目根目录路径
+         * @return 最新的 PPTX 文件路径
+         * @throws IllegalStateException 当 exports 目录不存在或没有 PPTX 文件时抛出
+         */
         private Path detectLatestExport(Path projectPath) {
             Path exportDir = projectPath.resolve("exports");
             if (!Files.isDirectory(exportDir)) {
@@ -519,6 +819,22 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
         }
     }
 
+    /**
+     * 用户计划确认工具。
+     * <p>
+     * 继承自 {@link ToolBase}，用于在 PPT 生成工作流中请求用户确认
+     * AI 代理生成的计划。该工具被标记为外部工具（externalTool=true），
+     * AgentScope 框架在调用时会触发 {@link RequireExternalExecutionEvent}，
+     * 暂停工作流等待用户通过外部接口（如 REST API）提交确认结果。
+     * </p>
+     * <p>输入参数：</p>
+     * <ul>
+     *   <li>planSummary — 计划摘要（必填）</li>
+     *   <li>sourceFindings — 源文件分析结果</li>
+     *   <li>pendingSteps — 待执行步骤（必填）</li>
+     *   <li>risks — 风险评估</li>
+     * </ul>
+     */
     static final class UserPlanApprovalTool extends ToolBase {
 
         UserPlanApprovalTool() {

@@ -25,6 +25,20 @@ import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
 
+/**
+ * PPT 任务工作流核心服务。
+ * <p>
+ * 编排 PPT 生成任务的完整生命周期：
+ * <ol>
+ *   <li>创建任务——接收上传文件、校验格式、持久化源文件</li>
+ *   <li>查询任务状态</li>
+ *   <li>提交人工确认——批准或拒绝执行方案</li>
+ *   <li>获取导出文件路径</li>
+ * </ol>
+ * 所有操作委派给 {@link PptWorkflowAsyncRunner} 异步执行 AI 代理工作，
+ * 并通过 {@link PptWorkflowEvents} 记录和推送事件。
+ * </p>
+ */
 @Service
 public class PptWorkflowService {
 
@@ -58,6 +72,27 @@ public class PptWorkflowService {
         this.asyncRunner = asyncRunner;
     }
 
+    /**
+     * 创建 PPT 生成任务。
+     * <p>
+     * 处理流程：
+     * <ol>
+     *   <li>校验至少包含一个非空源文件</li>
+     *   <li>规范化项目名称和画布格式</li>
+     *   <li>创建工作区目录</li>
+     *   <li>持久化上传的源文件到磁盘</li>
+     *   <li>异步启动 AI 代理</li>
+     * </ol>
+     * </p>
+     *
+     * @param files       上传的源文件列表，至少需要一个非空文件
+     * @param projectName 项目名称，为空时自动生成为 "ppt_project"
+     * @param format      画布格式，支持 ppt169、wechat、xiaohongshu 等
+     * @param instruction 用户提供的生成指令
+     * @return 已创建的任务实例
+     * @throws PptJobStateException 如果文件或格式校验不通过
+     * @throws PptStorageException  如果文件存储失败
+     */
     public PptJob createJob(List<MultipartFile> files, String projectName, String format, String instruction) {
         if (files == null || files.isEmpty() || files.stream().allMatch(MultipartFile::isEmpty)) {
             throw new PptJobStateException("at least one source file is required");
@@ -75,10 +110,34 @@ public class PptWorkflowService {
         return job;
     }
 
+    /**
+     * 根据 ID 查询任务。
+     *
+     * @param jobId 任务 ID
+     * @return 任务实例
+     * @throws PptJobNotFoundException 如果任务不存在
+     */
     public PptJob getJob(UUID jobId) {
         return repository.findById(jobId).orElseThrow(() -> new PptJobNotFoundException(jobId));
     }
 
+    /**
+     * 提交人工确认。
+     * <p>
+     * 验证当前任务状态为 {@link PptJobStatus#WAITING_CONFIRMATION}，
+     * 且传入的 confirmationId 与待确认的 ID 一致。
+     * 如果用户拒绝确认，任务直接标记为失败。
+     * 如果用户批准，则异步恢复 AI 代理执行。
+     * </p>
+     *
+     * @param jobId          任务 ID
+     * @param confirmationId 确认请求 ID，需与任务当前的确认 ID 一致
+     * @param approved       是否批准
+     * @param answers        用户补充答案
+     * @param comment        用户备注
+     * @return 更新后的任务实例
+     * @throws PptJobStateException 如果状态不合法或 confirmationId 不匹配
+     */
     public PptJob submitConfirmation(
             UUID jobId,
             String confirmationId,
@@ -112,6 +171,13 @@ public class PptWorkflowService {
         return job;
     }
 
+    /**
+     * 获取已完成任务的导出文件路径。
+     *
+     * @param jobId 任务 ID
+     * @return 导出文件的绝对路径
+     * @throws PptJobStateException 如果任务未完成或无导出产物
+     */
     public Path exportPath(UUID jobId) {
         PptJob job = getJob(jobId);
         if (job.status() != PptJobStatus.COMPLETED) {

@@ -12,6 +12,13 @@ import java.util.UUID;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Component;
 
+/**
+ * PPT 工作流的异步执行器。
+ * <p>
+ * 通过 {@link Async} 注解在独立线程中启动或恢复 AI 代理执行，
+ * 避免阻塞 HTTP 请求线程。执行失败时会自动将任务标记为失败并记录事件。
+ * </p>
+ */
 @Component
 public class PptWorkflowAsyncRunner {
 
@@ -28,6 +35,11 @@ public class PptWorkflowAsyncRunner {
         this.events = events;
     }
 
+    /**
+     * 异步启动 AI 代理执行 PPT 生成。
+     *
+     * @param jobId 任务 ID
+     */
     @Async
     public void startAgent(UUID jobId) {
         PptJob job = findJob(jobId);
@@ -40,6 +52,11 @@ public class PptWorkflowAsyncRunner {
         }
     }
 
+    /**
+     * 异步恢复 AI 代理执行（收到人工确认后）。
+     *
+     * @param jobId 任务 ID
+     */
     @Async
     public void resumeAgent(UUID jobId) {
         PptJob job = findJob(jobId);
@@ -54,6 +71,13 @@ public class PptWorkflowAsyncRunner {
         }
     }
 
+    /**
+     * 根据 ID 查找任务，不存在则抛出异常。
+     *
+     * @param jobId 任务 ID
+     * @return 任务实例
+     * @throws PptJobStateException 如果任务不存在
+     */
     private PptJob findJob(UUID jobId) {
         return repository.findById(jobId)
                 .orElseThrow(() -> new PptJobStateException("job not found for async execution: " + jobId));

@@ -29,8 +29,20 @@ import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Flux;
 
+/**
+ * {@link AgentScopePptAgentRunner} 的单元测试。
+ * <p>
+ * 验证 Agent 启动流程能够正确触发待确认状态，
+ * 以及恢复（resume）流程能够将人工审批结果以工具调用结果消息（ToolResultMessage）
+ * 的形式传递给 Agent 继续执行。
+ */
 class AgentScopePptAgentRunnerTests {
 
+    /**
+     * 验证启动 Agent 后，当 Agent 发出 RequireExternalExecutionEvent 事件时，
+     * Job 状态正确转换为 {@link PptJobStatus#WAITING_CONFIRMATION}，
+     * 且确认 ID、回复 ID、工具名称等确认载荷信息正确保存。
+     */
     @Test
     void startTransitionsToWaitingConfirmationOnExternalExecution() {
         RecordingAgentFactory factory = new RecordingAgentFactory();
@@ -60,6 +72,11 @@ class AgentScopePptAgentRunnerTests {
         assertThat(factory.contexts().get(0).getSessionId()).isEqualTo(job.id().toString());
     }
 
+    /**
+     * 验证在人工确认后调用 resume()，Agent 收到的恢复消息是
+     * {@link ToolResultMessage} 类型，其中包含之前暂停时使用的工具名称
+     * 和人工审批备注，并且 Job 状态重新进入等待确认状态以处理下一阶段。
+     */
     @Test
     void resumeUsesToolResultMessageForHumanInTheLoopContinuation() {
         RecordingAgentFactory factory = new RecordingAgentFactory();
@@ -134,6 +151,13 @@ class AgentScopePptAgentRunnerTests {
         return job;
     }
 
+    /**
+     * 测试用 {@link AgentScopeWorkflowAgentFactory} 实现。
+     * <p>
+     * 预先注册一系列 Agent 行为（通过 {@link #enqueue(AgentScopeWorkflowAgent)}），
+     * 每次调用 {@link #create(PptJob)} 时依次取出并包装，同时记录调用时传入的
+     * 消息列表和运行时上下文，便于后续断言验证。
+     */
     private static final class RecordingAgentFactory implements AgentScopeWorkflowAgentFactory {
 
         private final Queue<AgentScopeWorkflowAgent> queue = new ArrayDeque<>();

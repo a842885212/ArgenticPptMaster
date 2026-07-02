@@ -20,11 +20,22 @@ import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+/**
+ * {@link DefaultAgentScopeWorkflowAgentFactory} 及其内部工具类的单元测试。
+ * <p>
+ * 验证 Markdown 源文件收集、项目文本文件写入权限控制，
+ * 以及后处理脚本调用的正确性。
+ */
 class DefaultAgentScopeWorkflowAgentFactoryTests {
 
     @TempDir
     Path tempDir;
 
+    /**
+     * 验证 {@code collectSourceMarkdown} 工具方法仅收集并返回
+     * {@code .md} 和 {@code .markdown} 后缀的 Markdown 文件，
+     * 过滤掉非 Markdown 文件（如 PDF），并返回文件相对路径与正文内容。
+     */
     @Test
     void collectSourceMarkdownReadsNormalizedMarkdownFilesOnly() throws IOException {
         TestContext context = createContext();
@@ -44,6 +55,11 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
                 .allSatisfy(content -> assertThat((String) content).startsWith("# "));
     }
 
+    /**
+     * 验证 {@code writeProjectTextFile} 工具方法允许向允许路径（如 notes/）
+     * 写入文本文件，拒绝向不允许路径（如 exports/ 下的 pptx 文件）写入，
+     * 并抛出 {@link IllegalStateException} 异常。
+     */
     @Test
     void writeProjectTextFileWritesAllowedPathsAndRejectsOthers() throws IOException {
         TestContext context = createContext();
@@ -60,6 +76,10 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
                 .hasMessageContaining("not allowed");
     }
 
+    /**
+     * 验证后处理工具方法（validateSvgOutput、splitSpeakerNotes、finalizeProjectSvg）
+     * 正确委托到对应的 Python 脚本，且传入正确的项目路径和格式参数。
+     */
     @Test
     void postProcessingToolsDelegateToExpectedScripts() throws IOException {
         TestContext context = createContext();
@@ -120,6 +140,12 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
             RecordingCommandExecutor executor) {
     }
 
+    /**
+     * 测试用 {@link PptMasterCommandExecutor} 实现。
+     * <p>
+     * 重写 {@link #runPythonScript(String, List)} 方法，不实际执行系统命令，
+     * 而是记录每次调用时的脚本路径和参数列表，供后续断言验证调用委托是否正确。
+     */
     private static final class RecordingCommandExecutor extends PptMasterCommandExecutor {
 
         private final List<String> calledScripts = new ArrayList<>();

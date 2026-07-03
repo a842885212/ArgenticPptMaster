@@ -21,6 +21,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
@@ -41,6 +43,8 @@ import org.springframework.web.multipart.MultipartFile;
  */
 @Service
 public class PptWorkflowService {
+
+    private static final Logger log = LoggerFactory.getLogger(PptWorkflowService.class);
 
     private static final Set<String> ALLOWED_EXTENSIONS = Set.of(
             "md", "markdown", "pdf", "ppt", "pptx", "doc", "docx", "xls", "xlsx", "xlsm", "csv", "tsv", "html");
@@ -102,11 +106,15 @@ public class PptWorkflowService {
         String normalizedFormat = normalizeFormat(format);
         Path jobWorkspace = properties.workspacePath().resolve("jobs").resolve(jobId.toString()).toAbsolutePath().normalize();
         PptJob job = new PptJob(jobId, normalizedProjectName, normalizedFormat, instruction, jobWorkspace);
+        log.info("ppt_job_create_started: jobId={}, projectName={}, format={}, fileCount={}",
+                jobId, normalizedProjectName, normalizedFormat, files.size());
         storeSources(job, files);
         repository.save(job);
         events.record(job, PptJobEvent.of(PptJobEventType.JOB_ACCEPTED, "job accepted",
                 Map.of("jobId", job.id().toString())));
         asyncRunner.startAgent(job.id());
+        log.info("ppt_job_create_accepted: jobId={}, projectName={}, format={}, sourceCount={}",
+                jobId, normalizedProjectName, normalizedFormat, job.sourceFiles().size());
         return job;
     }
 
@@ -145,16 +153,25 @@ public class PptWorkflowService {
             Map<String, Object> answers,
             String comment) {
         PptJob job = getJob(jobId);
+        log.info("ppt_job_confirmation_submit_received: jobId={}, confirmationId={}, currentStatus={}, approved={}",
+                jobId, confirmationId, job.status(), approved);
         if (job.status() != PptJobStatus.WAITING_CONFIRMATION) {
+            log.warn("ppt_job_confirmation_status_mismatch: jobId={}, currentStatus={}", jobId, job.status());
             throw new PptJobStateException("job is not waiting for confirmation");
         }
         String expectedConfirmationId = job.currentConfirmationId()
                 .orElseThrow(() -> new PptJobStateException("job has no active confirmation"));
         if (!expectedConfirmationId.equals(confirmationId)) {
+            log.warn("ppt_job_confirmation_id_mismatch: jobId={}, expectedConfirmationId={}, receivedConfirmationId={}",
+                    jobId, expectedConfirmationId, confirmationId);
             throw new PptJobStateException("confirmationId does not match active confirmation");
         }
         if (!approved) {
-            job.fail("confirmation rejected: " + (comment == null ? "" : comment));
+            String rejectReason = "confirmation rejected: " + (comment == null ? "" : comment);
+            log.warn("ppt_job_confirmation_rejected: jobId={}, confirmationId={}, commentPresent={}, commentLength={}",
+                    jobId, confirmationId, comment != null && !comment.isBlank(),
+                    comment == null ? 0 : comment.length());
+            job.fail(rejectReason);
             events.record(job, PptJobEvent.of(PptJobEventType.JOB_FAILED, "confirmation rejected"));
             return job;
         }
@@ -167,6 +184,8 @@ public class PptWorkflowService {
         job.receiveConfirmation(confirmation);
         events.record(job, PptJobEvent.of(PptJobEventType.CONFIRMATION_RECEIVED, "confirmation received",
                 Map.of("confirmationId", confirmationId)));
+        log.info("ppt_job_confirmation_approved: jobId={}, confirmationId={}, answersKeys={}",
+                jobId, confirmationId, confirmation.answers().keySet());
         asyncRunner.resumeAgent(job.id());
         return job;
     }

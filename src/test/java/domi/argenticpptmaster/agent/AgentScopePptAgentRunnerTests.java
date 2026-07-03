@@ -12,13 +12,19 @@ import domi.argenticpptmaster.service.PptJobEventPublisher;
 import domi.argenticpptmaster.service.PptWorkflowEvents;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
+import io.agentscope.core.event.AgentResultEvent;
 import io.agentscope.core.event.AgentStartEvent;
 import io.agentscope.core.event.RequireExternalExecutionEvent;
+import io.agentscope.core.message.AssistantMessage;
+import io.agentscope.core.message.GenerateReason;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.TextBlock;
 import io.agentscope.core.message.ToolResultBlock;
 import io.agentscope.core.message.ToolResultMessage;
 import io.agentscope.core.message.ToolUseBlock;
+import io.agentscope.core.state.AgentState;
+import io.agentscope.core.state.JsonFileAgentStateStore;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.ArrayDeque;
@@ -124,6 +130,107 @@ class AgentScopePptAgentRunnerTests {
         assertThat(((TextBlock) blocks.get(0).getOutput().get(0)).getText()).contains("operator approved");
         assertThat(job.status()).isEqualTo(PptJobStatus.WAITING_CONFIRMATION);
         assertThat(job.confirmationPayload()).containsEntry("replyId", "reply-2");
+    }
+
+    /**
+     * 验证当 AgentScope RC3 以 TOOL_SUSPENDED 结果消息返回外部工具挂起时，
+     * 运行器仍能正确把任务切换到 {@link PptJobStatus#WAITING_CONFIRMATION}。
+     */
+    @Test
+    void startTransitionsToWaitingConfirmationOnSuspendedResultMessage() {
+        RecordingAgentFactory factory = new RecordingAgentFactory();
+        ToolUseBlock approvalToolCall = new ToolUseBlock(
+                "call-1",
+                "request_plan_confirmation",
+                Map.of("planSummary", "import first", "pendingSteps", "confirm plan"));
+        ToolResultBlock suspendedResult = ToolResultBlock.suspended(approvalToolCall);
+        Msg suspendedMessage = AssistantMessage.builder()
+                .name("test-agent")
+                .content(List.of(
+                        approvalToolCall,
+                        suspendedResult,
+                        TextBlock.builder().text("waiting for confirmation").build()))
+                .generateReason(GenerateReason.TOOL_SUSPENDED)
+                .build();
+        factory.enqueue((messages, runtimeContext) -> Flux.just(
+                new AgentStartEvent("reply-1", runtimeContext.getSessionId(), "test-agent"),
+                new AgentResultEvent(suspendedMessage)));
+
+        AgentScopePptAgentRunner runner = new AgentScopePptAgentRunner(
+                pptMasterProperties(),
+                agentScopeProperties(),
+                factory,
+                new PptWorkflowEvents(new PptJobEventPublisher()));
+        PptJob job = sampleJob();
+
+        runner.start(job);
+
+        assertThat(job.status()).isEqualTo(PptJobStatus.WAITING_CONFIRMATION);
+        assertThat(job.currentConfirmationId()).isPresent();
+        assertThat(job.confirmationPayload()).containsEntry("toolName", "request_plan_confirmation");
+        assertThat(job.confirmationPayload()).containsEntry("replyId", suspendedMessage.getId());
+    }
+
+    /**
+     * 验证当事件流未显式返回挂起信号，但 AgentScope 持久化状态中仍有 pending tool call 时，
+     * 运行器能够从 agent_state.json 恢复等待确认状态。
+     */
+    @Test
+    void startRecoversWaitingConfirmationFromPersistedAgentState() throws Exception {
+        RecordingAgentFactory factory = new RecordingAgentFactory();
+        Msg finalMessage = new AssistantMessage("现在流程按工具要求暂停在人工确认点。你确认后，我会继续生成后续产物。");
+        factory.enqueue((messages, runtimeContext) -> Flux.just(
+                new AgentStartEvent("reply-1", runtimeContext.getSessionId(), "test-agent"),
+                new AgentResultEvent(finalMessage)));
+
+        Path sessionStorePath = Files.createTempDirectory("agentscope-session-store");
+        AgentScopeProperties properties = new AgentScopeProperties(
+                "openai",
+                "dummy-model",
+                null,
+                null,
+                8,
+                sessionStorePath,
+                "ppt-master-service");
+        AgentScopePptAgentRunner runner = new AgentScopePptAgentRunner(
+                pptMasterProperties(),
+                properties,
+                factory,
+                new PptWorkflowEvents(new PptJobEventPublisher()));
+        PptJob job = sampleJob();
+
+        ToolUseBlock approvalToolCall = new ToolUseBlock(
+                "call-persisted",
+                "request_plan_confirmation",
+                Map.of("planSummary", "persisted plan", "pendingSteps", "confirm plan"));
+        ToolResultBlock runningResult = ToolResultBlock.builder()
+                .id(approvalToolCall.getId())
+                .name(approvalToolCall.getName())
+                .output(List.of(TextBlock.builder().text("Error: Tool execution failed: Tool execution suspended").build()))
+                .state(io.agentscope.core.message.ToolResultState.RUNNING)
+                .build();
+        AgentState persistedState = AgentState.builder()
+                .sessionId(job.id().toString())
+                .userId("ppt-master-service")
+                .context(List.of(
+                        AssistantMessage.builder()
+                                .name("test-agent")
+                                .content(List.of(
+                                        TextBlock.builder().text("已发起人工确认").build(),
+                                        approvalToolCall))
+                                .build(),
+                        new io.agentscope.core.message.ToolResultMessage(List.of(runningResult)),
+                        new AssistantMessage("现在流程按工具要求暂停在人工确认点。")))
+                .build();
+        new JsonFileAgentStateStore(sessionStorePath)
+                .save("ppt-master-service", job.id().toString(), "agent_state", persistedState);
+
+        runner.start(job);
+
+        assertThat(job.status()).isEqualTo(PptJobStatus.WAITING_CONFIRMATION);
+        assertThat(job.currentConfirmationId()).isPresent();
+        assertThat(job.confirmationPayload()).containsEntry("toolName", "request_plan_confirmation");
+        assertThat(job.confirmationPayload()).containsEntry("replyId", job.id().toString());
     }
 
     private static PptMasterProperties pptMasterProperties() {

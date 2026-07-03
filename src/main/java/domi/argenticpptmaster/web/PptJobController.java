@@ -2,6 +2,7 @@ package domi.argenticpptmaster.web;
 
 import domi.argenticpptmaster.service.PptJobEventPublisher;
 import domi.argenticpptmaster.service.PptWorkflowService;
+import domi.argenticpptmaster.domain.PptJob;
 import domi.argenticpptmaster.web.dto.ConfirmationRequest;
 import domi.argenticpptmaster.web.dto.PptJobResponse;
 import jakarta.validation.Valid;
@@ -84,15 +85,20 @@ public class PptJobController {
 
     /**
      * 订阅指定任务的 Server-Sent Events (SSE) 事件流。
-     * <p>客户端可通过此端点实时接收 PPT 生成过程中的状态变更通知。</p>
+     * <p>
+     * 客户端可通过此端点实时接收 PPT 生成过程中的状态变更通知。
+     * 服务端会在建立连接时立即回放任务已有的历史事件；
+     * 若任务已处于终态（完成、失败或取消），则立即关闭连接，
+     * 避免客户端在无新事件时长时间挂起。
+     * </p>
      *
      * @param jobId 任务 UUID
      * @return SSE 发射器，用于推送事件流
      */
     @GetMapping(path = "/{jobId}/events", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter events(@PathVariable UUID jobId) {
-        workflowService.getJob(jobId);
-        return eventPublisher.subscribe(jobId);
+        PptJob job = workflowService.getJob(jobId);
+        return eventPublisher.subscribe(job);
     }
 
     /**

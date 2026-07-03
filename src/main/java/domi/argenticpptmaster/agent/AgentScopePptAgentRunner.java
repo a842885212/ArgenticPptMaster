@@ -15,13 +15,17 @@ import io.agentscope.core.event.RequireExternalExecutionEvent;
 import io.agentscope.core.event.TextBlockDeltaEvent;
 import io.agentscope.core.event.ToolCallEndEvent;
 import io.agentscope.core.event.ToolResultEndEvent;
+import io.agentscope.core.message.GenerateReason;
 import io.agentscope.core.message.Msg;
+import io.agentscope.core.message.MsgRole;
 import io.agentscope.core.message.TextBlock;
 import io.agentscope.core.message.ToolResultBlock;
 import io.agentscope.core.message.ToolResultMessage;
 import io.agentscope.core.message.ToolResultState;
 import io.agentscope.core.message.ToolUseBlock;
 import io.agentscope.core.message.UserMessage;
+import io.agentscope.core.state.AgentState;
+import io.agentscope.core.state.JsonFileAgentStateStore;
 import java.nio.file.Path;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
@@ -29,6 +33,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 /**
@@ -50,6 +56,8 @@ import org.springframework.stereotype.Component;
  */
 @Component
 public class AgentScopePptAgentRunner implements PptAgentRunner {
+
+    private static final Logger log = LoggerFactory.getLogger(AgentScopePptAgentRunner.class);
 
     private final PptMasterProperties properties;
     private final AgentScopeProperties agentScopeProperties;
@@ -78,6 +86,7 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
      */
     @Override
     public void start(PptJob job) {
+        log.info("ppt_agent_runner_start: jobId={}", job.id());
         prepareProjectPath(job);
         RuntimeContext context = runtimeContext(job);
         List<Msg> input = List.of(new UserMessage(buildInitialInstruction(job)));
@@ -98,9 +107,13 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
      */
     @Override
     public void resume(PptJob job, PptConfirmation confirmation) {
+        log.info("ppt_agent_runner_resume: jobId={}, confirmationId={}",
+                job.id(), confirmation.confirmationId());
         RuntimeContext context = runtimeContext(job);
         List<ToolUseBlock> pendingToolCalls = pendingToolCalls(job);
         if (pendingToolCalls.isEmpty()) {
+            log.warn("ppt_agent_runner_resume_no_pending_calls: jobId={}, confirmationId={}",
+                    job.id(), confirmation.confirmationId());
             throw new IllegalStateException("job has no pending external tool calls to resume");
         }
         List<ToolResultBlock> results = pendingToolCalls.stream()
@@ -176,22 +189,33 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
      * @throws IllegalStateException 当代理结束但未导出成品时抛出
      */
     private void runAgent(PptJob job, List<Msg> input, RuntimeContext runtimeContext) {
+        log.info("ppt_agent_runner_stream_begin: jobId={}, sessionId={}",
+                job.id(), runtimeContext.getSessionId());
         AgentScopeWorkflowAgent workflowAgent = workflowAgentFactory.create(job);
         AgentRunState runState = new AgentRunState();
         workflowAgent.streamEvents(input, runtimeContext)
                 .doOnNext(event -> handleEvent(job, runState, event))
                 .blockLast();
 
+        if (!runState.waitingForExternalExecution) {
+            recoverWaitingConfirmationFromPersistedState(job, runState);
+        }
+        log.info("ppt_agent_runner_stream_end: jobId={}, waitingForExternalExecution={}, exportPathPresent={}, status={}",
+                job.id(), runState.waitingForExternalExecution, job.exportPath().isPresent(), job.status());
         if (runState.waitingForExternalExecution) {
+            log.info("ppt_agent_runner_waiting_confirmation: jobId={}, confirmationId={}",
+                    job.id(), job.currentConfirmationId().orElse("none"));
             return;
         }
         if (job.exportPath().isPresent()) {
+            log.info("ppt_agent_runner_export_ready: jobId={}, fileName={}",
+                    job.id(), job.exportPath().get().getFileName());
             return;
         }
-        String finalText = runState.finalResultText == null ? "" : runState.finalResultText.trim();
-        throw new IllegalStateException(finalText.isBlank()
-                ? "agent finished without export artifact"
-                : "agent finished without export artifact: " + finalText);
+        int finalTextLength = runState.finalResultText == null ? 0 : runState.finalResultText.length();
+        log.warn("ppt_agent_runner_no_artifact: jobId={}, finalTextLength={}, status={}",
+                job.id(), finalTextLength, job.status());
+        throw new IllegalStateException("agent finished without export artifact");
     }
 
     /**
@@ -215,6 +239,8 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
      */
     private void handleEvent(PptJob job, AgentRunState runState, AgentEvent event) {
         if (event instanceof AgentStartEvent startEvent) {
+            log.info("ppt_agent_runner_event_start: jobId={}, replyId={}",
+                    job.id(), startEvent.getReplyId());
             job.startAgent();
             events.record(job, PptJobEvent.of(
                     PptJobEventType.AGENT_STARTED,
@@ -232,6 +258,9 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
             return;
         }
         if (event instanceof ToolCallEndEvent toolCallEndEvent) {
+            log.debug("ppt_agent_runner_event_tool_call: jobId={}, replyId={}, toolCallId={}, toolName={}",
+                    job.id(), toolCallEndEvent.getReplyId(), toolCallEndEvent.getToolCallId(),
+                    toolCallEndEvent.getToolCallName());
             events.record(job, PptJobEvent.of(
                     PptJobEventType.AGENT_MESSAGE,
                     "tool prepared: " + toolCallEndEvent.getToolCallName(),
@@ -243,6 +272,9 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
             return;
         }
         if (event instanceof ToolResultEndEvent toolResultEndEvent) {
+            log.debug("ppt_agent_runner_event_tool_result: jobId={}, replyId={}, toolCallId={}, toolName={}, state={}",
+                    job.id(), toolResultEndEvent.getReplyId(), toolResultEndEvent.getToolCallId(),
+                    toolResultEndEvent.getToolCallName(), toolResultEndEvent.getState().getValue());
             events.record(job, PptJobEvent.of(
                     PptJobEventType.AGENT_MESSAGE,
                     "tool finished: " + toolResultEndEvent.getToolCallName(),
@@ -256,34 +288,26 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
         }
         if (event instanceof RequireExternalExecutionEvent externalExecutionEvent) {
             runState.waitingForExternalExecution = true;
-            String confirmationId = UUID.randomUUID().toString();
-            Map<String, Object> payload = new LinkedHashMap<>();
-            payload.put("stage", "agentscope_external_execution");
-            payload.put("message", "Agent 需要人工确认当前 PPT 执行方案后继续");
-            payload.put("replyId", externalExecutionEvent.getReplyId());
-            payload.put("toolCalls", externalExecutionEvent.getToolCalls().stream()
-                    .map(this::toToolCallPayload)
-                    .toList());
-            payload.put("agent", Map.of(
-                    "framework", "AgentScope Java",
-                    "mode", "streamEvents + Human-in-the-Loop"));
-            if (!externalExecutionEvent.getToolCalls().isEmpty()) {
-                ToolUseBlock firstCall = externalExecutionEvent.getToolCalls().get(0);
-                payload.put("recommended", firstCall.getInput());
-                payload.put("toolName", firstCall.getName());
-            }
-            job.requireConfirmation(confirmationId, payload);
-            events.record(job, PptJobEvent.of(
-                    PptJobEventType.CONFIRMATION_REQUIRED,
-                    "waiting for user confirmation",
-                    Map.of(
-                            "confirmationId", confirmationId,
-                            "replyId", externalExecutionEvent.getReplyId(),
-                            "toolCallCount", externalExecutionEvent.getToolCalls().size())));
+            log.info("ppt_agent_runner_event_require_external_execution: jobId={}, replyId={}, toolCallCount={}",
+                    job.id(), externalExecutionEvent.getReplyId(), externalExecutionEvent.getToolCalls().size());
+            markWaitingForConfirmation(job, externalExecutionEvent.getReplyId(), externalExecutionEvent.getToolCalls());
             return;
         }
         if (event instanceof AgentResultEvent resultEvent) {
             runState.finalResultText = resultEvent.getResult().getTextContent();
+            log.info("ppt_agent_runner_event_result: jobId={}, finalTextLength={}, generateReason={}",
+                    job.id(), runState.finalResultText == null ? 0 : runState.finalResultText.length(),
+                    resultEvent.getResult().getGenerateReason());
+            if (resultEvent.getResult().getGenerateReason() == GenerateReason.TOOL_SUSPENDED) {
+                List<ToolUseBlock> suspendedToolCalls = resultEvent.getResult().getContentBlocks(ToolUseBlock.class);
+                log.info("ppt_agent_runner_event_result_suspended: jobId={}, toolCallCount={}",
+                        job.id(), suspendedToolCalls.size());
+                if (!suspendedToolCalls.isEmpty()) {
+                    runState.waitingForExternalExecution = true;
+                    markWaitingForConfirmation(job, resultEvent.getResult().getId(), suspendedToolCalls);
+                    return;
+                }
+            }
             if (runState.finalResultText != null && !runState.finalResultText.isBlank()) {
                 events.record(job, PptJobEvent.of(
                         PptJobEventType.AGENT_MESSAGE,
@@ -291,6 +315,147 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
                         Map.of("kind", "final_result")));
             }
         }
+    }
+
+    /**
+     * 从 AgentScope 持久化会话状态中恢复待确认的工具调用。
+     * <p>
+     * 某些外部工具挂起场景下，事件流里不会显式出现
+     * {@link RequireExternalExecutionEvent} 或 {@link GenerateReason#TOOL_SUSPENDED}，
+     * 但 AgentScope 已经把 pending tool call 和运行中的 tool result 写入了会话状态。
+     * 此时通过读取持久化的 {@code agent_state}，仍然可以将任务恢复为
+     * {@link domi.argenticpptmaster.domain.PptJobStatus#WAITING_CONFIRMATION}，避免误判失败。
+     * </p>
+     *
+     * @param job      PPT 任务信息
+     * @param runState 代理运行状态
+     */
+    private void recoverWaitingConfirmationFromPersistedState(PptJob job, AgentRunState runState) {
+        loadPersistedPendingToolCalls(job).ifPresent(toolCalls -> {
+            if (!toolCalls.isEmpty()) {
+                runState.waitingForExternalExecution = true;
+                log.info("ppt_agent_runner_recovered_waiting_confirmation: jobId={}, toolCallCount={}",
+                        job.id(), toolCalls.size());
+                markWaitingForConfirmation(job, job.id().toString(), toolCalls);
+            }
+        });
+    }
+
+    /**
+     * 从 AgentScope 持久化状态中提取仍处于 pending 的工具调用。
+     * <p>
+     * AgentScope 对外部挂起工具的落盘形态有两种：
+     * </p>
+     * <ul>
+     *   <li>只有 tool_use，尚无对应 tool_result</li>
+     *   <li>已有同 id 的 {@link ToolResultBlock}，但其 {@link ToolResultState} 为 RUNNING</li>
+     * </ul>
+     * <p>
+     * 同时，最后一条 assistant 消息未必仍然携带工具调用；Agent 可能继续输出一段
+     * 纯文本总结。因此恢复时需要从最近的 assistant 消息中反向查找“最后一个带
+     * tool_use 的 assistant 消息”，并把没有结果或结果仍为 RUNNING 的工具视为待确认。
+     * </p>
+     *
+     * @param job PPT 任务信息
+     * @return 待确认工具调用列表；若会话状态不存在或无法识别，则返回空 Optional
+     */
+    private java.util.Optional<List<ToolUseBlock>> loadPersistedPendingToolCalls(PptJob job) {
+        try {
+            JsonFileAgentStateStore stateStore = new JsonFileAgentStateStore(agentScopeProperties.sessionStorePath());
+            return stateStore
+                    .get(agentScopeProperties.serviceUserId(), job.id().toString(), "agent_state", AgentState.class)
+                    .map(this::extractPendingToolCallsFromState);
+        } catch (RuntimeException ex) {
+            log.warn("ppt_agent_runner_load_state_failed: jobId={}", job.id(), ex);
+            return java.util.Optional.empty();
+        }
+    }
+
+    /**
+     * 按 AgentScope 的挂起规则，从持久化状态中提取待确认工具调用。
+     *
+     * @param state AgentScope 持久化状态
+     * @return 待确认工具调用列表
+     */
+    private List<ToolUseBlock> extractPendingToolCallsFromState(AgentState state) {
+        List<Msg> context = state.getContext();
+        Msg lastAssistantWithToolUse = null;
+        for (int i = context.size() - 1; i >= 0; i--) {
+            Msg message = context.get(i);
+            if (message.getRole() == MsgRole.ASSISTANT && message.hasContentBlocks(ToolUseBlock.class)) {
+                lastAssistantWithToolUse = message;
+                break;
+            }
+        }
+        if (lastAssistantWithToolUse == null) {
+            return List.of();
+        }
+        java.util.Map<String, ToolResultBlock> latestToolResults = new java.util.LinkedHashMap<>();
+        for (Msg message : context) {
+            for (ToolResultBlock result : message.getContentBlocks(ToolResultBlock.class)) {
+                if (result.getId() != null) {
+                    latestToolResults.put(result.getId(), result);
+                }
+            }
+        }
+        return lastAssistantWithToolUse.getContentBlocks(ToolUseBlock.class).stream()
+                .filter(toolUse -> isPendingToolUse(toolUse, latestToolResults))
+                .toList();
+    }
+
+    /**
+     * 判断工具调用是否仍处于待人工确认状态。
+     * <p>
+     * 若没有任何结果，或最近一次结果的状态仍为 {@link ToolResultState#RUNNING}，
+     * 说明 Agent 仍在等待外部回填结果。
+     * </p>
+     *
+     * @param toolUse           工具调用
+     * @param latestToolResults 当前上下文中每个工具调用最新的结果
+     * @return true 表示该工具仍待确认
+     */
+    private boolean isPendingToolUse(ToolUseBlock toolUse, java.util.Map<String, ToolResultBlock> latestToolResults) {
+        ToolResultBlock result = latestToolResults.get(toolUse.getId());
+        return result == null || result.getState() == null || result.getState() == ToolResultState.RUNNING;
+    }
+
+    /**
+     * 将 Agent 的挂起工具调用转换为等待人工确认状态。
+     * <p>
+     * AgentScope RC3 既可能通过 {@link RequireExternalExecutionEvent} 暴露外部执行需求，
+     * 也可能在 {@link AgentResultEvent} 中返回 {@link GenerateReason#TOOL_SUSPENDED}
+     * 的结果消息。两种路径最终都统一落到任务确认载荷中，供前端展示并在恢复执行时回传。
+     * </p>
+     *
+     * @param job       PPT 任务信息
+     * @param replyId   当前回复 ID
+     * @param toolCalls 挂起的工具调用列表
+     */
+    private void markWaitingForConfirmation(PptJob job, String replyId, List<ToolUseBlock> toolCalls) {
+        String confirmationId = UUID.randomUUID().toString();
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("stage", "agentscope_external_execution");
+        payload.put("message", "Agent 需要人工确认当前 PPT 执行方案后继续");
+        payload.put("replyId", replyId);
+        payload.put("toolCalls", toolCalls.stream()
+                .map(this::toToolCallPayload)
+                .toList());
+        payload.put("agent", Map.of(
+                "framework", "AgentScope Java",
+                "mode", "streamEvents + Human-in-the-Loop"));
+        if (!toolCalls.isEmpty()) {
+            ToolUseBlock firstCall = toolCalls.get(0);
+            payload.put("recommended", firstCall.getInput());
+            payload.put("toolName", firstCall.getName());
+        }
+        job.requireConfirmation(confirmationId, payload);
+        events.record(job, PptJobEvent.of(
+                PptJobEventType.CONFIRMATION_REQUIRED,
+                "waiting for user confirmation",
+                Map.of(
+                        "confirmationId", confirmationId,
+                        "replyId", replyId,
+                        "toolCallCount", toolCalls.size())));
     }
 
     /**

@@ -9,6 +9,8 @@ import domi.argenticpptmaster.exception.PptJobStateException;
 import domi.argenticpptmaster.repository.PptJobRepository;
 import java.util.Map;
 import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Component;
 
@@ -21,6 +23,8 @@ import org.springframework.stereotype.Component;
  */
 @Component
 public class PptWorkflowAsyncRunner {
+
+    private static final Logger log = LoggerFactory.getLogger(PptWorkflowAsyncRunner.class);
 
     private final PptJobRepository repository;
     private final PptAgentRunner agentRunner;
@@ -42,10 +46,13 @@ public class PptWorkflowAsyncRunner {
      */
     @Async
     public void startAgent(UUID jobId) {
+        log.info("ppt_agent_start_async: jobId={}", jobId);
         PptJob job = findJob(jobId);
         try {
             agentRunner.start(job);
+            log.info("ppt_agent_start_completed: jobId={}, status={}", jobId, job.status());
         } catch (RuntimeException ex) {
+            log.error("ppt_agent_start_failed: jobId={}", jobId, ex);
             job.fail(ex.getMessage());
             events.record(job, PptJobEvent.of(PptJobEventType.JOB_FAILED, "agent start failed",
                     Map.of("error", ex.getMessage())));
@@ -59,12 +66,17 @@ public class PptWorkflowAsyncRunner {
      */
     @Async
     public void resumeAgent(UUID jobId) {
+        log.info("ppt_agent_resume_async: jobId={}", jobId);
         PptJob job = findJob(jobId);
         try {
             PptConfirmation confirmation = job.confirmation()
                     .orElseThrow(() -> new PptJobStateException("job has no confirmation to resume"));
+            log.info("ppt_agent_resume_running: jobId={}, confirmationId={}",
+                    jobId, confirmation.confirmationId());
             agentRunner.resume(job, confirmation);
+            log.info("ppt_agent_resume_completed: jobId={}, status={}", jobId, job.status());
         } catch (RuntimeException ex) {
+            log.error("ppt_agent_resume_failed: jobId={}", jobId, ex);
             job.fail(ex.getMessage());
             events.record(job, PptJobEvent.of(PptJobEventType.JOB_FAILED, "agent resume failed",
                     Map.of("error", ex.getMessage())));

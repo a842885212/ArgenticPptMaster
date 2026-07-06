@@ -67,9 +67,10 @@ public class PptJobController {
             @RequestPart("files") List<MultipartFile> files,
             @RequestParam(required = false) String projectName,
             @RequestParam(defaultValue = "ppt169") String format,
-            @RequestParam(required = false) String instruction) {
+            @RequestParam(required = false) String instruction,
+            @RequestParam(defaultValue = "basic") String workflowMode) {
         return ResponseEntity.status(HttpStatus.ACCEPTED)
-                .body(PptJobResponse.from(workflowService.createJob(files, projectName, format, instruction)));
+                .body(PptJobResponse.from(workflowService.createJob(files, projectName, format, instruction, workflowMode)));
     }
 
     /**

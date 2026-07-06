@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import domi.argenticpptmaster.domain.PptJob;
 import domi.argenticpptmaster.domain.PptJobStatus;
+import domi.argenticpptmaster.domain.PptWorkflowMode;
 import domi.argenticpptmaster.exception.PptJobStateException;
 import domi.argenticpptmaster.agent.AgentScopeWorkflowAgent;
 import domi.argenticpptmaster.agent.AgentScopeWorkflowAgentFactory;
@@ -97,13 +98,35 @@ class PptWorkflowServiceTests {
                 java.util.List.of(source),
                 "demo",
                 "ppt169",
-                "make a concise business deck");
+                "make a concise business deck",
+                "basic");
 
         assertThat(job.projectName()).isEqualTo("demo");
         assertThat(job.format()).isEqualTo("ppt169");
         assertThat(job.sourceFiles()).hasSize(1);
         assertThat(Files.exists(job.sourceFiles().get(0).storedPath())).isTrue();
         assertThat(job.status()).isIn(PptJobStatus.ACCEPTED, PptJobStatus.PREPARING, PptJobStatus.WAITING_CONFIRMATION);
+    }
+
+    /**
+     * 验证创建任务时传入 image-enhanced 工作流模式，任务对象会正确记录该模式。
+     */
+    @Test
+    void createsJobWithImageEnhancedMode() {
+        MockMultipartFile source = new MockMultipartFile(
+                "files",
+                "source.md",
+                MediaType.TEXT_MARKDOWN_VALUE,
+                "# Title".getBytes());
+
+        PptJob job = workflowService.createJob(
+                java.util.List.of(source),
+                "demo",
+                "ppt169",
+                "make a deck with ai images",
+                "image-enhanced");
+
+        assertThat(job.workflowMode()).isEqualTo(PptWorkflowMode.IMAGE_ENHANCED);
     }
 
     /**
@@ -118,7 +141,7 @@ class PptWorkflowServiceTests {
                 MediaType.APPLICATION_OCTET_STREAM_VALUE,
                 "bad".getBytes());
 
-        assertThatThrownBy(() -> workflowService.createJob(java.util.List.of(source), "demo", "ppt169", null))
+        assertThatThrownBy(() -> workflowService.createJob(java.util.List.of(source), "demo", "ppt169", null, null))
                 .isInstanceOf(PptJobStateException.class)
                 .hasMessage("unsupported source file extension: exe");
     }
@@ -135,7 +158,7 @@ class PptWorkflowServiceTests {
                 MediaType.TEXT_MARKDOWN_VALUE,
                 "# Title".getBytes());
 
-        assertThatThrownBy(() -> workflowService.createJob(java.util.List.of(source), "demo", "../bad", null))
+        assertThatThrownBy(() -> workflowService.createJob(java.util.List.of(source), "demo", "../bad", null, null))
                 .isInstanceOf(PptJobStateException.class)
                 .hasMessage("unsupported canvas format: ../bad");
     }

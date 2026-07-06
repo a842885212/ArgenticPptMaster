@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import domi.argenticpptmaster.config.AgentScopeProperties;
 import domi.argenticpptmaster.config.PptMasterProperties;
 import domi.argenticpptmaster.domain.PptJob;
+import domi.argenticpptmaster.domain.PptWorkflowMode;
 import domi.argenticpptmaster.infra.PptMasterCommandExecutor;
 import domi.argenticpptmaster.service.PptJobEventPublisher;
 import domi.argenticpptmaster.service.PptWorkflowEvents;
@@ -77,6 +78,72 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
     }
 
     /**
+     * 验证 {@code writeProjectTextFile} 允许写入 images/image_prompts.json。
+     */
+    @Test
+    void writeProjectTextFileAllowsImagePromptsManifest() throws IOException {
+        TestContext context = createContext();
+        String manifest = """
+                {"items": [{"filename": "cover.png", "prompt": "a cover", "aspect_ratio": "16:9", "status": "Pending"}]}
+                """;
+
+        Map<String, Object> writeResult = context.tools.writeProjectTextFile(
+                "images/image_prompts.json",
+                manifest,
+                context.runtime);
+
+        assertThat(writeResult).containsEntry("relativePath", "images/image_prompts.json");
+        assertThat(Files.readString(context.projectPath.resolve("images/image_prompts.json"))).isEqualTo(manifest);
+    }
+
+    /**
+     * 验证 {@code generateProjectImages} 在 manifest 存在时调用 image_gen.py --manifest。
+     */
+    @Test
+    void generateProjectImagesDelegatesToImageGenScript() throws IOException {
+        TestContext context = createContext();
+        Files.createDirectories(context.projectPath.resolve("images"));
+        Files.writeString(context.projectPath.resolve("images/image_prompts.json"), """
+                {"items": [{"filename": "cover.png", "prompt": "a cover", "aspect_ratio": "16:9", "status": "Pending"}]}
+                """);
+
+        context.tools.generateProjectImages(context.runtime);
+
+        assertThat(context.executor.calledScripts()).containsExactly("skills/ppt-master/scripts/image_gen.py");
+        assertThat(context.executor.argumentsFor("skills/ppt-master/scripts/image_gen.py"))
+                .containsExactly(
+                        "--manifest", context.projectPath.resolve("images/image_prompts.json").toString(),
+                        "--output", context.projectPath.resolve("images").toString());
+    }
+
+    /**
+     * 验证 {@code inspectImageManifestStatus} 返回 manifest 中各 item 的状态汇总。
+     */
+    @Test
+    void inspectImageManifestStatusSummarizesStatuses() throws IOException {
+        TestContext context = createContext();
+        Files.createDirectories(context.projectPath.resolve("images"));
+        Files.writeString(context.projectPath.resolve("images/image_prompts.json"), """
+                {
+                  "items": [
+                    {"filename": "cover.png", "prompt": "a cover", "aspect_ratio": "16:9", "status": "Generated"},
+                    {"filename": "diagram.png", "prompt": "a diagram", "aspect_ratio": "4:3", "status": "Failed", "last_error": "rate limit"}
+                  ]
+                }
+                """);
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> result = context.tools.inspectImageManifestStatus(context.runtime);
+
+        assertThat(result).containsEntry("exists", true);
+        @SuppressWarnings("unchecked")
+        Map<String, Object> summary = (Map<String, Object>) result.get("summary");
+        assertThat(summary).containsEntry("total", 2);
+        assertThat(summary).containsEntry("generated", 1);
+        assertThat(summary).containsEntry("failed", 1);
+    }
+
+    /**
      * 验证后处理工具方法（validateSvgOutput、splitSpeakerNotes、finalizeProjectSvg）
      * 正确委托到对应的 Python 脚本，且传入正确的项目路径和格式参数。
      */
@@ -126,7 +193,13 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
                 events);
         DefaultAgentScopeWorkflowAgentFactory.PptAgentTools tools = factory.new PptAgentTools();
 
-        PptJob job = new PptJob(UUID.randomUUID(), "demo", "ppt169", "make a deck", workspacePath.resolve("jobs/demo"));
+        PptJob job = new PptJob(
+                UUID.randomUUID(),
+                "demo",
+                "ppt169",
+                "make a deck",
+                PptWorkflowMode.BASIC,
+                workspacePath.resolve("jobs/demo"));
         job.prepareProject(projectPath);
         DefaultAgentScopeWorkflowAgentFactory.PptAgentToolRuntime runtime =
                 new DefaultAgentScopeWorkflowAgentFactory.PptAgentToolRuntime(job, properties, executor, events);

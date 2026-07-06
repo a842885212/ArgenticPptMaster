@@ -28,6 +28,7 @@ public class PptJob {
     private final String projectName;
     private final String format;
     private final String instruction;
+    private final PptWorkflowMode workflowMode;
     private final Path workspacePath;
     private final Instant createdAt;
     private final List<PptSourceFile> sourceFiles = new ArrayList<>();
@@ -48,13 +49,15 @@ public class PptJob {
      * @param projectName   项目名称
      * @param format        画布格式（如 ppt169、wechat 等）
      * @param instruction   用户提供的生成指令
+     * @param workflowMode  工作流模式
      * @param workspacePath 任务工作区路径
      */
-    public PptJob(UUID id, String projectName, String format, String instruction, Path workspacePath) {
+    public PptJob(UUID id, String projectName, String format, String instruction, PptWorkflowMode workflowMode, Path workspacePath) {
         this.id = id;
         this.projectName = projectName;
         this.format = format;
         this.instruction = instruction;
+        this.workflowMode = workflowMode == null ? PptWorkflowMode.BASIC : workflowMode;
         this.workspacePath = workspacePath;
         this.createdAt = Instant.now();
         this.updatedAt = createdAt;
@@ -75,6 +78,10 @@ public class PptJob {
 
     public synchronized String instruction() {
         return instruction;
+    }
+
+    public synchronized PptWorkflowMode workflowMode() {
+        return workflowMode;
     }
 
     public synchronized Path workspacePath() {

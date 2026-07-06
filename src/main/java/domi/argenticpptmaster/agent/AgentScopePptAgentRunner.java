@@ -5,6 +5,7 @@ import domi.argenticpptmaster.config.PptMasterProperties;
 import domi.argenticpptmaster.domain.PptConfirmation;
 import domi.argenticpptmaster.domain.PptJob;
 import domi.argenticpptmaster.domain.PptJobEvent;
+import domi.argenticpptmaster.domain.PptWorkflowMode;
 import domi.argenticpptmaster.domain.PptJobEventType;
 import domi.argenticpptmaster.service.PptWorkflowEvents;
 import io.agentscope.core.agent.RuntimeContext;
@@ -595,23 +596,37 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
      * @return 初始指令文本
      */
     private String buildInitialInstruction(PptJob job) {
+        String workflowSteps = job.workflowMode() == PptWorkflowMode.IMAGE_ENHANCED
+                ? """
+                3. 在写 design_spec.md、spec_lock.md 之前，必须调用 request_plan_confirmation 请求人工确认；确认说明中需告知用户本任务将启用文生图。
+                4. 用户确认后，先产出 design_spec.md 与 spec_lock.md。
+                5. 如存在 AI 图片需求，写 images/image_prompts.json，然后调用 generate_project_images 生成图片，并用 inspect_image_manifest_status 确认全部图片已生成。
+                6. 图片就绪后，再写 notes/total.md 与 svg_output/*.svg；svg_output 引用图片时必须使用真实存在于 images/ 的文件。
+                7. 生成 svg_output 后，调用 validate_svg_output，再 finalize 和导出。
+                """
+                : """
+                3. 在写 design_spec.md、spec_lock.md、notes/total.md、svg_output/*.svg 之前，必须调用 request_plan_confirmation 请求人工确认。
+                4. 用户确认后，再继续生成、校验、finalize 和导出。
+                """;
         return """
                 请为当前 PPT 任务建立 ppt-master 工作区，并按 markdown 路线推进：
                 1. 导入上传材料并确认 sources/ 与 analysis/ 的真实内容。
                 2. 基于 markdown 材料提出页数、结构、风险与执行计划。
-                3. 在写 design_spec.md、spec_lock.md、notes/total.md、svg_output/*.svg 之前，必须调用 request_plan_confirmation 请求人工确认。
-                4. 用户确认后，再继续生成、校验、finalize 和导出。
-                
+                %s
+
                 任务上下文：
                 - jobId: %s
                 - projectName: %s
                 - format: %s
+                - workflowMode: %s
                 - sourceCount: %d
                 - instruction: %s
                 """.formatted(
+                workflowSteps,
                 job.id(),
                 job.projectName(),
                 job.format(),
+                job.workflowMode().name(),
                 job.sourceFiles().size(),
                 job.instruction() == null ? "" : job.instruction());
     }

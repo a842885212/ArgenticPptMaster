@@ -105,7 +105,7 @@ class PptJobControllerCorsTests {
      */
     @Test
     void allowsSseSubscriptionForLoopbackOrigin() throws Exception {
-        PptJob job = new PptJob(JOB_ID, "demo", "ppt169", "", tempDir.resolve("workspace"));
+        PptJob job = new PptJob(JOB_ID, "demo", "ppt169", "", domi.argenticpptmaster.domain.PptWorkflowMode.BASIC, tempDir.resolve("workspace"));
         SseEmitter emitter = new SseEmitter(0L);
         emitter.complete();
         given(workflowService.getJob(JOB_ID)).willReturn(job);

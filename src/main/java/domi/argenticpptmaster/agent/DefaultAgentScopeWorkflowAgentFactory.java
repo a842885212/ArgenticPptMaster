@@ -5,6 +5,7 @@ import domi.argenticpptmaster.config.PptMasterProperties;
 import domi.argenticpptmaster.domain.PptJob;
 import domi.argenticpptmaster.domain.PptJobEvent;
 import domi.argenticpptmaster.domain.PptJobEventType;
+import domi.argenticpptmaster.domain.PptWorkflowMode;
 import domi.argenticpptmaster.infra.PptMasterCommandExecutor;
 import domi.argenticpptmaster.service.PptWorkflowEvents;
 import io.agentscope.core.ReActAgent;
@@ -61,6 +62,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
     private static final String TOTAL_MD_SPLIT_SCRIPT = "skills/ppt-master/scripts/total_md_split.py";
     private static final String SVG_QUALITY_CHECKER_SCRIPT = "skills/ppt-master/scripts/svg_quality_checker.py";
     private static final String EXPORT_SCRIPT = "skills/ppt-master/scripts/svg_to_pptx.py";
+    private static final String IMAGE_GEN_SCRIPT = "skills/ppt-master/scripts/image_gen.py";
     private static final String APPROVAL_TOOL_NAME = "request_plan_confirmation";
     private static final int DEFAULT_FILE_PREVIEW_CHARS = 8000;
 
@@ -101,8 +103,8 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
 
         ReActAgent agent = ReActAgent.builder()
                 .name("ppt_master_orchestrator")
-                .description("Orchestrates the markdown-first ppt-master workflow: import, planning, authoring, validation, and export.")
-                .sysPrompt(buildSystemPrompt())
+                .description("Orchestrates the ppt-master workflow: markdown-first route with optional image-enhanced generation.")
+                .sysPrompt(buildSystemPrompt(job.workflowMode()))
                 .model(buildModel())
                 .toolkit(toolkit)
                 .stateStore(new JsonFileAgentStateStore(agentScopeProperties.sessionStorePath()))
@@ -137,6 +139,9 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
         }
         if (!Files.exists(pptMasterProperties.repoPath().resolve(SVG_QUALITY_CHECKER_SCRIPT))) {
             throw new IllegalStateException("ppt-master svg_quality_checker not found under " + pptMasterProperties.repoPath());
+        }
+        if (!Files.exists(pptMasterProperties.repoPath().resolve(IMAGE_GEN_SCRIPT))) {
+            throw new IllegalStateException("ppt-master image_gen not found under " + pptMasterProperties.repoPath());
         }
         if (agentScopeProperties.modelName() == null || agentScopeProperties.modelName().isBlank()) {
             throw new IllegalStateException("agentscope.model-name must be configured");
@@ -226,30 +231,124 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
     /**
      * 构建系统提示词（System Prompt）。
      * <p>
-     * 生成 AI 代理的系统提示词，定义代理的角色为 ppt-master 编排代理，
-     * 指定 markdown 路线的工作流程和约束规则，包括任务执行顺序、
-     * 用户确认要求、文件产出规范等。
+     * 采用“上游规则 + 本地补丁”的分层结构：
      * </p>
+     * <ul>
+     *   <li>上游规则层 —— 摘取自 ppt-master SKILL.md / image-generator.md 的稳定流程规则</li>
+     *   <li>本地流程补丁 —— 根据 {@link PptWorkflowMode} 选择基础或进阶流程的具体步骤</li>
+     *   <li>本地约束补丁 —— 当前服务暴露的工具、写路径、确认机制与失败规则</li>
+     * </ul>
      *
+     * @param workflowMode 当前任务的工作流模式
      * @return 系统提示词文本
      */
-    private String buildSystemPrompt() {
+    private String buildSystemPrompt(PptWorkflowMode workflowMode) {
+        return String.join("\n\n",
+                buildUpstreamCoreRulesPrompt(),
+                workflowMode == PptWorkflowMode.IMAGE_ENHANCED
+                        ? buildImageEnhancedWorkflowPatchPrompt()
+                        : buildBasicWorkflowPatchPrompt(),
+                buildLocalToolingConstraintsPrompt());
+    }
+
+    /**
+     * 上游核心规则摘要。
+     * <p>
+     * 复用 ppt-master 主流程的不可变规则：阶段顺序、人工确认、串行执行、
+     * 不跨阶段预执行、SVG 必须手写等。
+     * </p>
+     *
+     * @return 上游规则文本
+     */
+    private String buildUpstreamCoreRulesPrompt() {
         return """
-                你是 ppt-master 的编排代理，当前只负责 markdown 路线：把上传文件转成 markdown 上下文，再产出 design_spec/spec_lock/notes/svg_output，最后完成后处理和导出。
-                
-                严格遵守：
-                1. 先调用 describe_job 了解任务，再调用 init_ppt_project，然后调用 import_job_sources。
-                2. 导入完成后，优先调用 collect_source_markdown、inspect_project_info、list_project_files、read_project_text_file 了解 sources/ 与 analysis/ 的真实内容。
-                3. 在写 design_spec.md、spec_lock.md、notes/total.md、svg_output/*.svg 之前，必须调用 request_plan_confirmation，请求用户确认页数、结构、风险和关键假设。
-                4. 用户确认恢复后，按 markdown 路线产出这些文件：
+                你是 ArgenticPptMaster 的 ppt-master 编排代理。
+
+                上游核心规则（来自 ppt-master）：
+                1. 主流程按严格顺序执行：Source → Strategist → [Image_Generator] → Executor → Post-processing → Export。
+                2. BLOCKING 阶段必须停下来等待用户明确回复；非 BLOCKING 阶段在前提满足后可连续执行。
+                3. 不要跨阶段预执行：Strategist 阶段不要写 SVG，Executor 阶段不要重新决定设计。
+                4. 每页 SVG 必须手写，不能通过脚本批量生成。
+                5. Executor 生成每页 SVG 前必须重新读取 spec_lock.md，颜色 / 字体 / 图标 / 图片均来自该文件。
+                6. 所有图片最终必须落在 project/images/<filename>；image_prompts.json 是图片阶段的共享契约。
+                7. 如果缺少前置条件，清楚说明缺了什么，不要伪造“已完成”。
+                """;
+    }
+
+    /**
+     * 基础流程本地补丁。
+     * <p>
+     * 对应 {@link PptWorkflowMode#BASIC}：不启用文生图，严格走 markdown-first 路线。
+     * </p>
+     *
+     * @return 基础流程补丁文本
+     */
+    private String buildBasicWorkflowPatchPrompt() {
+        return """
+                当前任务模式：BASIC（基础流程）。
+
+                执行顺序：
+                1. 调用 describe_job 了解任务，再调用 init_ppt_project，然后调用 import_job_sources。
+                2. 导入完成后，调用 collect_source_markdown、inspect_project_info、list_project_files、read_project_text_file 了解 sources/ 与 analysis/ 的真实内容。
+                3. 在写 design_spec.md、spec_lock.md、notes/total.md、svg_output/*.svg 之前，必须调用 request_plan_confirmation 请求用户确认。
+                4. 用户确认后，产出：
                    - design_spec.md
                    - spec_lock.md
                    - notes/total.md
                    - svg_output/*.svg
-                5. 生成 svg_output 后，先调用 validate_svg_output，再调用 split_speaker_notes、finalize_project_svg，最后调用 export_project_pptx。
-                6. 如果缺少导出前置条件，要清楚说明缺了什么，不要伪造“已完成”。
-                7. 只基于工具返回的信息作答，不要假设本地文件内容。
-                8. 后续可能支持 pptx 模板路线，但当前轮次不要走 template_fill_pptx。
+                5. 生成 svg_output 后，调用 validate_svg_output，再调用 split_speaker_notes、finalize_project_svg，最后调用 export_project_pptx。
+                6. 当前模式不生成 images/image_prompts.json，也不调用 generate_project_images。
+                """;
+    }
+
+    /**
+     * 文生图进阶流程本地补丁。
+     * <p>
+     * 对应 {@link PptWorkflowMode#IMAGE_ENHANCED}：在 Strategist 与 Executor 之间插入图片阶段。
+     * </p>
+     *
+     * @return 进阶流程补丁文本
+     */
+    private String buildImageEnhancedWorkflowPatchPrompt() {
+        return """
+                当前任务模式：IMAGE_ENHANCED（文生图进阶流程）。
+
+                执行顺序：
+                1. 调用 describe_job 了解任务，再调用 init_ppt_project，然后调用 import_job_sources。
+                2. 导入完成后，调用 collect_source_markdown、inspect_project_info、list_project_files、read_project_text_file 了解 sources/ 与 analysis/ 的真实内容。
+                3. 在写 design_spec.md、spec_lock.md 之前，必须调用 request_plan_confirmation 请求用户确认；确认载荷中需说明将启用文生图。
+                4. 用户确认后，先产出 design_spec.md 与 spec_lock.md。
+                5. 如果 design_spec 中声明了 AI 图片需求，必须写 images/image_prompts.json：
+                   - 每个 item 必须包含 filename、prompt、aspect_ratio、status（初始为 Pending）
+                   - 可包含 image_size、model、alt_text、purpose 等可选字段
+                6. 调用 generate_project_images 执行 image_gen.py --manifest 生成图片。
+                7. 调用 inspect_image_manifest_status 确认所有 item 状态均为 Generated；如有 Failed 则重新生成或中止，不允许伪造图片。
+                8. 图片就绪后，再写 notes/total.md 与 svg_output/*.svg；svg_output 中引用图片时必须使用 images/<filename> 且文件真实存在。
+                9. 生成 svg_output 后，调用 validate_svg_output，再调用 split_speaker_notes、finalize_project_svg，最后调用 export_project_pptx。
+
+                图片阶段约束：
+                - 第一版只支持 Path A：调用 generate_project_images（底层 image_gen.py --manifest）。
+                - 不支持自动切换到 host-native 或 manual；图片生成失败即中止并说明原因。
+                - 不允许在图片未生成的情况下继续 SVG 生成或导出。
+                """;
+    }
+
+    /**
+     * 本地工具与约束补丁。
+     * <p>
+     * 描述当前服务实际暴露的工具集合、可写路径、确认机制与失败策略。
+     * </p>
+     *
+     * @return 本地约束补丁文本
+     */
+    private String buildLocalToolingConstraintsPrompt() {
+        return """
+                本地工具约束：
+                - 可用工具：describe_job, init_ppt_project, import_job_sources, inspect_project_info, validate_project, list_project_files, collect_source_markdown, read_project_text_file, write_project_text_file, split_speaker_notes, validate_svg_output, finalize_project_svg, export_project_pptx, generate_project_images, inspect_image_manifest_status, request_plan_confirmation。
+                - 允许写入的路径：design_spec.md、spec_lock.md、notes/*、svg_output/*、analysis/*、images/*。
+                - 人工确认统一通过 request_plan_confirmation；只有该工具能暂停工作流等待用户回复。
+                - 不要假设本地文件内容；所有文件状态通过 list_project_files / read_project_text_file / inspect_image_manifest_status 确认。
+                - 不要走 template_fill_pptx 或 pptx 模板路线；当前服务只支持 markdown-first 路线。
                 """;
     }
 
@@ -457,6 +556,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
             result.put("projectRoot", projectPath.toString());
             result.put("sources", listRelativeFiles(projectPath, "sources"));
             result.put("analysis", listRelativeFiles(projectPath, "analysis"));
+            result.put("images", listRelativeFiles(projectPath, "images"));
             result.put("notes", listRelativeFiles(projectPath, "notes"));
             result.put("svgOutput", listRelativeFiles(projectPath, "svg_output"));
             result.put("svgFinal", listRelativeFiles(projectPath, "svg_final"));
@@ -695,6 +795,115 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
         }
 
         /**
+         * 执行图片生成（Path A）。
+         * <p>
+         * 当工作流模式为 {@link domi.argenticpptmaster.domain.PptWorkflowMode#IMAGE_ENHANCED}
+         * 且已生成 {@code images/image_prompts.json} 后，调用 ppt-master 的
+         * {@code image_gen.py --manifest} 命令批量生成图片。
+         * 脚本会根据当前进程环境或 {@code .env} 中的 {@code IMAGE_BACKEND} 配置选择后端。
+         * </p>
+         *
+         * @param runtime 工具运行时上下文
+         * @return 图片生成结果描述
+         */
+        @Tool(name = "generate_project_images", description = "Run ppt-master image_gen.py --manifest to generate AI images listed in images/image_prompts.json.")
+        public String generateProjectImages(PptAgentToolRuntime runtime) {
+            Path projectPath = runtime.job().projectPath()
+                    .orElseThrow(() -> new IllegalStateException("job project path is not prepared"));
+            Path manifestPath = projectPath.resolve("images/image_prompts.json");
+            if (!Files.isRegularFile(manifestPath)) {
+                throw new IllegalStateException("image prompts manifest not found: " + manifestPath);
+            }
+            runtime.events().record(runtime.job(), PptJobEvent.of(
+                    PptJobEventType.AGENT_MESSAGE,
+                    "generating ai images from manifest",
+                    Map.of("manifestPath", manifestPath.toString())));
+            PptMasterCommandExecutor.CommandResult result = runtime.executor().runPythonScript(
+                    IMAGE_GEN_SCRIPT,
+                    List.of(
+                            "--manifest", manifestPath.toString(),
+                            "--output", manifestPath.getParent().toString()));
+            if (!result.successful()) {
+                throw new IllegalStateException("image generation failed: " + result.output());
+            }
+            return result.output().isBlank() ? "image generation completed" : result.output();
+        }
+
+        /**
+         * 检查图片 manifest 的当前状态。
+         * <p>
+         * 读取 {@code images/image_prompts.json}，返回每个 item 的 filename、status、
+         * 以及汇总计数（Pending / Generated / Failed / Needs-Manual）。
+         * 用于在进阶流程中确认图片阶段是否可以进入下一步 SVG 生成。
+         * </p>
+         *
+         * @param runtime 工具运行时上下文
+         * @return manifest 状态汇总
+         */
+        @Tool(name = "inspect_image_manifest_status", description = "Read images/image_prompts.json and return item statuses plus summary counts.", readOnly = true)
+        public Map<String, Object> inspectImageManifestStatus(PptAgentToolRuntime runtime) {
+            Path projectPath = runtime.job().projectPath()
+                    .orElseThrow(() -> new IllegalStateException("job project path is not prepared"));
+            Path manifestPath = projectPath.resolve("images/image_prompts.json");
+            if (!Files.isRegularFile(manifestPath)) {
+                return Map.of(
+                        "manifestPath", manifestPath.toString(),
+                        "exists", false,
+                        "summary", Map.of("total", 0, "pending", 0, "generated", 0, "failed", 0, "needsManual", 0),
+                        "items", List.of());
+            }
+            try {
+                String json = Files.readString(manifestPath, StandardCharsets.UTF_8);
+                com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+                java.util.Map<String, Object> manifest = mapper.readValue(json, new com.fasterxml.jackson.core.type.TypeReference<>() {
+                });
+                Object itemsObj = manifest.get("items");
+                List<?> items = itemsObj instanceof List<?> list ? list : List.of();
+                int pending = 0;
+                int generated = 0;
+                int failed = 0;
+                int needsManual = 0;
+                List<Map<String, Object>> itemSummaries = new ArrayList<>();
+                for (Object itemObj : items) {
+                    if (!(itemObj instanceof Map<?, ?> raw)) {
+                        continue;
+                    }
+                    Map<String, Object> item = raw.entrySet().stream()
+                            .filter(e -> e.getKey() instanceof String)
+                            .collect(LinkedHashMap::new,
+                                    (m, e) -> m.put((String) e.getKey(), e.getValue()),
+                                    Map::putAll);
+                    String status = item.getOrDefault("status", "Unknown").toString();
+                    switch (status) {
+                        case "Pending" -> pending++;
+                        case "Generated" -> generated++;
+                        case "Failed" -> failed++;
+                        case "Needs-Manual" -> needsManual++;
+                        default -> {
+                            // no-op
+                        }
+                    }
+                    itemSummaries.add(Map.of(
+                            "filename", item.getOrDefault("filename", ""),
+                            "status", status,
+                            "lastError", item.getOrDefault("last_error", "")));
+                }
+                return Map.of(
+                        "manifestPath", manifestPath.toString(),
+                        "exists", true,
+                        "summary", Map.of(
+                                "total", items.size(),
+                                "pending", pending,
+                                "generated", generated,
+                                "failed", failed,
+                                "needsManual", needsManual),
+                        "items", itemSummaries);
+            } catch (IOException ex) {
+                throw new IllegalStateException("failed to read image manifest: " + manifestPath, ex);
+            }
+        }
+
+        /**
          * 列出项目中指定目录下的所有相对文件路径。
          * <p>
          * 递归遍历指定子目录，收集所有文件的路径（相对于项目根目录）。
@@ -747,7 +956,8 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                     || normalized.equals("spec_lock.md")
                     || normalized.startsWith("notes/")
                     || normalized.startsWith("svg_output/")
-                    || normalized.startsWith("analysis/");
+                    || normalized.startsWith("analysis/")
+                    || normalized.startsWith("images/");
             if (!allowed) {
                 throw new IllegalStateException("writing this project path is not allowed: " + relativePath);
             }

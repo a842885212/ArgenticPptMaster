@@ -74,6 +74,8 @@ language: java
 6. 用户提交确认后，服务把确认结果封装为 `ToolResultMessage` 回喂给同一 AgentScope session，agent 从中断点继续执行；若再次触发人工确认，会生成新的 `confirmationId`。
 7. agent 在确认后可写入 `design_spec.md`、`spec_lock.md`、`notes/total.md`、`svg_output/*.svg`，再执行 `validate_svg_output`、`split_speaker_notes`、`finalize_project_svg` 和 `export_project_pptx`；任务完成时设置产物并通过下载接口获取 PPTX。若 agent 正常结束但未产出导出物，任务会失败并保留最终总结信息。
 
+补充说明：`request_plan_confirmation` 作为外部工具时，AgentScope 可能先发出一条 `tool_result`，其 `state=RUNNING`。这不是“用户已确认”，而是“工具已挂起并等待人工确认”；服务端会立即把任务切换到 `WAITING_CONFIRMATION`，阻止 agent 在未确认时继续执行。
+
 ## 服务调用
 
 | 服务 | 方法 | 说明 |

@@ -7,6 +7,7 @@ import domi.argenticpptmaster.domain.PptJobEvent;
 import domi.argenticpptmaster.domain.PptJobEventType;
 import domi.argenticpptmaster.domain.PptJobStatus;
 import domi.argenticpptmaster.domain.PptSourceFile;
+import domi.argenticpptmaster.domain.PptWorkflowMode;
 import domi.argenticpptmaster.exception.PptJobNotFoundException;
 import domi.argenticpptmaster.exception.PptJobStateException;
 import domi.argenticpptmaster.exception.PptStorageException;
@@ -97,24 +98,25 @@ public class PptWorkflowService {
      * @throws PptJobStateException 如果文件或格式校验不通过
      * @throws PptStorageException  如果文件存储失败
      */
-    public PptJob createJob(List<MultipartFile> files, String projectName, String format, String instruction) {
+    public PptJob createJob(List<MultipartFile> files, String projectName, String format, String instruction, String workflowMode) {
         if (files == null || files.isEmpty() || files.stream().allMatch(MultipartFile::isEmpty)) {
             throw new PptJobStateException("at least one source file is required");
         }
         UUID jobId = UUID.randomUUID();
         String normalizedProjectName = normalizeProjectName(projectName);
         String normalizedFormat = normalizeFormat(format);
+        PptWorkflowMode mode = PptWorkflowMode.from(workflowMode);
         Path jobWorkspace = properties.workspacePath().resolve("jobs").resolve(jobId.toString()).toAbsolutePath().normalize();
-        PptJob job = new PptJob(jobId, normalizedProjectName, normalizedFormat, instruction, jobWorkspace);
-        log.info("ppt_job_create_started: jobId={}, projectName={}, format={}, fileCount={}",
-                jobId, normalizedProjectName, normalizedFormat, files.size());
+        PptJob job = new PptJob(jobId, normalizedProjectName, normalizedFormat, instruction, mode, jobWorkspace);
+        log.info("ppt_job_create_started: jobId={}, projectName={}, format={}, workflowMode={}, fileCount={}",
+                jobId, normalizedProjectName, normalizedFormat, mode, files.size());
         storeSources(job, files);
         repository.save(job);
         events.record(job, PptJobEvent.of(PptJobEventType.JOB_ACCEPTED, "job accepted",
                 Map.of("jobId", job.id().toString())));
         asyncRunner.startAgent(job.id());
-        log.info("ppt_job_create_accepted: jobId={}, projectName={}, format={}, sourceCount={}",
-                jobId, normalizedProjectName, normalizedFormat, job.sourceFiles().size());
+        log.info("ppt_job_create_accepted: jobId={}, projectName={}, format={}, workflowMode={}, sourceCount={}",
+                jobId, normalizedProjectName, normalizedFormat, mode, job.sourceFiles().size());
         return job;
     }
 

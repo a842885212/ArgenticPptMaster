@@ -8,6 +8,7 @@ import domi.argenticpptmaster.domain.PptConfirmation;
 import domi.argenticpptmaster.domain.PptJob;
 import domi.argenticpptmaster.domain.PptJobStatus;
 import domi.argenticpptmaster.domain.PptSourceFile;
+import domi.argenticpptmaster.domain.PptWorkflowMode;
 import domi.argenticpptmaster.service.PptJobEventPublisher;
 import domi.argenticpptmaster.service.PptWorkflowEvents;
 import io.agentscope.core.agent.RuntimeContext;
@@ -290,6 +291,68 @@ class AgentScopePptAgentRunnerTests {
         assertThat(job.currentConfirmationId()).isEmpty();
     }
 
+    /**
+     * 验证基础流程的初始指令中不包含文生图相关步骤。
+     */
+    @Test
+    void basicModeInitialInstructionDoesNotMentionImageGeneration() {
+        RecordingAgentFactory factory = new RecordingAgentFactory();
+        factory.enqueue((messages, runtimeContext) -> Flux.just(
+                new AgentStartEvent("reply-1", runtimeContext.getSessionId(), "test-agent"),
+                new RequireExternalExecutionEvent(
+                        "reply-1",
+                        List.of(new ToolUseBlock(
+                                "call-1",
+                                "request_plan_confirmation",
+                                Map.of("planSummary", "basic plan", "pendingSteps", "confirm"))))));
+
+        AgentScopePptAgentRunner runner = new AgentScopePptAgentRunner(
+                pptMasterProperties(),
+                agentScopeProperties(),
+                factory,
+                new PptWorkflowEvents(new PptJobEventPublisher()));
+        PptJob job = sampleJob();
+
+        runner.start(job);
+
+        Msg initialMessage = factory.messages().get(0).get(0);
+        String text = initialMessage.getTextContent();
+        assertThat(text).contains("workflowMode: BASIC");
+        assertThat(text).doesNotContain("generate_project_images");
+        assertThat(text).doesNotContain("images/image_prompts.json");
+    }
+
+    /**
+     * 验证文生图进阶流程的初始指令中包含 workflowMode 与图片阶段步骤。
+     */
+    @Test
+    void imageEnhancedModeInitialInstructionMentionsImageWorkflow() {
+        RecordingAgentFactory factory = new RecordingAgentFactory();
+        factory.enqueue((messages, runtimeContext) -> Flux.just(
+                new AgentStartEvent("reply-1", runtimeContext.getSessionId(), "test-agent"),
+                new RequireExternalExecutionEvent(
+                        "reply-1",
+                        List.of(new ToolUseBlock(
+                                "call-1",
+                                "request_plan_confirmation",
+                                Map.of("planSummary", "image enhanced plan", "pendingSteps", "confirm"))))));
+
+        AgentScopePptAgentRunner runner = new AgentScopePptAgentRunner(
+                pptMasterProperties(),
+                agentScopeProperties(),
+                factory,
+                new PptWorkflowEvents(new PptJobEventPublisher()));
+        PptJob job = newImageEnhancedJob();
+
+        runner.start(job);
+
+        Msg initialMessage = factory.messages().get(0).get(0);
+        String text = initialMessage.getTextContent();
+        assertThat(text).contains("workflowMode: IMAGE_ENHANCED");
+        assertThat(text).contains("generate_project_images");
+        assertThat(text).contains("images/image_prompts.json");
+    }
+
     private static PptMasterProperties pptMasterProperties() {
         return new PptMasterProperties(
                 Path.of("/home/zhang/PycharmProjects/ppt-master"),
@@ -310,7 +373,25 @@ class AgentScopePptAgentRunnerTests {
     }
 
     private static PptJob sampleJob() {
-        PptJob job = new PptJob(UUID.randomUUID(), "demo", "ppt169", "make a deck", Path.of("var/ppt-master/jobs/demo"));
+        PptJob job = new PptJob(
+                UUID.randomUUID(),
+                "demo",
+                "ppt169",
+                "make a deck",
+                PptWorkflowMode.BASIC,
+                Path.of("var/ppt-master/jobs/demo"));
+        job.addSource(new PptSourceFile("source.md", "text/markdown", 12L, Path.of("var/ppt-master/jobs/demo/uploads/source.md")));
+        return job;
+    }
+
+    private static PptJob newImageEnhancedJob() {
+        PptJob job = new PptJob(
+                UUID.randomUUID(),
+                "demo",
+                "ppt169",
+                "make a deck with ai images",
+                PptWorkflowMode.IMAGE_ENHANCED,
+                Path.of("var/ppt-master/jobs/demo"));
         job.addSource(new PptSourceFile("source.md", "text/markdown", 12L, Path.of("var/ppt-master/jobs/demo/uploads/source.md")));
         return job;
     }

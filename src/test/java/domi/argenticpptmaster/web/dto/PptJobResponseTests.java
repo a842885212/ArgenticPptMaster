@@ -3,6 +3,7 @@ package domi.argenticpptmaster.web.dto;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import domi.argenticpptmaster.domain.PptJob;
+import domi.argenticpptmaster.domain.PptWorkflowMode;
 import java.nio.file.Path;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
@@ -16,6 +17,7 @@ class PptJobResponseTests {
                 "demo",
                 "ppt169",
                 "make a deck",
+                PptWorkflowMode.BASIC,
                 Path.of("var/ppt-master/jobs/demo"));
 
         job.complete(Path.of("var/ppt-master/jobs/demo/exports/demo.pptx"));

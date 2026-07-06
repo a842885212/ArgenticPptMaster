@@ -11,6 +11,8 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.context.request.async.AsyncRequestNotUsableException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 /**
  * 全局异常处理器。
@@ -33,6 +35,12 @@ public class GlobalExceptionHandler {
      */
     @ExceptionHandler(PptJobNotFoundException.class)
     ResponseEntity<ApiErrorResponse> handleNotFound(PptJobNotFoundException ex) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(ApiErrorResponse.of(404, "Not Found", ex.getMessage()));
+    }
+
+    @ExceptionHandler(NoResourceFoundException.class)
+    ResponseEntity<ApiErrorResponse> handleNoResourceFound(NoResourceFoundException ex) {
         return ResponseEntity.status(HttpStatus.NOT_FOUND)
                 .body(ApiErrorResponse.of(404, "Not Found", ex.getMessage()));
     }
@@ -77,6 +85,11 @@ public class GlobalExceptionHandler {
         log.error("ppt_storage_failed", ex);
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                 .body(ApiErrorResponse.of(500, "Internal Server Error", ex.getMessage()));
+    }
+
+    @ExceptionHandler(AsyncRequestNotUsableException.class)
+    void handleAsyncRequestNotUsable(AsyncRequestNotUsableException ex) {
+        log.debug("client_disconnected: {}", ex.getMessage());
     }
 
     /**

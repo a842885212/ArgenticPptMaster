@@ -12,6 +12,7 @@ import java.util.concurrent.ConcurrentMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
+import org.springframework.web.context.request.async.AsyncRequestNotUsableException;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 /**
@@ -65,7 +66,11 @@ public class PptJobEventPublisher {
             remove(jobId, emitter);
         });
         emitter.onError(ex -> {
-            log.warn("ppt_event_emitter_error: jobId={}", jobId, ex);
+            if (isClientDisconnect(ex)) {
+                log.debug("ppt_event_emitter_disconnected: jobId={}, message={}", jobId, ex.getMessage());
+            } else {
+                log.warn("ppt_event_emitter_error: jobId={}", jobId, ex);
+            }
             remove(jobId, emitter);
         });
 
@@ -111,9 +116,9 @@ public class PptJobEventPublisher {
                         .name(event.type().name())
                         .data(event));
                 sent++;
-            } catch (IOException ex) {
-                log.warn("ppt_event_replay_send_failed: sent={}/{}", sent, events.size(), ex);
-                emitter.completeWithError(ex);
+            } catch (Exception ex) {
+                logSendFailure("ppt_event_replay_send_failed", ex, null, null, sent, events.size());
+                completeWithErrorQuietly(emitter, ex);
                 return;
             }
         }
@@ -141,9 +146,10 @@ public class PptJobEventPublisher {
                 emitter.send(SseEmitter.event()
                         .name(event.type().name())
                         .data(event));
-            } catch (IOException ex) {
-                log.warn("ppt_event_publish_send_failed: jobId={}, eventType={}", jobId, event.type(), ex);
+            } catch (Exception ex) {
+                logSendFailure("ppt_event_publish_send_failed", ex, jobId, event.type().name(), null, null);
                 remove(jobId, emitter);
+                completeWithErrorQuietly(emitter, ex);
             }
         }
     }
@@ -158,6 +164,62 @@ public class PptJobEventPublisher {
         Set<SseEmitter> jobEmitters = emitters.get(jobId);
         if (jobEmitters != null) {
             jobEmitters.remove(emitter);
+            if (jobEmitters.isEmpty()) {
+                emitters.remove(jobId, jobEmitters);
+            }
         }
+    }
+
+    private void completeWithErrorQuietly(SseEmitter emitter, Exception ex) {
+        try {
+            emitter.completeWithError(ex);
+        } catch (RuntimeException completionEx) {
+            if (!isClientDisconnect(completionEx)) {
+                log.debug("ppt_event_complete_with_error_failed: message={}", completionEx.getMessage(), completionEx);
+            }
+        }
+    }
+
+    private void logSendFailure(
+            String logKey,
+            Exception ex,
+            UUID jobId,
+            String eventType,
+            Integer sent,
+            Integer total) {
+        if (isClientDisconnect(ex)) {
+            if (jobId == null) {
+                log.debug("{}: sent={}/{}, message={}", logKey, sent, total, ex.getMessage());
+            } else {
+                log.debug("{}: jobId={}, eventType={}, message={}", logKey, jobId, eventType, ex.getMessage());
+            }
+            return;
+        }
+        if (jobId == null) {
+            log.warn("{}: sent={}/{}", logKey, sent, total, ex);
+        } else {
+            log.warn("{}: jobId={}, eventType={}", logKey, jobId, eventType, ex);
+        }
+    }
+
+    private boolean isClientDisconnect(Throwable ex) {
+        Throwable current = ex;
+        while (current != null) {
+            if (current instanceof AsyncRequestNotUsableException) {
+                return true;
+            }
+            String className = current.getClass().getName();
+            if (className.endsWith("ClientAbortException")) {
+                return true;
+            }
+            if (current instanceof IOException ioEx && ioEx.getMessage() != null) {
+                String message = ioEx.getMessage();
+                if (message.contains("Broken pipe") || message.contains("断开的管道")) {
+                    return true;
+                }
+            }
+            current = current.getCause();
+        }
+        return false;
     }
 }

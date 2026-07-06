@@ -287,10 +287,12 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
             return;
         }
         if (event instanceof RequireExternalExecutionEvent externalExecutionEvent) {
-            runState.waitingForExternalExecution = true;
             log.info("ppt_agent_runner_event_require_external_execution: jobId={}, replyId={}, toolCallCount={}",
                     job.id(), externalExecutionEvent.getReplyId(), externalExecutionEvent.getToolCalls().size());
-            markWaitingForConfirmation(job, externalExecutionEvent.getReplyId(), externalExecutionEvent.getToolCalls());
+            runState.waitingForExternalExecution = markWaitingForConfirmation(
+                    job,
+                    externalExecutionEvent.getReplyId(),
+                    externalExecutionEvent.getToolCalls());
             return;
         }
         if (event instanceof AgentResultEvent resultEvent) {
@@ -303,8 +305,10 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
                 log.info("ppt_agent_runner_event_result_suspended: jobId={}, toolCallCount={}",
                         job.id(), suspendedToolCalls.size());
                 if (!suspendedToolCalls.isEmpty()) {
-                    runState.waitingForExternalExecution = true;
-                    markWaitingForConfirmation(job, resultEvent.getResult().getId(), suspendedToolCalls);
+                    runState.waitingForExternalExecution = markWaitingForConfirmation(
+                            job,
+                            resultEvent.getResult().getId(),
+                            suspendedToolCalls);
                     return;
                 }
             }
@@ -331,12 +335,14 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
      * @param runState 代理运行状态
      */
     private void recoverWaitingConfirmationFromPersistedState(PptJob job, AgentRunState runState) {
+        if (job.exportPath().isPresent()) {
+            log.info("ppt_agent_runner_skip_waiting_confirmation_recovery: jobId={}, status={}, reason=export_artifact_present",
+                    job.id(), job.status());
+            return;
+        }
         loadPersistedPendingToolCalls(job).ifPresent(toolCalls -> {
             if (!toolCalls.isEmpty()) {
-                runState.waitingForExternalExecution = true;
-                log.info("ppt_agent_runner_recovered_waiting_confirmation: jobId={}, toolCallCount={}",
-                        job.id(), toolCalls.size());
-                markWaitingForConfirmation(job, job.id().toString(), toolCalls);
+                runState.waitingForExternalExecution = markWaitingForConfirmation(job, job.id().toString(), toolCalls);
             }
         });
     }
@@ -431,7 +437,14 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
      * @param replyId   当前回复 ID
      * @param toolCalls 挂起的工具调用列表
      */
-    private void markWaitingForConfirmation(PptJob job, String replyId, List<ToolUseBlock> toolCalls) {
+    private boolean markWaitingForConfirmation(PptJob job, String replyId, List<ToolUseBlock> toolCalls) {
+        if (job.exportPath().isPresent()) {
+            log.warn("ppt_agent_runner_ignore_waiting_confirmation_after_export: jobId={}, status={}, toolCallCount={}",
+                    job.id(), job.status(), toolCalls.size());
+            return false;
+        }
+        log.info("ppt_agent_runner_waiting_confirmation_marked: jobId={}, toolCallCount={}",
+                job.id(), toolCalls.size());
         String confirmationId = UUID.randomUUID().toString();
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("stage", "agentscope_external_execution");
@@ -454,8 +467,10 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
                 "waiting for user confirmation",
                 Map.of(
                         "confirmationId", confirmationId,
+                        "confirmationPayload", payload,
                         "replyId", replyId,
                         "toolCallCount", toolCalls.size())));
+        return true;
     }
 
     /**

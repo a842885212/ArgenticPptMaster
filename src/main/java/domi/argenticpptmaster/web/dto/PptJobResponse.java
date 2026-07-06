@@ -51,6 +51,7 @@ public record PptJobResponse(
      * @return 转换后的 PPT 任务响应 DTO
      */
     public static PptJobResponse from(PptJob job) {
+        boolean downloadReady = job.status() == PptJobStatus.COMPLETED && job.exportPath().isPresent();
         return new PptJobResponse(
                 job.id(),
                 job.projectName(),
@@ -59,8 +60,8 @@ public record PptJobResponse(
                 job.createdAt(),
                 job.updatedAt(),
                 job.sourceFiles().stream().map(SourceFileResponse::from).toList(),
-                job.exportPath().isPresent(),
-                job.exportPath().map(ignored -> "/api/ppt-jobs/" + job.id() + "/download").orElse(null),
+                downloadReady,
+                downloadReady ? "/api/ppt-jobs/" + job.id() + "/download" : null,
                 job.currentConfirmationId().orElse(null),
                 job.confirmationPayload(),
                 job.errorMessage().orElse(null),

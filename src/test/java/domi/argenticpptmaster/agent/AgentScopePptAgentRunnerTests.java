@@ -74,6 +74,10 @@ class AgentScopePptAgentRunnerTests {
         assertThat(job.currentConfirmationId()).isPresent();
         assertThat(job.confirmationPayload()).containsEntry("replyId", "reply-1");
         assertThat(job.confirmationPayload()).containsEntry("toolName", "request_plan_confirmation");
+        assertThat(job.events()).isNotEmpty();
+        assertThat(job.events().get(job.events().size() - 1).data())
+                .containsKey("confirmationPayload")
+                .containsEntry("confirmationId", job.currentConfirmationId().orElseThrow());
         assertThat(factory.contexts()).hasSize(1);
         assertThat(factory.contexts().get(0).getSessionId()).isEqualTo(job.id().toString());
     }
@@ -231,6 +235,59 @@ class AgentScopePptAgentRunnerTests {
         assertThat(job.currentConfirmationId()).isPresent();
         assertThat(job.confirmationPayload()).containsEntry("toolName", "request_plan_confirmation");
         assertThat(job.confirmationPayload()).containsEntry("replyId", job.id().toString());
+    }
+
+    /**
+     * 验证当任务已生成导出产物时，持久化会话中残留的 pending tool call
+     * 不会再把任务错误回退到 {@link PptJobStatus#WAITING_CONFIRMATION}。
+     */
+    @Test
+    void startDoesNotRecoverWaitingConfirmationAfterExportArtifactExists() throws Exception {
+        Msg finalMessage = new AssistantMessage("ppt 已导出完成。");
+        Path exportPath = Path.of("var/ppt-master/jobs/demo/exports/demo.pptx");
+        AgentScopeWorkflowAgentFactory factory = job -> (messages, runtimeContext) -> Flux.just(
+                new AgentStartEvent("reply-1", runtimeContext.getSessionId(), "test-agent"),
+                new AgentResultEvent(finalMessage)).doOnComplete(() -> job.complete(exportPath));
+
+        Path sessionStorePath = Files.createTempDirectory("agentscope-session-store");
+        AgentScopeProperties properties = new AgentScopeProperties(
+                "openai",
+                "dummy-model",
+                null,
+                null,
+                8,
+                sessionStorePath,
+                "ppt-master-service");
+        AgentScopePptAgentRunner runner = new AgentScopePptAgentRunner(
+                pptMasterProperties(),
+                properties,
+                factory,
+                new PptWorkflowEvents(new PptJobEventPublisher()));
+        PptJob job = sampleJob();
+
+        ToolUseBlock approvalToolCall = new ToolUseBlock(
+                "call-persisted",
+                "request_plan_confirmation",
+                Map.of("planSummary", "persisted plan", "pendingSteps", "confirm plan"));
+        AgentState persistedState = AgentState.builder()
+                .sessionId(job.id().toString())
+                .userId("ppt-master-service")
+                .context(List.of(
+                        AssistantMessage.builder()
+                                .name("test-agent")
+                                .content(List.of(
+                                        TextBlock.builder().text("已发起人工确认").build(),
+                                        approvalToolCall))
+                                .build()))
+                .build();
+        new JsonFileAgentStateStore(sessionStorePath)
+                .save("ppt-master-service", job.id().toString(), "agent_state", persistedState);
+
+        runner.start(job);
+
+        assertThat(job.status()).isEqualTo(PptJobStatus.COMPLETED);
+        assertThat(job.exportPath()).contains(exportPath);
+        assertThat(job.currentConfirmationId()).isEmpty();
     }
 
     private static PptMasterProperties pptMasterProperties() {

@@ -168,6 +168,54 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
     }
 
     /**
+     * 验证 IMAGE_ENHANCED 的系统提示词中包含图片失败后的重试确认环规则。
+     */
+    @Test
+    void imageEnhancedSystemPromptContainsImageRetryLoop() {
+        TestContext context = createContextWithImageEnhancedMode();
+        String prompt = context.factory.buildSystemPrompt(PptWorkflowMode.IMAGE_ENHANCED);
+
+        assertThat(prompt).contains("image_retry_decision");
+        assertThat(prompt).contains("image_ready_continue_confirmation");
+        assertThat(prompt).contains("绝不要直接结束任务");
+        assertThat(prompt).contains("不要输出 FINAL 总结");
+        assertThat(prompt).contains("只有用户确认继续后，才进入步骤 8");
+    }
+
+    /**
+     * 验证 BASIC 模式的系统提示词中不包含 IMAGE_ENHANCED 专属的图片重试规则。
+     */
+    @Test
+    void basicSystemPromptDoesNotContainImageRetryRules() throws IOException {
+        TestContext context = createContext();
+        String prompt = context.factory.buildSystemPrompt(PptWorkflowMode.BASIC);
+
+        assertThat(prompt).doesNotContain("image_retry_decision");
+        assertThat(prompt).doesNotContain("image_ready_continue_confirmation");
+        assertThat(prompt).doesNotContain("绝不要直接结束任务");
+    }
+
+    private TestContext createContextWithImageEnhancedMode() {
+        try {
+            TestContext base = createContext();
+            PptJob job = new PptJob(
+                    base.job.id(),
+                    base.job.projectName(),
+                    base.job.format(),
+                    base.job.instruction(),
+                    PptWorkflowMode.IMAGE_ENHANCED,
+                    base.job.workspacePath());
+            job.prepareProject(base.projectPath);
+            return new TestContext(base.projectPath, base.tools,
+                    new DefaultAgentScopeWorkflowAgentFactory.PptAgentToolRuntime(
+                            job, base.properties, base.executor, base.events),
+                    base.executor, base.factory, job, base.properties, base.events, base.agentProperties);
+        } catch (IOException ex) {
+            throw new RuntimeException(ex);
+        }
+    }
+
+    /**
      * 验证无 fallback 模型组时，工厂构建的仍是单一模型。
      */
     @Test
@@ -263,7 +311,7 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
         job.prepareProject(projectPath);
         DefaultAgentScopeWorkflowAgentFactory.PptAgentToolRuntime runtime =
                 new DefaultAgentScopeWorkflowAgentFactory.PptAgentToolRuntime(job, properties, executor, events);
-        return new TestContext(projectPath, tools, runtime, executor, factory, job, properties, events);
+        return new TestContext(projectPath, tools, runtime, executor, factory, job, properties, events, agentProperties);
     }
 
     private TestContext createContextWithFallbacks() {
@@ -288,7 +336,7 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
             return new TestContext(base.projectPath, factory.new PptAgentTools(),
                     new DefaultAgentScopeWorkflowAgentFactory.PptAgentToolRuntime(
                             base.job, base.properties, base.executor, base.events),
-                    base.executor, factory, base.job, base.properties, base.events);
+                    base.executor, factory, base.job, base.properties, base.events, agentProperties);
         } catch (IOException ex) {
             throw new RuntimeException(ex);
         }
@@ -302,7 +350,8 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
             DefaultAgentScopeWorkflowAgentFactory factory,
             PptJob job,
             PptMasterProperties properties,
-            PptWorkflowEvents events) {
+            PptWorkflowEvents events,
+            AgentScopeProperties agentProperties) {
     }
 
     /**

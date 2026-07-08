@@ -448,8 +448,36 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
                 job.id(), toolCalls.size());
         String confirmationId = UUID.randomUUID().toString();
         Map<String, Object> payload = new LinkedHashMap<>();
-        payload.put("stage", "agentscope_external_execution");
-        payload.put("message", "Agent 需要人工确认当前 PPT 执行方案后继续");
+        String stage = "agentscope_external_execution";
+        String message = "Agent 需要人工确认当前 PPT 执行方案后继续";
+        if (!toolCalls.isEmpty()) {
+            ToolUseBlock firstCall = toolCalls.get(0);
+            payload.put("recommended", firstCall.getInput());
+            payload.put("toolName", firstCall.getName());
+            Map<String, Object> input = extractStringKeyMap(firstCall.getInput());
+            Object requestedStage = input.get("stage");
+            if (requestedStage instanceof String requestedStageStr && !requestedStageStr.isBlank()) {
+                stage = requestedStageStr;
+            }
+            Object requestedMessage = input.get("message");
+            if (requestedMessage instanceof String requestedMessageStr && !requestedMessageStr.isBlank()) {
+                message = requestedMessageStr;
+            }
+            Object title = input.get("title");
+            if (title instanceof String titleStr && !titleStr.isBlank()) {
+                payload.put("title", titleStr);
+            }
+            Object choices = input.get("choices");
+            if (choices instanceof List<?>) {
+                payload.put("choices", choices);
+            }
+            Object contextData = input.get("contextData");
+            if (contextData instanceof Map<?, ?>) {
+                payload.put("contextData", contextData);
+            }
+        }
+        payload.put("stage", stage);
+        payload.put("message", message);
         payload.put("replyId", replyId);
         payload.put("toolCalls", toolCalls.stream()
                 .map(this::toToolCallPayload)
@@ -457,11 +485,6 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
         payload.put("agent", Map.of(
                 "framework", "AgentScope Java",
                 "mode", "streamEvents + Human-in-the-Loop"));
-        if (!toolCalls.isEmpty()) {
-            ToolUseBlock firstCall = toolCalls.get(0);
-            payload.put("recommended", firstCall.getInput());
-            payload.put("toolName", firstCall.getName());
-        }
         job.requireConfirmation(confirmationId, payload);
         events.record(job, PptJobEvent.of(
                 PptJobEventType.CONFIRMATION_REQUIRED,
@@ -472,6 +495,29 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
                         "replyId", replyId,
                         "toolCallCount", toolCalls.size())));
         return true;
+    }
+
+    /**
+     * 将工具输入 Map 过滤为仅保留 String 键的 Map。
+     * <p>
+     * AgentScope 工具输入在 JSON 解析后键通常为 String，但类型擦除后编译器无法保证。
+     * 该方法用于安全地提取 stage、title、message 等字符串键字段。
+     * </p>
+     *
+     * @param input 工具输入 Map
+     * @return 仅包含 String 键的 Map
+     */
+    private Map<String, Object> extractStringKeyMap(Map<String, Object> input) {
+        if (input == null) {
+            return Map.of();
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        for (Map.Entry<String, Object> entry : input.entrySet()) {
+            if (entry.getKey() != null) {
+                result.put(entry.getKey(), entry.getValue());
+            }
+        }
+        return result;
     }
 
     /**
@@ -574,11 +620,20 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
     private String buildApprovalOutput(PptConfirmation confirmation, ToolUseBlock toolCall) {
         StringBuilder builder = new StringBuilder();
         builder.append("Operator approved tool: ").append(toolCall.getName()).append('\n');
+        Map<String, Object> input = extractStringKeyMap(toolCall.getInput());
+        Object stage = input.get("stage");
+        if (stage instanceof String stageStr && !stageStr.isBlank()) {
+            builder.append("confirmation_stage=").append(stageStr).append('\n');
+        }
+        Object title = input.get("title");
+        if (title instanceof String titleStr && !titleStr.isBlank()) {
+            builder.append("confirmation_title=").append(titleStr).append('\n');
+        }
         if (!confirmation.answers().isEmpty()) {
             builder.append("answers=").append(confirmation.answers()).append('\n');
         }
         if (confirmation.comment() != null && !confirmation.comment().isBlank()) {
-            builder.append("comment=").append(confirmation.comment()).append('\n');
+            builder.append("operator_action=").append(confirmation.comment()).append('\n');
         }
         builder.append("original_input=").append(toolCall.getInput());
         return builder.toString();
@@ -600,9 +655,12 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
                 ? """
                 3. 在写 design_spec.md、spec_lock.md 之前，必须调用 request_plan_confirmation 请求人工确认；确认说明中需告知用户本任务将启用文生图。
                 4. 用户确认后，先产出 design_spec.md 与 spec_lock.md。
-                5. 如存在 AI 图片需求，写 images/image_prompts.json，然后调用 generate_project_images 生成图片，并用 inspect_image_manifest_status 确认全部图片已生成。
-                6. 图片就绪后，再写 notes/total.md 与 svg_output/*.svg；svg_output 引用图片时必须使用真实存在于 images/ 的文件。
-                7. 生成 svg_output 后，调用 validate_svg_output，再 finalize 和导出。
+                5. 如存在 AI 图片需求，写 images/image_prompts.json，然后调用 generate_project_images 生成图片。
+                6. 调用 inspect_image_manifest_status 检查图片状态：
+                   - 若有 Failed：不要结束任务，不要输出总结；调用 request_plan_confirmation（stage="image_retry_decision"）询问用户是否重试失败图片，用户要求重试后再调用 generate_project_images，循环直到全部 Generated。
+                   - 若全部 Generated：调用 request_plan_confirmation（stage="image_ready_continue_confirmation"）询问用户是否继续后续 PPT 制作（notes、SVG、finalize、导出），只有用户确认继续后才进入下一步。
+                7. 图片就绪且用户确认继续后，再写 notes/total.md 与 svg_output/*.svg；svg_output 引用图片时必须使用真实存在于 images/ 的文件。
+                8. 生成 svg_output 后，调用 validate_svg_output，再 finalize 和导出。
                 """
                 : """
                 3. 在写 design_spec.md、spec_lock.md、notes/total.md、svg_output/*.svg 之前，必须调用 request_plan_confirmation 请求人工确认。

@@ -359,6 +359,110 @@ class AgentScopePptAgentRunnerTests {
         assertThat(text).contains("images/image_prompts.json");
     }
 
+    /**
+     * 验证图片失败重试确认场景下，confirmationPayload 能正确保存阶段信息。
+     */
+    @Test
+    void imageRetryConfirmationStageIsPreservedInPayload() {
+        RecordingAgentFactory factory = new RecordingAgentFactory();
+        factory.enqueue((messages, runtimeContext) -> Flux.just(
+                new AgentStartEvent("reply-1", runtimeContext.getSessionId(), "test-agent"),
+                new RequireExternalExecutionEvent(
+                        "reply-1",
+                        List.of(new ToolUseBlock(
+                                "call-1",
+                                "request_plan_confirmation",
+                                Map.of(
+                                        "planSummary", "image generation failed",
+                                        "pendingSteps", "retry failed images",
+                                        "stage", "image_retry_decision",
+                                        "title", "图片生成失败",
+                                        "message", "部分图片生成失败，请选择是否重试",
+                                        "contextData", Map.of(
+                                                "failedImages", List.of("cover.png"),
+                                                "lastError", "502 Bad gateway")))))));
+
+        AgentScopePptAgentRunner runner = new AgentScopePptAgentRunner(
+                pptMasterProperties(),
+                agentScopeProperties(),
+                factory,
+                new PptWorkflowEvents(new PptJobEventPublisher()));
+        PptJob job = newImageEnhancedJob();
+
+        runner.start(job);
+
+        assertThat(job.status()).isEqualTo(PptJobStatus.WAITING_CONFIRMATION);
+        assertThat(job.confirmationPayload()).containsEntry("stage", "image_retry_decision");
+        assertThat(job.confirmationPayload()).containsEntry("title", "图片生成失败");
+        assertThat(job.confirmationPayload()).containsEntry("message", "部分图片生成失败，请选择是否重试");
+        assertThat(job.confirmationPayload()).containsKey("contextData");
+        assertThat(job.confirmationPayload()).containsEntry("toolName", "request_plan_confirmation");
+    }
+
+    /**
+     * 验证图片阶段恢复时，ToolResultMessage 中携带阶段信息与用户动作，
+     * 便于 Agent 识别当前应进入重试还是继续后续步骤。
+     */
+    @Test
+    void imageStageResumeCarriesStageAndOperatorAction() {
+        RecordingAgentFactory factory = new RecordingAgentFactory();
+        factory.enqueue((messages, runtimeContext) -> Flux.just(
+                new AgentStartEvent("reply-1", runtimeContext.getSessionId(), "test-agent"),
+                new RequireExternalExecutionEvent(
+                        "reply-1",
+                        List.of(new ToolUseBlock(
+                                "call-1",
+                                "request_plan_confirmation",
+                                Map.of(
+                                        "planSummary", "image generation failed",
+                                        "pendingSteps", "retry failed images",
+                                        "stage", "image_retry_decision",
+                                        "title", "图片生成失败",
+                                        "message", "部分图片生成失败，请选择是否重试"))))));
+        factory.enqueue((messages, runtimeContext) -> Flux.just(
+                new AgentStartEvent("reply-2", runtimeContext.getSessionId(), "test-agent"),
+                new RequireExternalExecutionEvent(
+                        "reply-2",
+                        List.of(new ToolUseBlock(
+                                "call-2",
+                                "request_plan_confirmation",
+                                Map.of(
+                                        "planSummary", "images ready",
+                                        "pendingSteps", "continue to svg generation",
+                                        "stage", "image_ready_continue_confirmation",
+                                        "title", "图片已就绪",
+                                        "message", "图片已全部生成，是否继续后续 PPT 制作"))))));
+
+        AgentScopePptAgentRunner runner = new AgentScopePptAgentRunner(
+                pptMasterProperties(),
+                agentScopeProperties(),
+                factory,
+                new PptWorkflowEvents(new PptJobEventPublisher()));
+        PptJob job = newImageEnhancedJob();
+
+        runner.start(job);
+        PptConfirmation retryConfirmation = new PptConfirmation(
+                job.currentConfirmationId().orElseThrow(),
+                true,
+                Map.of(),
+                "重试生成失败的图片",
+                Instant.now());
+        job.receiveConfirmation(retryConfirmation);
+
+        runner.resume(job, retryConfirmation);
+
+        assertThat(factory.messages()).hasSize(2);
+        Msg resumeMessage = factory.messages().get(1).get(0);
+        assertThat(resumeMessage).isInstanceOf(ToolResultMessage.class);
+        List<ToolResultBlock> blocks = resumeMessage.getContentBlocks(ToolResultBlock.class);
+        assertThat(blocks).hasSize(1);
+        String outputText = ((TextBlock) blocks.get(0).getOutput().get(0)).getText();
+        assertThat(outputText).contains("confirmation_stage=image_retry_decision");
+        assertThat(outputText).contains("operator_action=重试生成失败的图片");
+        assertThat(job.status()).isEqualTo(PptJobStatus.WAITING_CONFIRMATION);
+        assertThat(job.confirmationPayload()).containsEntry("stage", "image_ready_continue_confirmation");
+    }
+
     private static PptMasterProperties pptMasterProperties() {
         return new PptMasterProperties(
                 Path.of("/home/zhang/PycharmProjects/ppt-master"),

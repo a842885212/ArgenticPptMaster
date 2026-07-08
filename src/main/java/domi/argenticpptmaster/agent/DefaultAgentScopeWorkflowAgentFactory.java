@@ -332,7 +332,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
      * @param workflowMode 当前任务的工作流模式
      * @return 系统提示词文本
      */
-    private String buildSystemPrompt(PptWorkflowMode workflowMode) {
+    String buildSystemPrompt(PptWorkflowMode workflowMode) {
         return String.join("\n\n",
                 buildUpstreamCoreRulesPrompt(),
                 workflowMode == PptWorkflowMode.IMAGE_ENHANCED
@@ -412,14 +412,25 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                    - 每个 item 必须包含 filename、prompt、aspect_ratio、status（初始为 Pending）
                    - 可包含 image_size、model、alt_text、purpose 等可选字段
                 6. 调用 generate_project_images 执行 image_gen.py --manifest 生成图片。
-                7. 调用 inspect_image_manifest_status 确认所有 item 状态均为 Generated；如有 Failed 则重新生成或中止，不允许伪造图片。
-                8. 图片就绪后，再写 notes/total.md 与 svg_output/*.svg；svg_output 中引用图片时必须使用 images/<filename> 且文件真实存在。
+                7. 调用 inspect_image_manifest_status 确认所有 item 状态：
+                   - 若存在 Failed：
+                     a. 绝不要直接结束任务、不要输出 FINAL 总结、不要写 notes/svg、不要导出。
+                     b. 必须调用 request_plan_confirmation，stage 固定为 "image_retry_decision"。
+                     c. 在 message/contextData 中说明失败图片、失败原因（取 manifest 的 last_error）、建议操作。
+                     d. 用户回复后，如果其意图是“重试/继续生成/再试一次”，再次调用 generate_project_images。
+                     e. 然后重新调用 inspect_image_manifest_status，重复本步骤，直到全部 Generated 或用户明确放弃。
+                   - 若全部 Generated：
+                     a. 必须调用 request_plan_confirmation，stage 固定为 "image_ready_continue_confirmation"。
+                     b. 询问用户“图片已全部生成，是否继续后续 PPT 制作（notes、SVG、finalize、导出）”。
+                     c. 只有用户确认继续后，才进入步骤 8。
+                8. 图片就绪且用户确认继续后，再写 notes/total.md 与 svg_output/*.svg；svg_output 中引用图片时必须使用 images/<filename> 且文件真实存在。
                 9. 生成 svg_output 后，调用 validate_svg_output，再调用 split_speaker_notes、finalize_project_svg，最后调用 export_project_pptx。
 
                 图片阶段约束：
                 - 第一版只支持 Path A：调用 generate_project_images（底层 image_gen.py --manifest）。
-                - 不支持自动切换到 host-native 或 manual；图片生成失败即中止并说明原因。
-                - 不允许在图片未生成的情况下继续 SVG 生成或导出。
+                - 不支持自动切换到 host-native 或 manual。
+                - 图片生成失败时不可中止，必须进入 image_retry_decision 确认环，等待用户决定重试或放弃。
+                - 只有用户明确放弃或任务被取消时才允许终止；不要在图片未生成的情况下继续 SVG 生成或导出。
                 """;
     }
 
@@ -1133,6 +1144,12 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
      *   <li>sourceFindings — 源文件分析结果</li>
      *   <li>pendingSteps — 待执行步骤（必填）</li>
      *   <li>risks — 风险评估</li>
+     *   <li>stage — 确认阶段标识（可选），例如 {@code plan_confirmation}、
+     *       {@code image_retry_decision}、{@code image_ready_continue_confirmation}</li>
+     *   <li>title — 展示给用户的标题（可选）</li>
+     *   <li>message — 展示给用户的核心说明（可选）</li>
+     *   <li>choices — 建议操作列表（可选），每个条目包含 {@code label} 与 {@code value}</li>
+     *   <li>contextData — 结构化上下文（可选），例如失败图片列表、lastError 摘要等</li>
      * </ul>
      */
     static final class UserPlanApprovalTool extends ToolBase {
@@ -1140,14 +1157,28 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
         UserPlanApprovalTool() {
             super(ToolBase.builder()
                     .name(APPROVAL_TOOL_NAME)
-                    .description("Request operator confirmation for the proposed PPT execution plan.")
+                    .description("Request operator confirmation for the proposed PPT execution plan. "
+                            + "For image-enhanced workflows, this tool is also used to pause after image "
+                            + "generation failures so the operator can choose to retry failed images or continue.")
                     .inputSchema(Map.of(
                             "type", "object",
                             "properties", Map.of(
                                     "planSummary", Map.of("type", "string"),
                                     "sourceFindings", Map.of("type", "string"),
                                     "pendingSteps", Map.of("type", "string"),
-                                    "risks", Map.of("type", "string")),
+                                    "risks", Map.of("type", "string"),
+                                    "stage", Map.of("type", "string"),
+                                    "title", Map.of("type", "string"),
+                                    "message", Map.of("type", "string"),
+                                    "choices", Map.of(
+                                            "type", "array",
+                                            "items", Map.of(
+                                                    "type", "object",
+                                                    "properties", Map.of(
+                                                            "label", Map.of("type", "string"),
+                                                            "value", Map.of("type", "string")),
+                                                    "required", List.of("label", "value"))),
+                                    "contextData", Map.of("type", "object")),
                             "required", List.of("planSummary", "pendingSteps")))
                     .readOnly(false)
                     .concurrencySafe(true)

@@ -13,10 +13,14 @@ import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.TextBlock;
+import domi.argenticpptmaster.config.AgentScopeProperties.ModelGroup;
 import io.agentscope.core.model.DashScopeChatModel;
+import io.agentscope.core.model.ExecutionConfig;
+import io.agentscope.core.model.GenerateOptions;
 import io.agentscope.core.model.Model;
 import io.agentscope.core.model.OllamaChatModel;
 import io.agentscope.core.model.OpenAIChatModel;
+import io.agentscope.core.model.ollama.OllamaOptions;
 import io.agentscope.core.state.JsonFileAgentStateStore;
 import io.agentscope.core.tool.Tool;
 import io.agentscope.core.tool.ToolBase;
@@ -26,6 +30,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -33,7 +38,10 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.function.Predicate;
 import java.util.stream.Stream;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 
@@ -63,8 +71,11 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
     private static final String SVG_QUALITY_CHECKER_SCRIPT = "skills/ppt-master/scripts/svg_quality_checker.py";
     private static final String EXPORT_SCRIPT = "skills/ppt-master/scripts/svg_to_pptx.py";
     private static final String IMAGE_GEN_SCRIPT = "skills/ppt-master/scripts/image_gen.py";
+    private static final Logger log = LoggerFactory.getLogger(DefaultAgentScopeWorkflowAgentFactory.class);
+
     private static final String APPROVAL_TOOL_NAME = "request_plan_confirmation";
     private static final int DEFAULT_FILE_PREVIEW_CHARS = 8000;
+    private static final Predicate<Throwable> RETRY_ON_RECOVERABLE_ONLY = ExecutionConfig.RETRYABLE_ERRORS;
 
     private final AgentScopeProperties agentScopeProperties;
     private final PptMasterProperties pptMasterProperties;
@@ -123,7 +134,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
     /**
      * 确保代理运行的前置条件满足。
      * <p>
-     * 检查所需的 ppt-master 脚本文件是否存在，以及模型名称是否已配置。
+     * 检查所需的 ppt-master 脚本文件是否存在，以及主模型组是否已配置。
      * 如果前置条件不满足，则抛出 {@link IllegalStateException}。
      * </p>
      */
@@ -143,48 +154,117 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
         if (!Files.exists(pptMasterProperties.repoPath().resolve(IMAGE_GEN_SCRIPT))) {
             throw new IllegalStateException("ppt-master image_gen not found under " + pptMasterProperties.repoPath());
         }
-        if (agentScopeProperties.modelName() == null || agentScopeProperties.modelName().isBlank()) {
-            throw new IllegalStateException("agentscope.model-name must be configured");
+        ModelGroup primary = agentScopeProperties.effectivePrimary();
+        if (!primary.isValid()) {
+            throw new IllegalStateException("agentscope primary model group must be configured");
+        }
+        if (requiresApiKey(primary) && (primary.apiKey() == null || primary.apiKey().isBlank())) {
+            log.warn("agentscope primary model group has no api-key configured: provider={}", primary.provider());
         }
     }
 
     /**
-     * 构建 LLM 模型实例。
+     * 判断指定模型组是否需要 API Key。
+     *
+     * @param group 模型组
+     * @return true 表示需要 API Key
+     */
+    private boolean requiresApiKey(ModelGroup group) {
+        String provider = group.normalizedProvider();
+        return "openai".equals(provider) || "dashscope".equals(provider);
+    }
+
+    /**
+     * 构建工作流使用的最终模型实例。
      * <p>
-     * 根据 {@link AgentScopeProperties} 配置的 provider 类型创建对应的
-     * AgentScope 模型实例。支持 OpenAI、DashScope 和 Ollama 三种提供者。
+     * 根据 {@link AgentScopeProperties} 配置构造主模型，并可选地包装为
+     * {@link FallbackModel} 以支持 fallback 模型组。所有单模型均会注入
+     * 统一的执行策略（重试、超时）。
      * </p>
      *
      * @return 配置完成的 AgentScope 模型实例
      */
-    private Model buildModel() {
-        String provider = agentScopeProperties.provider().trim().toLowerCase();
+    Model buildModel() {
+        ModelGroup primaryGroup = agentScopeProperties.effectivePrimary();
+        if (!primaryGroup.isValid()) {
+            throw new IllegalStateException("agentscope primary model group must be configured");
+        }
+        Model primary = buildModelGroup(primaryGroup);
+        List<Model> fallbackModels = agentScopeProperties.effectiveFallbacks().stream()
+                .map(this::buildModelGroup)
+                .toList();
+        if (fallbackModels.isEmpty()) {
+            return primary;
+        }
+        List<Model> candidates = new ArrayList<>(fallbackModels.size() + 1);
+        candidates.add(primary);
+        candidates.addAll(fallbackModels);
+        return new FallbackModel(candidates);
+    }
+
+    /**
+     * 根据模型组配置构建单个 AgentScope 模型实例。
+     * <p>
+     * 支持 OpenAI、DashScope 和 Ollama 三种提供者，并统一注入执行策略。
+     * </p>
+     *
+     * @param group 模型组配置
+     * @return AgentScope 模型实例
+     * @throws IllegalStateException 当 provider 不受支持时抛出
+     */
+    private Model buildModelGroup(ModelGroup group) {
+        String provider = group.normalizedProvider();
         return switch (provider) {
-            case "dashscope" -> buildDashScopeModel();
-            case "ollama" -> buildOllamaModel();
-            case "openai" -> buildOpenAiModel();
+            case "dashscope" -> buildDashScopeModel(group);
+            case "ollama" -> buildOllamaModel(group);
+            case "openai" -> buildOpenAiModel(group);
             default -> throw new IllegalStateException("unsupported agentscope.provider: " + provider);
         };
     }
 
     /**
-     * 构建 OpenAI 兼容的模型实例。
+     * 构建统一的执行策略配置。
      * <p>
-     * 使用 {@link OpenAIChatModel} 构建器，配置模型名称、API Key 和
-     * 自定义 Base URL（如代理或兼容服务）。
+     * 结合 {@link AgentScopeProperties#execution()} 配置与 AgentScope 默认策略，
+     * 生成用于 {@link GenerateOptions} 或 {@link OllamaOptions} 的 {@link ExecutionConfig}。
      * </p>
      *
+     * @return 执行策略配置
+     */
+    private ExecutionConfig buildExecutionConfig() {
+        AgentScopeProperties.Execution execution = agentScopeProperties.execution();
+        return ExecutionConfig.builder()
+                .timeout(execution.timeout())
+                .maxAttempts(execution.maxAttempts())
+                .initialBackoff(execution.initialBackoff())
+                .maxBackoff(execution.maxBackoff())
+                .backoffMultiplier(2.0)
+                .retryOn(RETRY_ON_RECOVERABLE_ONLY)
+                .build();
+    }
+
+    /**
+     * 构建 OpenAI 兼容的模型实例。
+     * <p>
+     * 使用 {@link OpenAIChatModel} 构建器，配置模型名称、API Key、
+     * 自定义 Base URL 以及统一的执行策略。
+     * </p>
+     *
+     * @param group 模型组配置
      * @return OpenAI 模型实例
      */
-    private Model buildOpenAiModel() {
+    private Model buildOpenAiModel(ModelGroup group) {
         OpenAIChatModel.Builder builder = new OpenAIChatModel.Builder()
-                .modelName(agentScopeProperties.modelName())
-                .stream(true);
-        if (agentScopeProperties.apiKey() != null && !agentScopeProperties.apiKey().isBlank()) {
-            builder.apiKey(agentScopeProperties.apiKey());
+                .modelName(group.modelName())
+                .stream(true)
+                .generateOptions(GenerateOptions.builder()
+                        .executionConfig(buildExecutionConfig())
+                        .build());
+        if (group.apiKey() != null && !group.apiKey().isBlank()) {
+            builder.apiKey(group.apiKey());
         }
-        if (agentScopeProperties.baseUrl() != null && !agentScopeProperties.baseUrl().isBlank()) {
-            builder.baseUrl(agentScopeProperties.baseUrl());
+        if (group.baseUrl() != null && !group.baseUrl().isBlank()) {
+            builder.baseUrl(group.baseUrl());
         }
         return builder.build();
     }
@@ -192,21 +272,25 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
     /**
      * 构建 DashScope（阿里通义千问）模型实例。
      * <p>
-     * 使用 {@link DashScopeChatModel} 构建器，配置模型名称、API Key 和
-     * 自定义 Base URL。
+     * 使用 {@link DashScopeChatModel} 构建器，配置模型名称、API Key、
+     * 自定义 Base URL 以及统一的执行策略。
      * </p>
      *
+     * @param group 模型组配置
      * @return DashScope 模型实例
      */
-    private Model buildDashScopeModel() {
+    private Model buildDashScopeModel(ModelGroup group) {
         DashScopeChatModel.Builder builder = new DashScopeChatModel.Builder()
-                .modelName(agentScopeProperties.modelName())
-                .stream(true);
-        if (agentScopeProperties.apiKey() != null && !agentScopeProperties.apiKey().isBlank()) {
-            builder.apiKey(agentScopeProperties.apiKey());
+                .modelName(group.modelName())
+                .stream(true)
+                .defaultOptions(GenerateOptions.builder()
+                        .executionConfig(buildExecutionConfig())
+                        .build());
+        if (group.apiKey() != null && !group.apiKey().isBlank()) {
+            builder.apiKey(group.apiKey());
         }
-        if (agentScopeProperties.baseUrl() != null && !agentScopeProperties.baseUrl().isBlank()) {
-            builder.baseUrl(agentScopeProperties.baseUrl());
+        if (group.baseUrl() != null && !group.baseUrl().isBlank()) {
+            builder.baseUrl(group.baseUrl());
         }
         return builder.build();
     }
@@ -214,16 +298,22 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
     /**
      * 构建 Ollama 本地模型实例。
      * <p>
-     * 使用 {@link OllamaChatModel} 构建器，配置模型名称和自定义 Base URL。
+     * 使用 {@link OllamaChatModel} 构建器，配置模型名称、自定义 Base URL
+     * 以及统一的执行策略。
      * </p>
      *
+     * @param group 模型组配置
      * @return Ollama 模型实例
      */
-    private Model buildOllamaModel() {
+    private Model buildOllamaModel(ModelGroup group) {
+        OllamaOptions options = OllamaOptions.builder()
+                .executionConfig(buildExecutionConfig())
+                .build();
         OllamaChatModel.Builder builder = new OllamaChatModel.Builder()
-                .modelName(agentScopeProperties.modelName());
-        if (agentScopeProperties.baseUrl() != null && !agentScopeProperties.baseUrl().isBlank()) {
-            builder.baseUrl(agentScopeProperties.baseUrl());
+                .modelName(group.modelName())
+                .defaultOptions(options);
+        if (group.baseUrl() != null && !group.baseUrl().isBlank()) {
+            builder.baseUrl(group.baseUrl());
         }
         return builder.build();
     }

@@ -196,7 +196,10 @@ class AgentScopePptAgentRunnerTests {
                 null,
                 8,
                 sessionStorePath,
-                "ppt-master-service");
+                "ppt-master-service",
+                null,
+                null,
+                null);
         AgentScopePptAgentRunner runner = new AgentScopePptAgentRunner(
                 pptMasterProperties(),
                 properties,
@@ -258,7 +261,10 @@ class AgentScopePptAgentRunnerTests {
                 null,
                 8,
                 sessionStorePath,
-                "ppt-master-service");
+                "ppt-master-service",
+                null,
+                null,
+                null);
         AgentScopePptAgentRunner runner = new AgentScopePptAgentRunner(
                 pptMasterProperties(),
                 properties,
@@ -369,7 +375,10 @@ class AgentScopePptAgentRunnerTests {
                 null,
                 8,
                 Path.of("var/ppt-master/agent-sessions"),
-                "ppt-master-service");
+                "ppt-master-service",
+                null,
+                null,
+                null);
     }
 
     private static PptJob sampleJob() {

@@ -4,12 +4,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import domi.argenticpptmaster.config.AgentScopeProperties;
+import domi.argenticpptmaster.config.AgentScopeProperties.Execution;
+import domi.argenticpptmaster.config.AgentScopeProperties.ModelGroup;
 import domi.argenticpptmaster.config.PptMasterProperties;
 import domi.argenticpptmaster.domain.PptJob;
 import domi.argenticpptmaster.domain.PptWorkflowMode;
 import domi.argenticpptmaster.infra.PptMasterCommandExecutor;
 import domi.argenticpptmaster.service.PptJobEventPublisher;
 import domi.argenticpptmaster.service.PptWorkflowEvents;
+import io.agentscope.core.model.Model;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -164,6 +167,60 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
                 .containsExactly(context.projectPath.toString(), "--format", "ppt169");
     }
 
+    /**
+     * 验证无 fallback 模型组时，工厂构建的仍是单一模型。
+     */
+    @Test
+    void createsSingleModelWithoutFallback() throws Exception {
+        TestContext context = createContext();
+        Model model = context.factory.buildModel();
+        assertThat(model).isNotInstanceOf(FallbackModel.class);
+        assertThat(model.getModelName()).isEqualTo("dummy-model");
+    }
+
+    /**
+     * 验证配置 fallback 模型组后，工厂构建的是 {@link FallbackModel} 包装器。
+     */
+    @Test
+    void createsFallbackModelWithFallbackGroups() throws Exception {
+        TestContext context = createContextWithFallbacks();
+        Model model = context.factory.buildModel();
+        assertThat(model).isInstanceOf(FallbackModel.class);
+        assertThat(model.getModelName()).contains("dummy-model").contains("gpt-4o-mini");
+    }
+
+    /**
+     * 验证当主模型组无效时，前置条件检查会抛出异常。
+     */
+    @Test
+    void rejectsInvalidPrimaryModelGroup() {
+        AgentScopeProperties properties = new AgentScopeProperties(
+                null,
+                null,
+                null,
+                null,
+                8,
+                tempDir.resolve("sessions"),
+                "ppt-master-service",
+                null,
+                null,
+                null);
+        PptMasterProperties pptProperties = new PptMasterProperties(
+                tempDir.resolve("repo"),
+                tempDir.resolve("workspace"),
+                "python3",
+                Duration.ofMinutes(1));
+        DefaultAgentScopeWorkflowAgentFactory factory = new DefaultAgentScopeWorkflowAgentFactory(
+                properties,
+                pptProperties,
+                new RecordingCommandExecutor(pptProperties),
+                new PptWorkflowEvents(new PptJobEventPublisher()));
+
+        assertThatThrownBy(factory::buildModel)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("primary model group must be configured");
+    }
+
     private TestContext createContext() throws IOException {
         Path repoPath = tempDir.resolve("repo");
         Path workspacePath = tempDir.resolve("workspace");
@@ -183,7 +240,10 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
                 null,
                 8,
                 tempDir.resolve("sessions"),
-                "ppt-master-service");
+                "ppt-master-service",
+                null,
+                null,
+                null);
         RecordingCommandExecutor executor = new RecordingCommandExecutor(properties);
         PptWorkflowEvents events = new PptWorkflowEvents(new PptJobEventPublisher());
         DefaultAgentScopeWorkflowAgentFactory factory = new DefaultAgentScopeWorkflowAgentFactory(
@@ -203,14 +263,46 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
         job.prepareProject(projectPath);
         DefaultAgentScopeWorkflowAgentFactory.PptAgentToolRuntime runtime =
                 new DefaultAgentScopeWorkflowAgentFactory.PptAgentToolRuntime(job, properties, executor, events);
-        return new TestContext(projectPath, tools, runtime, executor);
+        return new TestContext(projectPath, tools, runtime, executor, factory, job, properties, events);
+    }
+
+    private TestContext createContextWithFallbacks() {
+        try {
+            TestContext base = createContext();
+            AgentScopeProperties agentProperties = new AgentScopeProperties(
+                    "openai",
+                    "dummy-model",
+                    null,
+                    null,
+                    8,
+                    tempDir.resolve("sessions"),
+                    "ppt-master-service",
+                    new ModelGroup("openai", "dummy-model", null, null),
+                    List.of(new ModelGroup("openai", "gpt-4o-mini", null, null)),
+                    new Execution(3, Duration.ofSeconds(1), Duration.ofSeconds(10), Duration.ofSeconds(120)));
+            DefaultAgentScopeWorkflowAgentFactory factory = new DefaultAgentScopeWorkflowAgentFactory(
+                    agentProperties,
+                    base.properties,
+                    new RecordingCommandExecutor(base.properties),
+                    base.events);
+            return new TestContext(base.projectPath, factory.new PptAgentTools(),
+                    new DefaultAgentScopeWorkflowAgentFactory.PptAgentToolRuntime(
+                            base.job, base.properties, base.executor, base.events),
+                    base.executor, factory, base.job, base.properties, base.events);
+        } catch (IOException ex) {
+            throw new RuntimeException(ex);
+        }
     }
 
     private record TestContext(
             Path projectPath,
             DefaultAgentScopeWorkflowAgentFactory.PptAgentTools tools,
             DefaultAgentScopeWorkflowAgentFactory.PptAgentToolRuntime runtime,
-            RecordingCommandExecutor executor) {
+            RecordingCommandExecutor executor,
+            DefaultAgentScopeWorkflowAgentFactory factory,
+            PptJob job,
+            PptMasterProperties properties,
+            PptWorkflowEvents events) {
     }
 
     /**

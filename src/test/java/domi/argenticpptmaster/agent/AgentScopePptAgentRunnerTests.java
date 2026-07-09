@@ -485,6 +485,184 @@ class AgentScopePptAgentRunnerTests {
                 null);
     }
 
+    /**
+     * 验证 checkpoint 恢复会启用新的 attempt session，避免复用旧失败上下文。
+     */
+    @Test
+    void resumeFromCheckpointUsesNewAttemptSession() {
+        RecordingAgentFactory factory = new RecordingAgentFactory();
+        factory.enqueue((messages, runtimeContext) -> Flux.just(
+                new AgentStartEvent("reply-1", runtimeContext.getSessionId(), "test-agent"),
+                new RequireExternalExecutionEvent(
+                        "reply-1",
+                        List.of(new ToolUseBlock(
+                                "call-1",
+                                "request_plan_confirmation",
+                                Map.of("planSummary", "checkpoint resume", "pendingSteps", "continue"))))));
+
+        AgentScopePptAgentRunner runner = new AgentScopePptAgentRunner(
+                pptMasterProperties(),
+                agentScopeProperties(),
+                factory,
+                new PptWorkflowEvents(new PptJobEventPublisher()));
+        PptJob job = sampleJob();
+        String initialSessionId = job.activeAttemptSessionId();
+        job.startNewResumeAttempt();
+
+        runner.resumeFromCheckpoint(job, domi.argenticpptmaster.domain.PptJobNode.PROJECT_READY);
+
+        assertThat(job.activeAttemptSessionId()).isNotEqualTo(initialSessionId);
+        assertThat(factory.contexts()).hasSize(1);
+        assertThat(factory.contexts().get(0).getSessionId())
+                .contains(job.id().toString())
+                .contains(job.activeAttemptSessionId());
+        Msg resumeMessage = factory.messages().get(0).get(0);
+        String text = resumeMessage.getTextContent();
+        assertThat(text).contains("从上一个成功节点恢复执行");
+        assertThat(text).contains("PROJECT_READY");
+    }
+
+    /**
+     * 验证 checkpoint 恢复时，若事件流未显式挂起但持久化状态中存在 pending tool call，
+     * 运行器应从 checkpoint attempt session（jobId-attempt-N）读取状态并恢复为等待确认。
+     */
+    @Test
+    void resumeFromCheckpointRecoversWaitingConfirmationFromCheckpointSessionState() throws Exception {
+        RecordingAgentFactory factory = new RecordingAgentFactory();
+        Msg finalMessage = new AssistantMessage("checkpoint resumed with persisted pending tool call");
+        factory.enqueue((messages, runtimeContext) -> Flux.just(
+                new AgentStartEvent("reply-1", runtimeContext.getSessionId(), "test-agent"),
+                new AgentResultEvent(finalMessage)));
+
+        Path sessionStorePath = Files.createTempDirectory("agentscope-session-store");
+        AgentScopeProperties properties = new AgentScopeProperties(
+                "openai",
+                "dummy-model",
+                null,
+                null,
+                8,
+                sessionStorePath,
+                "ppt-master-service",
+                null,
+                null,
+                null);
+        AgentScopePptAgentRunner runner = new AgentScopePptAgentRunner(
+                pptMasterProperties(),
+                properties,
+                factory,
+                new PptWorkflowEvents(new PptJobEventPublisher()));
+        PptJob job = sampleJob();
+        job.fail("previous failure");
+        job.startNewResumeAttempt();
+        String checkpointSessionId = job.id() + "-" + job.activeAttemptSessionId();
+
+        ToolUseBlock approvalToolCall = new ToolUseBlock(
+                "call-checkpoint",
+                "request_plan_confirmation",
+                Map.of("planSummary", "checkpoint plan", "pendingSteps", "confirm checkpoint"));
+        AgentState persistedState = AgentState.builder()
+                .sessionId(checkpointSessionId)
+                .userId("ppt-master-service")
+                .context(List.of(
+                        AssistantMessage.builder()
+                                .name("test-agent")
+                                .content(List.of(
+                                        TextBlock.builder().text("已发起人工确认").build(),
+                                        approvalToolCall))
+                                .build()))
+                .build();
+        new JsonFileAgentStateStore(sessionStorePath)
+                .save("ppt-master-service", checkpointSessionId, "agent_state", persistedState);
+
+        runner.resumeFromCheckpoint(job, domi.argenticpptmaster.domain.PptJobNode.PROJECT_READY);
+
+        assertThat(job.status()).isEqualTo(PptJobStatus.WAITING_CONFIRMATION);
+        assertThat(job.currentConfirmationId()).isPresent();
+        assertThat(job.confirmationPayload()).containsEntry("toolName", "request_plan_confirmation");
+        assertThat(job.confirmationPayload()).containsEntry("replyId", checkpointSessionId);
+    }
+
+    /**
+     * 验证 checkpoint 恢复后再触发确认，确认恢复应复用 checkpoint attempt 的 session。
+     */
+    @Test
+    void resumeAfterCheckpointUsesCheckpointSessionForConfirmation() {
+        RecordingAgentFactory factory = new RecordingAgentFactory();
+        factory.enqueue((messages, runtimeContext) -> Flux.just(
+                new AgentStartEvent("reply-1", runtimeContext.getSessionId(), "test-agent"),
+                new RequireExternalExecutionEvent(
+                        "reply-1",
+                        List.of(new ToolUseBlock(
+                                "call-1",
+                                "request_plan_confirmation",
+                                Map.of("planSummary", "checkpoint resume", "pendingSteps", "continue"))))));
+
+        AgentScopePptAgentRunner runner = new AgentScopePptAgentRunner(
+                pptMasterProperties(),
+                agentScopeProperties(),
+                factory,
+                new PptWorkflowEvents(new PptJobEventPublisher()));
+        PptJob job = sampleJob();
+        job.startNewResumeAttempt();
+        String checkpointSessionId = job.id() + "-" + job.activeAttemptSessionId();
+
+        runner.resumeFromCheckpoint(job, domi.argenticpptmaster.domain.PptJobNode.PROJECT_READY);
+        String confirmationId = job.currentConfirmationId().orElseThrow();
+        PptConfirmation confirmation = new PptConfirmation(
+                confirmationId, true, Map.of(), "approved", Instant.now());
+        job.receiveConfirmation(confirmation);
+        factory.enqueue((messages, runtimeContext) -> Flux.just(
+                new AgentStartEvent("reply-2", runtimeContext.getSessionId(), "test-agent"),
+                new RequireExternalExecutionEvent(
+                        "reply-2",
+                        List.of(new ToolUseBlock(
+                                "call-2",
+                                "request_plan_confirmation",
+                                Map.of("planSummary", "checkpoint confirmation resumed", "pendingSteps", "continue"))))));
+
+        runner.resume(job, confirmation);
+
+        assertThat(factory.contexts()).hasSize(2);
+        assertThat(factory.contexts().get(1).getSessionId()).isEqualTo(checkpointSessionId);
+    }
+
+    /**
+     * 验证 checkpoint 恢复指令中包含已完成节点和允许推进的后续节点。
+     */
+    @Test
+    void checkpointResumeInstructionContainsCompletedAndNextNodes() {
+        RecordingAgentFactory factory = new RecordingAgentFactory();
+        factory.enqueue((messages, runtimeContext) -> Flux.just(
+                new AgentStartEvent("reply-1", runtimeContext.getSessionId(), "test-agent"),
+                new RequireExternalExecutionEvent(
+                        "reply-1",
+                        List.of(new ToolUseBlock(
+                                "call-1",
+                                "request_plan_confirmation",
+                                Map.of("planSummary", "checkpoint resume", "pendingSteps", "continue"))))));
+
+        AgentScopePptAgentRunner runner = new AgentScopePptAgentRunner(
+                pptMasterProperties(),
+                agentScopeProperties(),
+                factory,
+                new PptWorkflowEvents(new PptJobEventPublisher()));
+        PptJob job = newImageEnhancedJob();
+
+        runner.resumeFromCheckpoint(job, domi.argenticpptmaster.domain.PptJobNode.SPEC_LOCK_WRITTEN);
+
+        String text = factory.messages().get(0).get(0).getTextContent();
+        assertThat(text).contains("inspect_checkpoint_status");
+        assertThat(text).contains("PROJECT_READY");
+        assertThat(text).contains("PLAN_CONFIRMED");
+        assertThat(text).contains("DESIGN_SPEC_WRITTEN");
+        assertThat(text).contains("SPEC_LOCK_WRITTEN");
+        assertThat(text).contains("IMAGES_MANIFEST_WRITTEN");
+        assertThat(text).contains("IMAGES_GENERATED");
+        assertThat(text).contains("IMAGE_CONTINUE_CONFIRMED");
+        assertThat(text).contains("NOTES_TOTAL_WRITTEN");
+        assertThat(text).contains("如果发现 checkpoint 与真实文件状态不一致");
+    }
+
     private static PptJob sampleJob() {
         PptJob job = new PptJob(
                 UUID.randomUUID(),

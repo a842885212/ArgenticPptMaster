@@ -1,6 +1,7 @@
 package domi.argenticpptmaster.web;
 
 import domi.argenticpptmaster.exception.PptJobNotFoundException;
+import domi.argenticpptmaster.exception.PptJobResumeException;
 import domi.argenticpptmaster.exception.PptJobStateException;
 import domi.argenticpptmaster.exception.PptStorageException;
 import domi.argenticpptmaster.web.dto.ApiErrorResponse;
@@ -85,6 +86,22 @@ public class GlobalExceptionHandler {
         log.error("ppt_storage_failed", ex);
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                 .body(ApiErrorResponse.of(500, "Internal Server Error", ex.getMessage()));
+    }
+
+    /**
+     * 处理任务恢复异常，返回 HTTP 409 状态码。
+     * <p>
+     * 任务恢复请求被拒绝通常是因为当前状态不允许恢复，属于客户端不应重试的业务冲突。
+     * </p>
+     *
+     * @param ex 任务恢复异常
+     * @return 包含 409 错误信息的响应
+     */
+    @ExceptionHandler(PptJobResumeException.class)
+    ResponseEntity<ApiErrorResponse> handleResume(PptJobResumeException ex) {
+        log.warn("ppt_job_resume_rejected: jobId={}, message={}", ex.jobId(), ex.getMessage());
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(ApiErrorResponse.of(409, "Conflict", ex.getMessage()));
     }
 
     @ExceptionHandler(AsyncRequestNotUsableException.class)

@@ -147,6 +147,48 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
     }
 
     /**
+     * 验证只有所有图片 item 均为 Generated 时，才会推进 IMAGES_GENERATED 节点。
+     */
+    @Test
+    void inspectImageManifestStatusAdvancesNodeOnlyWhenAllGenerated() throws IOException {
+        TestContext context = createContextWithImageEnhancedMode();
+        Files.createDirectories(context.projectPath.resolve("images"));
+        Files.writeString(context.projectPath.resolve("images/image_prompts.json"), """
+                {
+                  "items": [
+                    {"filename": "cover.png", "prompt": "a cover", "aspect_ratio": "16:9", "status": "Generated"},
+                    {"filename": "diagram.png", "prompt": "a diagram", "aspect_ratio": "4:3", "status": "Needs-Manual"}
+                  ]
+                }
+                """);
+
+        context.tools.inspectImageManifestStatus(context.runtime);
+
+        assertThat(context.job.lastCompletedNode()).isEmpty();
+    }
+
+    /**
+     * 验证 manifest 中存在未知状态时不会推进 IMAGES_GENERATED 节点。
+     */
+    @Test
+    void inspectImageManifestStatusDoesNotAdvanceNodeOnUnknownStatus() throws IOException {
+        TestContext context = createContextWithImageEnhancedMode();
+        Files.createDirectories(context.projectPath.resolve("images"));
+        Files.writeString(context.projectPath.resolve("images/image_prompts.json"), """
+                {
+                  "items": [
+                    {"filename": "cover.png", "prompt": "a cover", "aspect_ratio": "16:9", "status": "Generated"},
+                    {"filename": "diagram.png", "prompt": "a diagram", "aspect_ratio": "4:3", "status": "Processing"}
+                  ]
+                }
+                """);
+
+        context.tools.inspectImageManifestStatus(context.runtime);
+
+        assertThat(context.job.lastCompletedNode()).isEmpty();
+    }
+
+    /**
      * 验证后处理工具方法（validateSvgOutput、splitSpeakerNotes、finalizeProjectSvg）
      * 正确委托到对应的 Python 脚本，且传入正确的项目路径和格式参数。
      */

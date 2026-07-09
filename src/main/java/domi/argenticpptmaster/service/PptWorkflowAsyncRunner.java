@@ -5,6 +5,7 @@ import domi.argenticpptmaster.domain.PptConfirmation;
 import domi.argenticpptmaster.domain.PptJob;
 import domi.argenticpptmaster.domain.PptJobEvent;
 import domi.argenticpptmaster.domain.PptJobEventType;
+import domi.argenticpptmaster.domain.PptJobNode;
 import domi.argenticpptmaster.exception.PptJobStateException;
 import domi.argenticpptmaster.repository.PptJobRepository;
 import java.util.Map;
@@ -80,6 +81,39 @@ public class PptWorkflowAsyncRunner {
             job.fail(ex.getMessage());
             events.record(job, PptJobEvent.of(PptJobEventType.JOB_FAILED, "agent resume failed",
                     Map.of("error", ex.getMessage())));
+        }
+    }
+
+    /**
+     * 异步从 checkpoint 恢复失败任务的执行。
+     * <p>
+     * 该方法会启用新的 attempt session，避免旧失败上下文污染新执行。
+     * </p>
+     *
+     * @param jobId     任务 ID
+     * @param checkpoint 恢复起点，即最近成功完成的节点
+     */
+    @Async
+    public void resumeFromCheckpoint(UUID jobId, PptJobNode checkpoint) {
+        log.info("ppt_agent_resume_from_checkpoint_async: jobId={}, checkpoint={}", jobId, checkpoint.name());
+        PptJob job = findJob(jobId);
+        events.record(job, PptJobEvent.of(
+                PptJobEventType.JOB_RESUME_STARTED,
+                "job resume from checkpoint started",
+                Map.of(
+                        "checkpoint", checkpoint.name(),
+                        "attemptSessionId", job.activeAttemptSessionId(),
+                        "resumeCount", job.resumeCount())));
+        try {
+            agentRunner.resumeFromCheckpoint(job, checkpoint);
+            log.info("ppt_agent_resume_from_checkpoint_completed: jobId={}, status={}", jobId, job.status());
+        } catch (RuntimeException ex) {
+            log.error("ppt_agent_resume_from_checkpoint_failed: jobId={}", jobId, ex);
+            job.fail(ex.getMessage());
+            events.record(job, PptJobEvent.of(
+                    PptJobEventType.JOB_FAILED,
+                    "agent resume from checkpoint failed",
+                    Map.of("error", ex.getMessage(), "checkpoint", checkpoint.name())));
         }
     }
 

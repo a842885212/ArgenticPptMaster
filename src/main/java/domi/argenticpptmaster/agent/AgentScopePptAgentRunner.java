@@ -5,8 +5,9 @@ import domi.argenticpptmaster.config.PptMasterProperties;
 import domi.argenticpptmaster.domain.PptConfirmation;
 import domi.argenticpptmaster.domain.PptJob;
 import domi.argenticpptmaster.domain.PptJobEvent;
-import domi.argenticpptmaster.domain.PptWorkflowMode;
 import domi.argenticpptmaster.domain.PptJobEventType;
+import domi.argenticpptmaster.domain.PptJobNode;
+import domi.argenticpptmaster.domain.PptWorkflowMode;
 import domi.argenticpptmaster.service.PptWorkflowEvents;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
@@ -30,9 +31,12 @@ import io.agentscope.core.state.JsonFileAgentStateStore;
 import java.nio.file.Path;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -46,6 +50,7 @@ import org.springframework.stereotype.Component;
  * </p>
  * <ul>
  *   <li>工作流启动（{@link #start(PptJob)}）和恢复执行（{@link #resume(PptJob, PptConfirmation)}）</li>
+ *   <li>失败后从 checkpoint 恢复（{@link #resumeFromCheckpoint(PptJob, PptJobNode)}）</li>
  *   <li>管理 AgentScope 事件流的订阅与事件分发</li>
  *   <li>将 AgentScope 内部事件转换为统一的 {@link PptJobEvent} 事件并记录</li>
  *   <li>处理外部工具执行（等待用户确认）等异步交互场景</li>
@@ -110,7 +115,7 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
     public void resume(PptJob job, PptConfirmation confirmation) {
         log.info("ppt_agent_runner_resume: jobId={}, confirmationId={}",
                 job.id(), confirmation.confirmationId());
-        RuntimeContext context = runtimeContext(job);
+        RuntimeContext context = effectiveRuntimeContext(job);
         List<ToolUseBlock> pendingToolCalls = pendingToolCalls(job);
         if (pendingToolCalls.isEmpty()) {
             log.warn("ppt_agent_runner_resume_no_pending_calls: jobId={}, confirmationId={}",
@@ -121,6 +126,26 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
                 .map(toolCall -> buildApprovedToolResult(toolCall, confirmation))
                 .toList();
         List<Msg> input = List.of(new ToolResultMessage(results));
+        runAgent(job, input, context);
+    }
+
+    /**
+     * 从指定 checkpoint 节点继续执行失败后的 PPT 工作流。
+     * <p>
+     * 该方法会启动一次新的 AgentScope attempt session，并构建 checkpoint 恢复指令，
+     * 明确告知 Agent 哪些节点已完成、应从哪个节点之后继续、以及不允许重写已完成节点。
+     * </p>
+     *
+     * @param job        PPT 任务信息
+     * @param checkpoint 恢复起点，即最近成功完成的业务节点
+     */
+    @Override
+    public void resumeFromCheckpoint(PptJob job, PptJobNode checkpoint) {
+        log.info("ppt_agent_runner_resume_from_checkpoint: jobId={}, checkpoint={}, attemptSessionId={}",
+                job.id(), checkpoint.name(), job.activeAttemptSessionId());
+        prepareProjectPath(job);
+        RuntimeContext context = runtimeContextForCheckpoint(job);
+        List<Msg> input = List.of(new UserMessage(buildCheckpointResumeInstruction(job, checkpoint)));
         runAgent(job, input, context);
     }
 
@@ -176,6 +201,41 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
     }
 
     /**
+     * 根据当前 attempt 选择正确的 AgentScope 运行时上下文。
+     * <p>
+     * 初始 attempt（resumeCount == 0）使用原始 {@code jobId} session；
+     * checkpoint 恢复后的 attempt（resumeCount > 0）使用 {@code jobId-attempt-N} session，
+     * 确保确认恢复的回填与 checkpoint 恢复处于同一会话。
+     * </p>
+     *
+     * @param job PPT 任务信息
+     * @return AgentScope 运行时上下文
+     */
+    private RuntimeContext effectiveRuntimeContext(PptJob job) {
+        if (job.resumeCount() > 0) {
+            return runtimeContextForCheckpoint(job);
+        }
+        return runtimeContext(job);
+    }
+
+    /**
+     * 为 checkpoint 恢复创建 AgentScope 运行时上下文。
+     * <p>
+     * 使用任务的 {@code activeAttemptSessionId} 作为 sessionId，确保失败后的恢复
+     * 启用新的 attempt session，避免旧失败上下文污染。
+     * </p>
+     *
+     * @param job PPT 任务信息
+     * @return AgentScope 运行时上下文
+     */
+    private RuntimeContext runtimeContextForCheckpoint(PptJob job) {
+        return RuntimeContext.builder()
+                .userId(agentScopeProperties.serviceUserId())
+                .sessionId(job.id() + "-" + job.activeAttemptSessionId())
+                .build();
+    }
+
+    /**
      * 运行 AI 代理并处理事件流。
      * <p>
      * 创建工作流代理实例，订阅其事件流并将每个事件分发给
@@ -199,7 +259,7 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
                 .blockLast();
 
         if (!runState.waitingForExternalExecution) {
-            recoverWaitingConfirmationFromPersistedState(job, runState);
+            recoverWaitingConfirmationFromPersistedState(job, runState, runtimeContext.getSessionId());
         }
         log.info("ppt_agent_runner_stream_end: jobId={}, waitingForExternalExecution={}, exportPathPresent={}, status={}",
                 job.id(), runState.waitingForExternalExecution, job.exportPath().isPresent(), job.status());
@@ -335,15 +395,15 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
      * @param job      PPT 任务信息
      * @param runState 代理运行状态
      */
-    private void recoverWaitingConfirmationFromPersistedState(PptJob job, AgentRunState runState) {
+    private void recoverWaitingConfirmationFromPersistedState(PptJob job, AgentRunState runState, String sessionId) {
         if (job.exportPath().isPresent()) {
             log.info("ppt_agent_runner_skip_waiting_confirmation_recovery: jobId={}, status={}, reason=export_artifact_present",
                     job.id(), job.status());
             return;
         }
-        loadPersistedPendingToolCalls(job).ifPresent(toolCalls -> {
+        loadPersistedPendingToolCalls(job, sessionId).ifPresent(toolCalls -> {
             if (!toolCalls.isEmpty()) {
-                runState.waitingForExternalExecution = markWaitingForConfirmation(job, job.id().toString(), toolCalls);
+                runState.waitingForExternalExecution = markWaitingForConfirmation(job, sessionId, toolCalls);
             }
         });
     }
@@ -366,14 +426,14 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
      * @param job PPT 任务信息
      * @return 待确认工具调用列表；若会话状态不存在或无法识别，则返回空 Optional
      */
-    private java.util.Optional<List<ToolUseBlock>> loadPersistedPendingToolCalls(PptJob job) {
+    private java.util.Optional<List<ToolUseBlock>> loadPersistedPendingToolCalls(PptJob job, String sessionId) {
         try {
             JsonFileAgentStateStore stateStore = new JsonFileAgentStateStore(agentScopeProperties.sessionStorePath());
             return stateStore
-                    .get(agentScopeProperties.serviceUserId(), job.id().toString(), "agent_state", AgentState.class)
+                    .get(agentScopeProperties.serviceUserId(), sessionId, "agent_state", AgentState.class)
                     .map(this::extractPendingToolCallsFromState);
         } catch (RuntimeException ex) {
-            log.warn("ppt_agent_runner_load_state_failed: jobId={}", job.id(), ex);
+            log.warn("ppt_agent_runner_load_state_failed: jobId={}, sessionId={}", job.id(), sessionId, ex);
             return java.util.Optional.empty();
         }
     }
@@ -687,6 +747,112 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
                 job.workflowMode().name(),
                 job.sourceFiles().size(),
                 job.instruction() == null ? "" : job.instruction());
+    }
+
+    /**
+     * 构建从 checkpoint 恢复时的用户指令文本。
+     * <p>
+     * 该指令会明确告知 Agent：
+     * </p>
+     * <ol>
+     *   <li>当前任务模式与最近成功完成的节点</li>
+     *   <li>本次恢复允许推进的后续节点范围</li>
+     *   <li>已完成节点默认不可重写，除非发现证据缺失需先报告</li>
+     *   <li>恢复后首先调用 inspect_checkpoint_status 确认项目现状</li>
+     * </ol>
+     *
+     * @param job        PPT 任务信息
+     * @param checkpoint 恢复起点
+     * @return checkpoint 恢复指令文本
+     */
+    private String buildCheckpointResumeInstruction(PptJob job, PptJobNode checkpoint) {
+        List<PptJobNode> completedNodes = collectCompletedNodes(job, checkpoint);
+        List<PptJobNode> allowedNextNodes = collectAllowedNextNodes(job, checkpoint);
+        return """
+                当前 PPT 任务正在从上一个成功节点恢复执行，请严格按照以下要求继续：
+
+                1. 先调用 inspect_checkpoint_status 确认项目当前真实状态。
+                2. 以下节点已被记录为已完成，默认不要重写，除非 inspect_checkpoint_status 显示关键证据缺失：
+                   %s
+                3. 你本次只需要推进以下后续节点：
+                   %s
+                4. 当前工作流模式：%s。
+                5. 恢复起点：%s。
+                6. 如果发现 checkpoint 与真实文件状态不一致，请先说明不一致之处，不要强行继续。
+
+                任务上下文：
+                - jobId: %s
+                - projectName: %s
+                - format: %s
+                - workflowMode: %s
+                - sourceCount: %d
+                - instruction: %s
+                """.formatted(
+                formatNodeList(completedNodes),
+                formatNodeList(allowedNextNodes),
+                job.workflowMode().name(),
+                checkpoint.name(),
+                job.id(),
+                job.projectName(),
+                job.format(),
+                job.workflowMode().name(),
+                job.sourceFiles().size(),
+                job.instruction() == null ? "" : job.instruction());
+    }
+
+    /**
+     * 收集从起点到 checkpoint（含）之间所有应被视为已完成的节点。
+     *
+     * @param job        PPT 任务
+     * @param checkpoint 恢复起点
+     * @return 已完成节点列表
+     */
+    private List<PptJobNode> collectCompletedNodes(PptJob job, PptJobNode checkpoint) {
+        List<PptJobNode> result = new ArrayList<>();
+        for (PptJobNode node : PptJobNode.values()) {
+            if (!node.applicableTo(job.workflowMode())) {
+                continue;
+            }
+            result.add(node);
+            if (node == checkpoint) {
+                break;
+            }
+        }
+        return result;
+    }
+
+    /**
+     * 收集 checkpoint 之后允许推进的节点。
+     *
+     * @param job        PPT 任务
+     * @param checkpoint 恢复起点
+     * @return 允许推进的后续节点列表
+     */
+    private List<PptJobNode> collectAllowedNextNodes(PptJob job, PptJobNode checkpoint) {
+        List<PptJobNode> result = new ArrayList<>();
+        boolean afterCheckpoint = false;
+        for (PptJobNode node : PptJobNode.values()) {
+            if (!node.applicableTo(job.workflowMode())) {
+                continue;
+            }
+            if (afterCheckpoint) {
+                result.add(node);
+            }
+            if (node == checkpoint) {
+                afterCheckpoint = true;
+            }
+        }
+        return result;
+    }
+
+    private String formatNodeList(List<PptJobNode> nodes) {
+        if (nodes.isEmpty()) {
+            return "（无）";
+        }
+        return nodes.stream()
+                .map(PptJobNode::name)
+                .reduce((a, b) -> a + ", " + b)
+                .orElse("（无）");
     }
 
     /**

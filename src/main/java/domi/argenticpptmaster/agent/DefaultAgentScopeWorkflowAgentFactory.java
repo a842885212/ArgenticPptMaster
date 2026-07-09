@@ -5,6 +5,9 @@ import domi.argenticpptmaster.config.PptMasterProperties;
 import domi.argenticpptmaster.domain.PptJob;
 import domi.argenticpptmaster.domain.PptJobEvent;
 import domi.argenticpptmaster.domain.PptJobEventType;
+import domi.argenticpptmaster.domain.PptJobNode;
+import domi.argenticpptmaster.domain.PptJobNodeStatus;
+import domi.argenticpptmaster.domain.PptNodeExecution;
 import domi.argenticpptmaster.domain.PptWorkflowMode;
 import domi.argenticpptmaster.infra.PptMasterCommandExecutor;
 import domi.argenticpptmaster.service.PptWorkflowEvents;
@@ -38,6 +41,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.function.Predicate;
 import java.util.stream.Stream;
 import org.slf4j.Logger;
@@ -435,6 +439,27 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
     }
 
     /**
+     * 根据写入的相对路径推进对应的业务节点。
+     * <p>
+     * 将文件写入与业务节点完成绑定，确保节点状态能反映真实产物状态。
+     * </p>
+     *
+     * @param runtime       工具运行时上下文
+     * @param normalizedPath 规范化的相对路径（使用正斜杠）
+     */
+    private void advanceNodeForWrittenFile(PptAgentToolRuntime runtime, String normalizedPath) {
+        if (normalizedPath.equals("design_spec.md")) {
+            runtime.completeNode(PptJobNode.DESIGN_SPEC_WRITTEN, Map.of("file", normalizedPath));
+        } else if (normalizedPath.equals("spec_lock.md")) {
+            runtime.completeNode(PptJobNode.SPEC_LOCK_WRITTEN, Map.of("file", normalizedPath));
+        } else if (normalizedPath.equals("images/image_prompts.json")) {
+            runtime.completeNode(PptJobNode.IMAGES_MANIFEST_WRITTEN, Map.of("file", normalizedPath));
+        } else if (normalizedPath.equals("notes/total.md")) {
+            runtime.completeNode(PptJobNode.NOTES_TOTAL_WRITTEN, Map.of("file", normalizedPath));
+        }
+    }
+
+    /**
      * 本地工具与约束补丁。
      * <p>
      * 描述当前服务实际暴露的工具集合、可写路径、确认机制与失败策略。
@@ -445,10 +470,10 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
     private String buildLocalToolingConstraintsPrompt() {
         return """
                 本地工具约束：
-                - 可用工具：describe_job, init_ppt_project, import_job_sources, inspect_project_info, validate_project, list_project_files, collect_source_markdown, read_project_text_file, write_project_text_file, split_speaker_notes, validate_svg_output, finalize_project_svg, export_project_pptx, generate_project_images, inspect_image_manifest_status, request_plan_confirmation。
+                - 可用工具：describe_job, init_ppt_project, import_job_sources, inspect_project_info, validate_project, list_project_files, collect_source_markdown, read_project_text_file, write_project_text_file, split_speaker_notes, validate_svg_output, finalize_project_svg, export_project_pptx, generate_project_images, inspect_image_manifest_status, inspect_checkpoint_status, request_plan_confirmation。
                 - 允许写入的路径：design_spec.md、spec_lock.md、notes/*、svg_output/*、analysis/*、images/*。
                 - 人工确认统一通过 request_plan_confirmation；只有该工具能暂停工作流等待用户回复。
-                - 不要假设本地文件内容；所有文件状态通过 list_project_files / read_project_text_file / inspect_image_manifest_status 确认。
+                - 不要假设本地文件内容；所有文件状态通过 list_project_files / read_project_text_file / inspect_image_manifest_status / inspect_checkpoint_status 确认。
                 - 不要走 template_fill_pptx 或 pptx 模板路线；当前服务只支持 markdown-first 路线。
                 """;
     }
@@ -470,6 +495,31 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
             PptMasterProperties properties,
             PptMasterCommandExecutor executor,
             PptWorkflowEvents events) {
+
+        /**
+         * 推进指定业务节点到已完成状态，并记录节点完成事件。
+         *
+         * @param node    业务节点
+         * @param summary 完成摘要
+         */
+        void completeNode(PptJobNode node, Map<String, Object> summary) {
+            if (!node.applicableTo(job.workflowMode())) {
+                return;
+            }
+            PptNodeExecution execution = job.nodeExecution(node);
+            if (execution == null || execution.status() == PptJobNodeStatus.PENDING) {
+                job.startNode(node);
+                events.record(job, PptJobEvent.of(
+                        PptJobEventType.NODE_STARTED,
+                        "node started: " + node.name(),
+                        Map.of("node", node.name())));
+            }
+            job.completeNode(node, summary);
+            events.record(job, PptJobEvent.of(
+                    PptJobEventType.NODE_COMPLETED,
+                    "node completed: " + node.name(),
+                    Map.of("node", node.name(), "summary", summary)));
+        }
     }
 
     /**
@@ -571,6 +621,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
             Path sourcesDir = projectPath.resolve("sources");
             try (Stream<Path> sourceStream = Files.isDirectory(sourcesDir) ? Files.list(sourcesDir) : Stream.empty()) {
                 if (sourceStream.findAny().isPresent()) {
+                    runtime.completeNode(PptJobNode.PROJECT_READY, Map.of("skipped", true));
                     return "sources already imported under " + sourcesDir;
                 }
             } catch (IOException ex) {
@@ -589,6 +640,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
             if (!result.successful()) {
                 throw new IllegalStateException("source import failed: " + result.output());
             }
+            runtime.completeNode(PptJobNode.PROJECT_READY, Map.of("sourcesDir", sourcesDir.toString()));
             return result.output().isBlank() ? "sources imported into " + sourcesDir : result.output();
         }
 
@@ -613,6 +665,58 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                 throw new IllegalStateException("project info failed: " + result.output());
             }
             return result.output();
+        }
+
+        /**
+         * 检查当前 checkpoint 与真实项目文件状态是否一致。
+         * <p>
+         * 为 checkpoint 恢复场景提供一个稳定的结构化入口，避免 Agent 在恢复指令里
+         * 调用不存在的工具。该工具会汇总项目 info、关键目录文件列表、已记录的节点执行状态，
+         * 并返回当前缺失的关键证据，供 Agent 判断是否可以直接继续后续节点。
+         * </p>
+         *
+         * @param runtime 工具运行时上下文
+         * @return checkpoint 状态概览
+         */
+        @Tool(name = "inspect_checkpoint_status", description = "Inspect the current checkpoint state, including project info, key files, completed nodes, and missing evidence.", readOnly = true)
+        public Map<String, Object> inspectCheckpointStatus(PptAgentToolRuntime runtime) {
+            Path projectPath = runtime.job().projectPath()
+                    .orElseThrow(() -> new IllegalStateException("job project path is not prepared"));
+            String projectInfo = inspectProjectInfo(runtime);
+            Map<String, Object> files = listProjectFiles(runtime);
+            Map<String, Object> nodeStates = new LinkedHashMap<>();
+            List<String> missingEvidence = new ArrayList<>();
+            for (PptJobNode node : PptJobNode.values()) {
+                if (!node.applicableTo(runtime.job().workflowMode())) {
+                    continue;
+                }
+                PptNodeExecution execution = runtime.job().nodeExecution(node);
+                Map<String, Object> entry = new LinkedHashMap<>();
+                String status = execution == null ? "NOT_APPLICABLE" : execution.status().name();
+                entry.put("status", status);
+                if (execution != null && !execution.summary().isEmpty()) {
+                    entry.put("summary", execution.summary());
+                }
+                boolean evidencePresent = hasCheckpointEvidence(projectPath, files, node);
+                entry.put("evidencePresent", evidencePresent);
+                if (execution != null && execution.status() == PptJobNodeStatus.COMPLETED && !evidencePresent) {
+                    missingEvidence.add(node.name());
+                }
+                nodeStates.put(node.name(), entry);
+            }
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("projectRoot", projectPath.toString());
+            result.put("projectInfo", projectInfo);
+            result.put("files", files);
+            result.put("currentNode", runtime.job().currentNode().map(Enum::name).orElse(null));
+            result.put("lastCompletedNode", runtime.job().lastCompletedNode().map(Enum::name).orElse(null));
+            result.put("lastFailureNode", runtime.job().lastFailureNode().map(Enum::name).orElse(null));
+            result.put("resumeCount", runtime.job().resumeCount());
+            result.put("activeAttemptSessionId", runtime.job().activeAttemptSessionId());
+            result.put("nodeStates", nodeStates);
+            result.put("missingEvidence", missingEvidence);
+            result.put("consistent", missingEvidence.isEmpty());
+            return result;
         }
 
         /**
@@ -663,6 +767,49 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
             result.put("svgFinal", listRelativeFiles(projectPath, "svg_final"));
             result.put("exports", listRelativeFiles(projectPath, "exports"));
             return result;
+        }
+
+        private boolean hasCheckpointEvidence(Path projectPath, Map<String, Object> files, PptJobNode node) {
+            return switch (node) {
+                case PROJECT_READY -> hasAnyFile(files.get("sources"));
+                case PLAN_CONFIRMED, IMAGE_CONTINUE_CONFIRMED -> true;
+                case DESIGN_SPEC_WRITTEN -> Files.isRegularFile(projectPath.resolve("design_spec.md"));
+                case SPEC_LOCK_WRITTEN -> Files.isRegularFile(projectPath.resolve("spec_lock.md"));
+                case IMAGES_MANIFEST_WRITTEN -> Files.isRegularFile(projectPath.resolve("images/image_prompts.json"));
+                case IMAGES_GENERATED -> hasGeneratedImages(projectPath);
+                case NOTES_TOTAL_WRITTEN -> Files.isRegularFile(projectPath.resolve("notes/total.md"));
+                case SVG_OUTPUT_VALIDATED -> hasAnyFile(files.get("svgOutput"));
+                case SPEAKER_NOTES_SPLIT -> hasSplitSpeakerNotes(files.get("notes"));
+                case SVG_FINALIZED -> hasAnyFile(files.get("svgFinal"));
+                case PPT_EXPORTED -> hasAnyFile(files.get("exports"));
+            };
+        }
+
+        private boolean hasGeneratedImages(Path projectPath) {
+            Path imagesDir = projectPath.resolve("images");
+            if (!Files.isDirectory(imagesDir)) {
+                return false;
+            }
+            try (Stream<Path> stream = Files.list(imagesDir)) {
+                return stream.anyMatch(path -> Files.isRegularFile(path)
+                        && !path.getFileName().toString().equals("image_prompts.json"));
+            } catch (IOException ex) {
+                throw new IllegalStateException("failed to inspect images dir", ex);
+            }
+        }
+
+        private boolean hasSplitSpeakerNotes(Object notesEntry) {
+            if (!(notesEntry instanceof List<?> noteFiles)) {
+                return false;
+            }
+            return noteFiles.stream()
+                    .filter(String.class::isInstance)
+                    .map(String.class::cast)
+                    .anyMatch(path -> !path.equals("notes/total.md"));
+        }
+
+        private boolean hasAnyFile(Object value) {
+            return value instanceof List<?> list && !list.isEmpty();
         }
 
         /**
@@ -781,8 +928,11 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
             } catch (IOException ex) {
                 throw new IllegalStateException("failed to write project file: " + relativePath, ex);
             }
+            Path projectPath = runtime.job().projectPath().orElseThrow();
+            String normalized = projectPath.relativize(target).toString().replace('\\', '/');
+            advanceNodeForWrittenFile(runtime, normalized);
             return Map.of(
-                    "relativePath", runtime.job().projectPath().orElseThrow().relativize(target).toString(),
+                    "relativePath", normalized,
                     "charCount", content.length(),
                     "bytes", content.getBytes(StandardCharsets.UTF_8).length);
         }
@@ -807,6 +957,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
             if (!result.successful()) {
                 throw new IllegalStateException("speaker notes split failed: " + result.output());
             }
+            runtime.completeNode(PptJobNode.SPEAKER_NOTES_SPLIT, Map.of());
             return result.output().isBlank() ? "speaker notes split completed" : result.output();
         }
 
@@ -830,6 +981,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
             if (!result.successful()) {
                 throw new IllegalStateException("svg quality validation failed: " + result.output());
             }
+            runtime.completeNode(PptJobNode.SVG_OUTPUT_VALIDATED, Map.of());
             return result.output().isBlank() ? "svg quality validation passed" : result.output();
         }
 
@@ -853,6 +1005,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
             if (!result.successful()) {
                 throw new IllegalStateException("svg finalize failed: " + result.output());
             }
+            runtime.completeNode(PptJobNode.SVG_FINALIZED, Map.of());
             return result.output().isBlank() ? "svg finalization completed" : result.output();
         }
 
@@ -888,6 +1041,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
             }
             Path artifact = detectLatestExport(projectPath);
             runtime.job().complete(artifact);
+            runtime.completeNode(PptJobNode.PPT_EXPORTED, Map.of("fileName", artifact.getFileName().toString()));
             runtime.events().record(runtime.job(), PptJobEvent.of(
                     PptJobEventType.EXPORT_READY,
                     "ppt artifact exported",
@@ -989,15 +1143,19 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                             "status", status,
                             "lastError", item.getOrDefault("last_error", "")));
                 }
+                Map<String, Object> summary = Map.of(
+                        "total", items.size(),
+                        "pending", pending,
+                        "generated", generated,
+                        "failed", failed,
+                        "needsManual", needsManual);
+                if (generated == items.size() && items.size() > 0) {
+                    runtime.completeNode(PptJobNode.IMAGES_GENERATED, summary);
+                }
                 return Map.of(
                         "manifestPath", manifestPath.toString(),
                         "exists", true,
-                        "summary", Map.of(
-                                "total", items.size(),
-                                "pending", pending,
-                                "generated", generated,
-                                "failed", failed,
-                                "needsManual", needsManual),
+                        "summary", summary,
                         "items", itemSummaries);
             } catch (IOException ex) {
                 throw new IllegalStateException("failed to read image manifest: " + manifestPath, ex);
@@ -1127,6 +1285,74 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
             } catch (IOException ex) {
                 throw new IllegalStateException("failed to detect exported pptx", ex);
             }
+        }
+    }
+
+    /**
+     * 检查当前 checkpoint 状态。
+     * <p>
+     * 返回项目中关键文件与目录的存在性，帮助 Agent 在恢复执行时快速判断
+     * 从哪个节点继续，减少反复读取多个文件的调用次数。
+     * </p>
+     *
+     * @param runtime 工具运行时上下文
+     * @return checkpoint 状态汇总
+     */
+    @Tool(name = "inspect_checkpoint_status", description = "Inspect project checkpoint status: which key files/directories exist for resuming the workflow.", readOnly = true)
+    public Map<String, Object> inspectCheckpointStatus(PptAgentToolRuntime runtime) {
+        Path projectPath = runtime.job().projectPath()
+                .orElseThrow(() -> new IllegalStateException("job project path is not prepared"));
+        Map<String, Object> status = new LinkedHashMap<>();
+        status.put("projectPath", projectPath.toString());
+        status.put("designSpecExists", fileExistsAndNonEmpty(projectPath, "design_spec.md"));
+        status.put("specLockExists", fileExistsAndNonEmpty(projectPath, "spec_lock.md"));
+        status.put("imageManifestExists", fileExistsAndNonEmpty(projectPath, "images/image_prompts.json"));
+        status.put("notesTotalExists", fileExistsAndNonEmpty(projectPath, "notes/total.md"));
+        status.put("svgOutputCount", countRelativeFiles(projectPath, "svg_output"));
+        status.put("svgFinalCount", countRelativeFiles(projectPath, "svg_final"));
+        status.put("exportFiles", listRelativeFilesForCheckpoint(projectPath, "exports"));
+        status.put("lastCompletedNode", runtime.job().lastCompletedNode().map(Enum::name).orElse("none"));
+        status.put("workflowMode", runtime.job().workflowMode().name());
+        return status;
+    }
+
+    private List<String> listRelativeFilesForCheckpoint(Path projectPath, String directoryName) {
+        Path directory = projectPath.resolve(directoryName);
+        if (!Files.isDirectory(directory)) {
+            return List.of();
+        }
+        try (Stream<Path> stream = Files.walk(directory)) {
+            return stream
+                    .filter(Files::isRegularFile)
+                    .sorted()
+                    .map(path -> projectPath.relativize(path).toString())
+                    .toList();
+        } catch (IOException ex) {
+            return List.of();
+        }
+    }
+
+    private boolean fileExistsAndNonEmpty(Path projectPath, String relativePath) {
+        Path target = projectPath.resolve(relativePath).normalize();
+        if (!target.startsWith(projectPath)) {
+            return false;
+        }
+        try {
+            return Files.isRegularFile(target) && Files.size(target) > 0;
+        } catch (IOException ex) {
+            return false;
+        }
+    }
+
+    private int countRelativeFiles(Path projectPath, String directoryName) {
+        Path directory = projectPath.resolve(directoryName);
+        if (!Files.isDirectory(directory)) {
+            return 0;
+        }
+        try (Stream<Path> stream = Files.walk(directory)) {
+            return (int) stream.filter(Files::isRegularFile).count();
+        } catch (IOException ex) {
+            return 0;
         }
     }
 

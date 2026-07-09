@@ -3,6 +3,7 @@ package domi.argenticpptmaster.domain;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -42,6 +43,14 @@ public class PptJob {
     private PptConfirmation confirmation;
     private String errorMessage;
 
+    // 节点级 checkpoint 状态（无数据库版，仅内存内有效）
+    private final Map<PptJobNode, PptNodeExecution> nodeExecutions = new EnumMap<>(PptJobNode.class);
+    private PptJobNode currentNode;
+    private PptJobNode lastCompletedNode;
+    private PptJobNode lastFailureNode;
+    private String activeAttemptSessionId;
+    private int resumeCount;
+
     /**
      * 创建一个新的 PPT 任务实例。
      *
@@ -62,6 +71,20 @@ public class PptJob {
         this.createdAt = Instant.now();
         this.updatedAt = createdAt;
         this.status = PptJobStatus.ACCEPTED;
+        this.activeAttemptSessionId = buildAttemptSessionId(0);
+        initializeNodeExecutions();
+    }
+
+    private void initializeNodeExecutions() {
+        for (PptJobNode node : PptJobNode.values()) {
+            if (node.applicableTo(workflowMode)) {
+                nodeExecutions.put(node, PptNodeExecution.pending(node));
+            }
+        }
+    }
+
+    private static String buildAttemptSessionId(int attempt) {
+        return "attempt-" + attempt;
     }
 
     public synchronized UUID id() {
@@ -132,6 +155,34 @@ public class PptJob {
         return Optional.ofNullable(errorMessage);
     }
 
+    public synchronized Optional<PptJobNode> currentNode() {
+        return Optional.ofNullable(currentNode);
+    }
+
+    public synchronized Optional<PptJobNode> lastCompletedNode() {
+        return Optional.ofNullable(lastCompletedNode);
+    }
+
+    public synchronized Optional<PptJobNode> lastFailureNode() {
+        return Optional.ofNullable(lastFailureNode);
+    }
+
+    public synchronized int resumeCount() {
+        return resumeCount;
+    }
+
+    public synchronized String activeAttemptSessionId() {
+        return activeAttemptSessionId;
+    }
+
+    public synchronized Map<PptJobNode, PptNodeExecution> nodeExecutions() {
+        return Map.copyOf(nodeExecutions);
+    }
+
+    public synchronized PptNodeExecution nodeExecution(PptJobNode node) {
+        return nodeExecutions.get(node);
+    }
+
     /**
      * 添加源文件到任务，同时更新时间戳。
      *
@@ -193,7 +244,14 @@ public class PptJob {
      */
     public synchronized void startAgent() {
         this.status = PptJobStatus.RUNNING_AGENT;
+        if (this.currentNode == null) {
+            this.currentNode = resolveFirstNode();
+        }
         touch();
+    }
+
+    private PptJobNode resolveFirstNode() {
+        return PptJobNode.PROJECT_READY;
     }
 
     /**
@@ -217,13 +275,154 @@ public class PptJob {
 
     /**
      * 任务失败，记录错误信息。
+     * <p>
+     * 如果当前存在正在执行的 {@code currentNode}，则同时将该节点标记为失败，
+     * 确保 {@code lastFailureNode} 与 {@code nodeStates} 能反映真实失败位置。
+     * </p>
      *
      * @param message 失败原因描述
      */
     public synchronized void fail(String message) {
         this.status = PptJobStatus.FAILED;
         this.errorMessage = message;
+        if (this.currentNode != null) {
+            updateNode(this.currentNode, currentExecution(this.currentNode).fail(message));
+            this.lastFailureNode = this.currentNode;
+            this.currentNode = null;
+        }
         touch();
+    }
+
+    /**
+     * 标记指定节点开始执行。
+     *
+     * @param node 业务节点
+     */
+    public synchronized void startNode(PptJobNode node) {
+        this.currentNode = node;
+        updateNode(node, currentExecution(node).start());
+        touch();
+    }
+
+    /**
+     * 标记指定节点已完成，并可附带结构化摘要。
+     *
+     * @param node    业务节点
+     * @param summary 完成摘要
+     */
+    public synchronized void completeNode(PptJobNode node, Map<String, Object> summary) {
+        updateNode(node, currentExecution(node).complete(summary));
+        this.lastCompletedNode = node;
+        if (this.currentNode == node) {
+            this.currentNode = null;
+        }
+        touch();
+    }
+
+    /**
+     * 标记指定节点失败。
+     *
+     * @param node    业务节点
+     * @param message 失败原因
+     */
+    public synchronized void failNode(PptJobNode node, String message) {
+        updateNode(node, currentExecution(node).fail(message));
+        this.lastFailureNode = node;
+        this.status = PptJobStatus.FAILED;
+        this.errorMessage = message;
+        if (this.currentNode == node) {
+            this.currentNode = null;
+        }
+        touch();
+    }
+
+    /**
+     * 标记指定节点进入等待人工确认状态。
+     *
+     * @param node 业务节点
+     */
+    public synchronized void waitNodeConfirmation(PptJobNode node) {
+        updateNode(node, currentExecution(node).waitForConfirmation());
+        this.currentNode = node;
+        touch();
+    }
+
+    /**
+     * 在收到人工确认后，推进确认类节点到已完成状态。
+     *
+     * @param node 业务节点
+     */
+    public synchronized void confirmNode(PptJobNode node) {
+        completeNode(node, Map.of());
+    }
+
+    /**
+     * 启动一次新的恢复尝试。
+     * <p>
+     * 失败后的恢复会启用新的 attempt session，以避免旧失败上下文污染新执行。
+     * </p>
+     */
+    public synchronized void startNewResumeAttempt() {
+        this.resumeCount++;
+        this.activeAttemptSessionId = buildAttemptSessionId(resumeCount);
+        this.status = PptJobStatus.RUNNING_AGENT;
+        this.lastFailureNode = null;
+        touch();
+    }
+
+    /**
+     * 原子地尝试启动一次新的恢复尝试。
+     * <p>
+     * 在同一个 synchronized 块内完成所有恢复前置校验与状态迁移，避免并发调用
+     * {@code /resume} 时出现多次恢复竞态。
+     * </p>
+     *
+     * @param maxAttempts 允许的最大恢复次数
+     * @return 恢复失败原因；若成功则返回 null
+     */
+    public synchronized String tryStartResumeAttempt(int maxAttempts) {
+        if (status == PptJobStatus.WAITING_CONFIRMATION) {
+            return "job is waiting for confirmation; use /confirm instead";
+        }
+        if (status != PptJobStatus.FAILED) {
+            return "job is not in failed state: " + status;
+        }
+        if (lastCompletedNode == null) {
+            return "job has no completed node to resume from";
+        }
+        if (resumeCount >= maxAttempts) {
+            return "maximum resume attempts reached: " + maxAttempts;
+        }
+        startNewResumeAttempt();
+        return null;
+    }
+
+    /**
+     * 判断当前任务是否可以从失败中恢复。
+     * <p>
+     * 仅当任务处于 {@link PptJobStatus#FAILED}，且存在至少一个适用于当前模式的成功节点时返回 true。
+     * </p>
+     *
+     * @return true 表示可恢复
+     */
+    public synchronized boolean resumable() {
+        if (status != PptJobStatus.FAILED) {
+            return false;
+        }
+        return lastCompletedNode != null;
+    }
+
+    private PptNodeExecution currentExecution(PptJobNode node) {
+        PptNodeExecution execution = nodeExecutions.get(node);
+        if (execution == null) {
+            execution = PptNodeExecution.pending(node);
+            nodeExecutions.put(node, execution);
+        }
+        return execution;
+    }
+
+    private void updateNode(PptJobNode node, PptNodeExecution execution) {
+        nodeExecutions.put(node, execution);
     }
 
     private void touch() {

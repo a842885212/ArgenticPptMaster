@@ -4,11 +4,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import domi.argenticpptmaster.domain.PptJob;
+import domi.argenticpptmaster.domain.PptJobNode;
 import domi.argenticpptmaster.domain.PptJobStatus;
 import domi.argenticpptmaster.domain.PptWorkflowMode;
+import domi.argenticpptmaster.exception.PptJobResumeException;
 import domi.argenticpptmaster.exception.PptJobStateException;
 import domi.argenticpptmaster.agent.AgentScopeWorkflowAgent;
 import domi.argenticpptmaster.agent.AgentScopeWorkflowAgentFactory;
+import domi.argenticpptmaster.repository.PptJobRepository;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
 import io.agentscope.core.event.AgentStartEvent;
@@ -48,6 +51,9 @@ class PptWorkflowServiceTests {
 
     @Autowired
     private PptWorkflowService workflowService;
+
+    @Autowired
+    private PptJobRepository repository;
 
     @DynamicPropertySource
     static void properties(DynamicPropertyRegistry registry) {
@@ -164,6 +170,70 @@ class PptWorkflowServiceTests {
     }
 
     /**
+     * 验证失败任务在存在已完成节点时可以恢复，且恢复后 resumeCount 增加。
+     */
+    @Test
+    void resumeJobFromFailureIncreasesResumeCount() {
+        PptJob job = new PptJob(
+                java.util.UUID.randomUUID(),
+                "demo",
+                "ppt169",
+                "make a deck",
+                PptWorkflowMode.BASIC,
+                tempDir.resolve("jobs/demo"));
+        repository.save(job);
+        job.completeNode(PptJobNode.PROJECT_READY, Map.of());
+        job.failNode(PptJobNode.SVG_OUTPUT_VALIDATED, "svg validation failed");
+
+        PptJob resumed = workflowService.resumeJob(job.id());
+
+        assertThat(resumed.status()).isEqualTo(PptJobStatus.RUNNING_AGENT);
+        assertThat(resumed.resumeCount()).isEqualTo(1);
+        assertThat(resumed.activeAttemptSessionId()).isEqualTo("attempt-1");
+        assertThat(resumed.lastFailureNode()).isEmpty();
+    }
+
+    /**
+     * 验证等待确认状态的任务调用 resume 会被拒绝。
+     */
+    @Test
+    void rejectsResumeWhenJobIsWaitingConfirmation() {
+        PptJob job = new PptJob(
+                java.util.UUID.randomUUID(),
+                "demo",
+                "ppt169",
+                "make a deck",
+                PptWorkflowMode.BASIC,
+                tempDir.resolve("jobs/demo"));
+        repository.save(job);
+        job.requireConfirmation("c-1", Map.of());
+
+        assertThatThrownBy(() -> workflowService.resumeJob(job.id()))
+                .isInstanceOf(PptJobResumeException.class)
+                .hasMessageContaining("waiting for confirmation");
+    }
+
+    /**
+     * 验证已完成任务调用 resume 会被拒绝。
+     */
+    @Test
+    void rejectsResumeWhenJobIsCompleted() {
+        PptJob job = new PptJob(
+                java.util.UUID.randomUUID(),
+                "demo",
+                "ppt169",
+                "make a deck",
+                PptWorkflowMode.BASIC,
+                tempDir.resolve("jobs/demo"));
+        repository.save(job);
+        job.complete(Path.of("var/ppt-master/exports/demo.pptx"));
+
+        assertThatThrownBy(() -> workflowService.resumeJob(job.id()))
+                .isInstanceOf(PptJobResumeException.class)
+                .hasMessageContaining("not in failed state");
+    }
+
+    /**
      * 测试用 Spring 配置类。
      * <p>
      * 提供 {@link AgentScopeWorkflowAgentFactory} 的 Mock Bean，
@@ -179,6 +249,12 @@ class PptWorkflowServiceTests {
             return job -> new AgentScopeWorkflowAgent() {
                 @Override
                 public Flux<AgentEvent> streamEvents(List<Msg> messages, RuntimeContext runtimeContext) {
+                    if (messages.size() == 1 && messages.get(0).getTextContent().contains("从上一个成功节点恢复执行")) {
+                        return Flux.just(
+                                new AgentStartEvent("reply-2", runtimeContext.getSessionId(), "test-agent"),
+                                new io.agentscope.core.event.AgentResultEvent(new io.agentscope.core.message.AssistantMessage(
+                                        "checkpoint inconsistency detected")));
+                    }
                     return Flux.just(
                             new AgentStartEvent("reply-1", runtimeContext.getSessionId(), "test-agent"),
                             new RequireExternalExecutionEvent(

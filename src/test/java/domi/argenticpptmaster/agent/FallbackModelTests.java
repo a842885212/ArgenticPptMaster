@@ -8,6 +8,7 @@ import io.agentscope.core.message.UserMessage;
 import io.agentscope.core.model.ChatResponse;
 import io.agentscope.core.model.GenerateOptions;
 import io.agentscope.core.model.Model;
+import io.agentscope.core.model.ModelException;
 import io.agentscope.core.model.ToolSchema;
 import io.agentscope.core.model.exception.InternalServerException;
 import io.agentscope.core.model.exception.OpenAIException;
@@ -17,6 +18,7 @@ import java.util.List;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
+import reactor.core.Exceptions;
 import reactor.core.publisher.Flux;
 
 /**
@@ -88,6 +90,33 @@ class FallbackModelTests {
     }
 
     /**
+     * 验证 Reactor 对超时异常的包装不会阻断 fallback 判定。
+     */
+    @Test
+    void fallsBackOnReactorWrappedTimeout() {
+        assertFallbackOnError(Exceptions.propagate(new TimeoutException("reactor wrapped timeout")));
+    }
+
+    /**
+     * 验证 AgentScope 将超时包装为 {@link ModelException} 时，仍会触发 fallback。
+     */
+    @Test
+    void fallsBackOnWrappedModelTimeout() {
+        assertFallbackOnError(new ModelException(
+                "Model request timeout after PT2M",
+                new TimeoutException("request timeout")));
+    }
+
+    /**
+     * 验证仅包含超时关键字的 {@link ModelException} 也会触发 fallback。
+     */
+    @Test
+    void fallsBackOnModelTimeoutMessage() {
+        assertFallbackOnError(new ModelException(
+                "Model request timeout after PT2M [model=gpt5.4, provider=openai]"));
+    }
+
+    /**
      * 验证网络/超时类异常允许 fallback。
      */
     @Test
@@ -95,6 +124,47 @@ class FallbackModelTests {
         assertFallbackOnError(new SocketException("connection reset"));
         assertFallbackOnError(new SocketTimeoutException("read timed out"));
         assertFallbackOnError(new TimeoutException("request timeout"));
+    }
+
+    /**
+     * 验证主模型因 401 鉴权失败不可用时，会跨模型组切换到 fallback 模型。
+     * <p>
+     * 401 不应触发同模型组内的反复重试，但当存在备用模型组时，应尝试切换。
+     * </p>
+     */
+    @Test
+    void fallsBackOnModelGroupUnavailable401() {
+        AtomicInteger fallbackCalls = new AtomicInteger();
+        RuntimeException primaryError = OpenAIException.create(
+                401, "unauthorized", null, null);
+        Model primary = countingModel("primary", new AtomicInteger(), primaryError);
+        Model fallback = countingModel("fallback", fallbackCalls, null);
+
+        FallbackModel model = new FallbackModel(List.of(primary, fallback));
+        List<ChatResponse> responses = model.stream(MESSAGES, TOOLS, OPTIONS).collectList().block();
+
+        assertThat(responses).hasSize(1);
+        assertThat(fallbackCalls.get()).isEqualTo(1);
+    }
+
+    /**
+     * 验证 401 模型组不可用错误切完所有候选后，会抛出包含完整模型链的异常。
+     */
+    @Test
+    void failsWithAggregateMessageWhen401PropagatesThroughAllCandidates() {
+        RuntimeException primaryError = OpenAIException.create(
+                401, "unauthorized", null, null);
+        RuntimeException fallbackError = OpenAIException.create(
+                401, "unauthorized", null, null);
+        Model primary = countingModel("primary", new AtomicInteger(), primaryError);
+        Model fallback = countingModel("fallback", new AtomicInteger(), fallbackError);
+
+        FallbackModel model = new FallbackModel(List.of(primary, fallback));
+        assertThatThrownBy(() -> model.stream(MESSAGES, TOOLS, OPTIONS).collectList().block())
+                .hasMessageContaining("all model candidates failed")
+                .hasMessageContaining("primary")
+                .hasMessageContaining("fallback")
+                .hasMessageContaining("unauthorized");
     }
 
     /**
@@ -148,12 +218,18 @@ class FallbackModelTests {
                 500, "Connection error", null, null))).isTrue();
         assertThat(model.isFallbackEligible(OpenAIException.create(
                 503, "status 503", null, null))).isTrue();
+        assertThat(model.isFallbackEligible(new ModelException(
+                "Model request timeout after PT2M"))).isTrue();
+        assertThat(model.isFallbackEligible(new ModelException(
+                "wrapped timeout", new TimeoutException("request timeout")))).isTrue();
 
         assertThat(model.isFallbackEligible(new IllegalArgumentException("bad"))).isFalse();
+        assertThat(model.isFallbackEligible(new ModelException(
+                "model failed because request was invalid"))).isFalse();
         assertThat(model.isFallbackEligible(OpenAIException.create(
                 400, "bad request", null, null))).isFalse();
         assertThat(model.isFallbackEligible(OpenAIException.create(
-                401, "unauthorized", null, null))).isFalse();
+                401, "unauthorized", null, null))).isTrue();
     }
 
     private void assertFallbackOnError(Throwable error) {

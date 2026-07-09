@@ -1,16 +1,17 @@
 package domi.argenticpptmaster.agent;
 
+import io.agentscope.core.message.Msg;
 import io.agentscope.core.model.ChatResponse;
 import io.agentscope.core.model.GenerateOptions;
 import io.agentscope.core.model.Model;
+import io.agentscope.core.model.ModelException;
 import io.agentscope.core.model.ToolSchema;
-import io.agentscope.core.model.exception.InternalServerException;
 import io.agentscope.core.model.exception.OpenAIException;
-import io.agentscope.core.message.Msg;
 import java.net.SocketException;
 import java.net.SocketTimeoutException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.concurrent.TimeoutException;
 import org.slf4j.Logger;
@@ -22,13 +23,18 @@ import reactor.core.publisher.Flux;
  * 多模型组 fallback 包装器。
  * <p>
  * 实现 AgentScope {@link Model} 接口，内部维护按优先级排序的多个模型实例。
- * 调用时优先使用主模型；当主模型因网络/传输/服务端错误失败时，自动按顺序切换
- * 到下一个备用模型组，直到成功或全部失败。
+ * 调用时优先使用主模型；当主模型因网络/传输/服务端错误，或当前模型组不可用时，
+ * 自动按顺序切换到下一个备用模型组，直到成功或全部失败。
  * </p>
  * <p>
- * 该包装器仅对“可恢复错误”进行 fallback。对配置错误、鉴权失败、请求参数错误等
- * 不可恢复错误会直接抛出，避免无意义切换。
+ * 该包装器区分两种错误语义：
  * </p>
+ * <ul>
+ *   <li><b>可恢复错误</b>（网络、超时、5xx、429）：同模型组允许重试，也允许跨模型 fallback；</li>
+ *   <li><b>模型组级不可用错误</b>（401 鉴权失败）：不建议在同模型组内反复重试，
+ *       但允许切换到下一个模型组尝试；</li>
+ *   <li><b>不可恢复错误</b>（配置错误、请求参数错误等）：直接抛出，避免无意义切换。</li>
+ * </ul>
  */
 public class FallbackModel implements Model {
 
@@ -104,43 +110,143 @@ public class FallbackModel implements Model {
     /**
      * 判断错误是否允许切换到下一个模型组。
      * <p>
-     * 可恢复错误包括：网络/传输异常、超时、服务端 5xx、OpenAI/内部服务器异常等。
-     * 不可恢复错误包括：配置错误、客户端 4xx（如鉴权失败、请求格式错误）等。
+     * 允许切换的场景包括：
+     * </p>
+     * <ul>
+     *   <li>网络/传输异常、超时；</li>
+     *   <li>服务端 5xx、限流 429；</li>
+     *   <li>AgentScope 对底层超时/连接错误的包装异常（如 {@link ModelException}）；</li>
+     *   <li>当前模型组不可用的 401 鉴权失败（仅在跨模型 fallback 时允许，不参与同模型组重试）。</li>
+     * </ul>
+     * <p>
+     * 不允许切换的场景包括：配置错误、请求参数错误（如 400）等。
      * </p>
      *
      * @param error 捕获的异常
      * @return true 表示允许 fallback
      */
     boolean isFallbackEligible(Throwable error) {
-        Throwable unwrapped = Exceptions.unwrap(error);
-        if (unwrapped == null) {
-            unwrapped = error;
+        Throwable current = unwrapThrowable(error);
+        while (current != null) {
+            if (isRecoverableThrowable(current)) {
+                return true;
+            }
+            if (isModelGroupUnavailable(current)) {
+                return true;
+            }
+            current = current.getCause();
         }
+        return false;
+    }
+
+    /**
+     * 解包 Reactor 包装异常，尽量还原业务可判定的根异常。
+     *
+     * @param error 原始异常
+     * @return 解包后的异常；若无法解包则返回原异常
+     */
+    private Throwable unwrapThrowable(Throwable error) {
+        Throwable unwrapped = Exceptions.unwrap(error);
+        return unwrapped == null ? error : unwrapped;
+    }
+
+    /**
+     * 判断单个异常节点是否属于“可恢复错误”。
+     * <p>
+     * 可恢复错误适合在同模型组内重试，也允许跨模型 fallback。
+     * </p>
+     *
+     * @param error 当前异常节点
+     * @return true 表示当前异常节点允许 fallback
+     */
+    private boolean isRecoverableThrowable(Throwable error) {
         // 网络/传输/超时类错误允许 fallback
-        if (unwrapped instanceof SocketException
-                || unwrapped instanceof SocketTimeoutException
-                || unwrapped instanceof TimeoutException) {
+        if (error instanceof SocketException
+                || error instanceof SocketTimeoutException
+                || error instanceof TimeoutException) {
             return true;
         }
         // OpenAI/AgentScope 内部服务端异常通常对应 5xx 或连接错误，允许 fallback
-        if (unwrapped instanceof OpenAIException openAiEx) {
-            Integer statusCode = openAiEx.getStatusCode();
-            if (statusCode != null) {
-                return statusCode >= 500 || statusCode == 429;
-            }
-            String message = openAiEx.getMessage();
-            if (message == null) {
-                return true;
-            }
-            String lower = message.toLowerCase();
-            return lower.contains("connection error")
-                    || lower.contains("connection reset")
-                    || lower.contains("connection refused")
-                    || lower.contains("transport error")
-                    || lower.contains("timeout");
+        if (error instanceof OpenAIException openAiEx) {
+            return isRecoverableOpenAiException(openAiEx);
         }
-        // 默认：对未知错误保守处理，不 fallback
+        // AgentScope 会把超时/连接错误包装为 ModelException，需要基于消息或 cause 链判定。
+        if (error instanceof ModelException modelException) {
+            return hasRecoverableMessage(modelException.getMessage());
+        }
         return false;
+    }
+
+    /**
+     * 判断单个异常节点是否属于“模型组级不可用错误”。
+     * <p>
+     * 这类错误不适合在同模型组内反复重试（因为再次重试仍会失败），
+     * 但允许切换到下一个模型组尝试。
+     * </p>
+     *
+     * @param error 当前异常节点
+     * @return true 表示当前异常节点允许跨模型 fallback
+     */
+    private boolean isModelGroupUnavailable(Throwable error) {
+        if (error instanceof OpenAIException openAiEx) {
+            return isModelGroupUnavailableOpenAiException(openAiEx);
+        }
+        return false;
+    }
+
+    /**
+     * 判断 OpenAI 兼容异常是否属于可恢复错误。
+     * <p>
+     * 5xx 服务端错误与 429 限流错误，既允许同模型组重试，也允许跨模型 fallback。
+     * </p>
+     *
+     * @param openAiEx OpenAI 兼容异常
+     * @return true 表示允许 fallback
+     */
+    private boolean isRecoverableOpenAiException(OpenAIException openAiEx) {
+        Integer statusCode = openAiEx.getStatusCode();
+        if (statusCode != null) {
+            return statusCode >= 500 || statusCode == 429;
+        }
+        String message = openAiEx.getMessage();
+        if (message == null) {
+            return true;
+        }
+        return hasRecoverableMessage(message);
+    }
+
+    /**
+     * 判断 OpenAI 兼容异常是否属于模型组级不可用错误。
+     * <p>
+     * 401 表示当前模型组的鉴权/权限/路由不可用，切换到另一个模型组可能成功。
+     * 注意：这不代表 401 会在同模型组内重试。
+     * </p>
+     *
+     * @param openAiEx OpenAI 兼容异常
+     * @return true 表示允许跨模型 fallback
+     */
+    private boolean isModelGroupUnavailableOpenAiException(OpenAIException openAiEx) {
+        Integer statusCode = openAiEx.getStatusCode();
+        return statusCode != null && statusCode == 401;
+    }
+
+    /**
+     * 根据异常消息中的关键字判断是否属于可恢复的传输/超时错误。
+     *
+     * @param message 异常消息
+     * @return true 表示消息命中了可恢复错误关键字
+     */
+    private boolean hasRecoverableMessage(String message) {
+        if (message == null || message.isBlank()) {
+            return false;
+        }
+        String lower = message.toLowerCase(Locale.ROOT);
+        return lower.contains("connection error")
+                || lower.contains("connection reset")
+                || lower.contains("connection refused")
+                || lower.contains("transport error")
+                || lower.contains("timeout")
+                || lower.contains("timed out");
     }
 
     /**

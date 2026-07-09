@@ -2,6 +2,7 @@ package domi.argenticpptmaster.agent;
 
 import domi.argenticpptmaster.domain.PptConfirmation;
 import domi.argenticpptmaster.domain.PptJob;
+import domi.argenticpptmaster.domain.PptJobNode;
 
 /**
  * AI 代理运行器接口。
@@ -33,4 +34,17 @@ public interface PptAgentRunner {
      * @param confirmation 用户的确认结果，包含审批意见和可能的修改反馈
      */
     void resume(PptJob job, PptConfirmation confirmation);
+
+    /**
+     * 从指定 checkpoint 节点继续执行失败后的 PPT 工作流。
+     * <p>
+     * 与 {@link #resume(PptJob, PptConfirmation)} 不同，此方法用于任务异常失败后的恢复。
+     * 它会启动一次新的 Agent attempt session，并明确告知 Agent 已完成节点与后续允许推进的节点，
+     * 避免旧失败上下文污染新执行。
+     * </p>
+     *
+     * @param job       PPT 任务信息
+     * @param checkpoint 恢复起点，即最近成功完成的业务节点
+     */
+    void resumeFromCheckpoint(PptJob job, PptJobNode checkpoint);
 }

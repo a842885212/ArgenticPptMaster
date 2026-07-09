@@ -13,6 +13,11 @@ package domi.argenticpptmaster.domain;
  *   <li>{@link #AGENT_MESSAGE} — 代理输出的消息（文本或工具调用）</li>
  *   <li>{@link #EXPORT_READY} — 导出文件已就绪</li>
  *   <li>{@link #JOB_FAILED} — 任务失败</li>
+ *   <li>{@link #NODE_STARTED} — 业务节点开始执行</li>
+ *   <li>{@link #NODE_COMPLETED} — 业务节点已完成</li>
+ *   <li>{@link #NODE_FAILED} — 业务节点失败</li>
+ *   <li>{@link #JOB_RESUME_ACCEPTED} — 失败任务恢复请求已被接受</li>
+ *   <li>{@link #JOB_RESUME_STARTED} — 失败任务恢复已开始执行</li>
  * </ul>
  */
 public enum PptJobEventType {
@@ -24,5 +29,10 @@ public enum PptJobEventType {
     AGENT_STARTED,
     AGENT_MESSAGE,
     EXPORT_READY,
-    JOB_FAILED
+    JOB_FAILED,
+    NODE_STARTED,
+    NODE_COMPLETED,
+    NODE_FAILED,
+    JOB_RESUME_ACCEPTED,
+    JOB_RESUME_STARTED
 }

@@ -5,9 +5,12 @@ import domi.argenticpptmaster.domain.PptConfirmation;
 import domi.argenticpptmaster.domain.PptJob;
 import domi.argenticpptmaster.domain.PptJobEvent;
 import domi.argenticpptmaster.domain.PptJobEventType;
+import domi.argenticpptmaster.domain.PptJobNode;
 import domi.argenticpptmaster.domain.PptJobStatus;
 import domi.argenticpptmaster.domain.PptSourceFile;
 import domi.argenticpptmaster.domain.PptWorkflowMode;
+import domi.argenticpptmaster.util.PptConfirmationStageResolver;
+import domi.argenticpptmaster.exception.PptJobResumeException;
 import domi.argenticpptmaster.exception.PptJobNotFoundException;
 import domi.argenticpptmaster.exception.PptJobStateException;
 import domi.argenticpptmaster.exception.PptStorageException;
@@ -20,6 +23,7 @@ import java.nio.file.StandardCopyOption;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import org.slf4j.Logger;
@@ -46,6 +50,8 @@ import org.springframework.web.multipart.MultipartFile;
 public class PptWorkflowService {
 
     private static final Logger log = LoggerFactory.getLogger(PptWorkflowService.class);
+
+    private static final int MAX_RESUME_ATTEMPTS = 5;
 
     private static final Set<String> ALLOWED_EXTENSIONS = Set.of(
             "md", "markdown", "pdf", "ppt", "pptx", "doc", "docx", "xls", "xlsx", "xlsm", "csv", "tsv", "html");
@@ -183,11 +189,18 @@ public class PptWorkflowService {
                 answers == null ? Map.of() : Map.copyOf(answers),
                 comment,
                 Instant.now());
+        PptJobNode confirmedNode = PptConfirmationStageResolver.resolveConfirmedNode(job.confirmationPayload());
+        if (confirmedNode != null) {
+            job.confirmNode(confirmedNode);
+        }
         job.receiveConfirmation(confirmation);
         events.record(job, PptJobEvent.of(PptJobEventType.CONFIRMATION_RECEIVED, "confirmation received",
-                Map.of("confirmationId", confirmationId)));
-        log.info("ppt_job_confirmation_approved: jobId={}, confirmationId={}, answersKeys={}",
-                jobId, confirmationId, confirmation.answers().keySet());
+                Map.of("confirmationId", confirmationId, "confirmedNode",
+                        confirmedNode == null ? "unknown" : confirmedNode.name())));
+        log.info("ppt_job_confirmation_approved: jobId={}, confirmationId={}, confirmedNode={}, answersKeys={}",
+                jobId, confirmationId,
+                confirmedNode == null ? "unknown" : confirmedNode.name(),
+                confirmation.answers().keySet());
         asyncRunner.resumeAgent(job.id());
         return job;
     }
@@ -205,6 +218,128 @@ public class PptWorkflowService {
             throw new PptJobStateException("job is not completed");
         }
         return job.exportPath().orElseThrow(() -> new PptJobStateException("job has no export artifact"));
+    }
+
+    /**
+     * 从上一个成功节点继续执行失败的任务。
+     * <p>
+     * 仅当任务当前状态为 {@link PptJobStatus#FAILED}，且不在等待人工确认、
+     * 存在可恢复的成功节点、且恢复次数未超过上限时才允许恢复。
+     * </p>
+     *
+     * @param jobId 任务 ID
+     * @return 更新后的任务实例
+     * @throws PptJobResumeException 如果任务不可恢复
+     */
+    public PptJob resumeJob(UUID jobId) {
+        PptJob job = getJob(jobId);
+        log.info("ppt_job_resume_requested: jobId={}, currentStatus={}, lastCompletedNode={}",
+                jobId, job.status(), job.lastCompletedNode().map(Enum::name).orElse("none"));
+        String previousFailureNode = job.lastFailureNode().map(Enum::name).orElse("none");
+        String rejection = job.tryStartResumeAttempt(MAX_RESUME_ATTEMPTS);
+        if (rejection != null) {
+            log.warn("ppt_job_resume_rejected: jobId={}, reason={}", jobId, rejection);
+            throw new PptJobResumeException(jobId, rejection);
+        }
+        PptJobNode checkpoint = resolveEffectiveCheckpoint(job);
+        log.info("ppt_job_resume_accepted: jobId={}, checkpoint={}, resumeCount={}",
+                jobId, checkpoint.name(), job.resumeCount());
+        events.record(job, PptJobEvent.of(
+                PptJobEventType.JOB_RESUME_ACCEPTED,
+                "job resume accepted",
+                Map.of(
+                        "checkpoint", checkpoint.name(),
+                        "resumeCount", job.resumeCount(),
+                        "previousFailureNode", previousFailureNode)));
+        asyncRunner.resumeFromCheckpoint(job.id(), checkpoint);
+        return job;
+    }
+
+    /**
+     * 解析有效的恢复 checkpoint。
+     * <p>
+     * 默认返回任务记录中的 {@code lastCompletedNode}。未来可在此加入文件证据校验，
+     * 若当前 checkpoint 的证据缺失则自动回退到上一个稳定节点。
+     * </p>
+     *
+     * @param job PPT 任务
+     * @return 有效的恢复 checkpoint
+     */
+    private PptJobNode resolveEffectiveCheckpoint(PptJob job) {
+        return job.lastCompletedNode().orElseThrow(() ->
+                new PptJobResumeException(job.id(), "job has no completed node to resume from"));
+    }
+
+    /**
+     * 记录节点开始执行。
+     *
+     * @param job  PPT 任务
+     * @param node 业务节点
+     */
+    public void recordNodeStarted(PptJob job, PptJobNode node) {
+        job.startNode(node);
+        events.record(job, PptJobEvent.of(
+                PptJobEventType.NODE_STARTED,
+                "node started: " + node.name(),
+                Map.of("node", node.name())));
+    }
+
+    /**
+     * 记录节点已完成。
+     *
+     * @param job     PPT 任务
+     * @param node    业务节点
+     * @param summary 完成摘要
+     */
+    public void recordNodeCompleted(PptJob job, PptJobNode node, Map<String, Object> summary) {
+        job.completeNode(node, summary);
+        events.record(job, PptJobEvent.of(
+                PptJobEventType.NODE_COMPLETED,
+                "node completed: " + node.name(),
+                Map.of("node", node.name(), "summary", summary)));
+    }
+
+    /**
+     * 记录节点失败。
+     *
+     * @param job     PPT 任务
+     * @param node    业务节点
+     * @param message 失败原因
+     */
+    public void recordNodeFailed(PptJob job, PptJobNode node, String message) {
+        job.failNode(node, message);
+        events.record(job, PptJobEvent.of(
+                PptJobEventType.NODE_FAILED,
+                "node failed: " + node.name(),
+                Map.of("node", node.name(), "error", message)));
+    }
+
+    /**
+     * 记录节点进入等待人工确认状态。
+     *
+     * @param job  PPT 任务
+     * @param node 业务节点
+     */
+    public void recordNodeWaitingConfirmation(PptJob job, PptJobNode node) {
+        job.waitNodeConfirmation(node);
+        events.record(job, PptJobEvent.of(
+                PptJobEventType.NODE_STARTED,
+                "node waiting confirmation: " + node.name(),
+                Map.of("node", node.name())));
+    }
+
+    /**
+     * 记录用户确认后推进确认类节点。
+     *
+     * @param job  PPT 任务
+     * @param node 业务节点
+     */
+    public void recordNodeConfirmed(PptJob job, PptJobNode node) {
+        job.confirmNode(node);
+        events.record(job, PptJobEvent.of(
+                PptJobEventType.NODE_COMPLETED,
+                "node confirmed: " + node.name(),
+                Map.of("node", node.name())));
     }
 
     private void storeSources(PptJob job, List<MultipartFile> files) {

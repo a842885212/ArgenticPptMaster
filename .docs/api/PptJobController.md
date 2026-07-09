@@ -19,6 +19,7 @@ language: java
 | GET | `/api/ppt-jobs/{jobId}` | 查询任务状态、确认载荷、事件和产物路径 |
 | GET | `/api/ppt-jobs/{jobId}/events` | 订阅任务 SSE 事件 |
 | POST | `/api/ppt-jobs/{jobId}/confirm` | 提交当前 agent 确认结果 |
+| POST | `/api/ppt-jobs/{jobId}/resume` | 从上一个成功业务节点恢复失败的任务 |
 | GET | `/api/ppt-jobs/{jobId}/download` | 下载已完成任务的 PPTX 产物 |
 
 ## 请求
@@ -49,6 +50,13 @@ language: java
 }
 ```
 
+### 恢复任务
+
+`POST /api/ppt-jobs/{jobId}/resume`
+
+请求体为空。仅当任务状态为 `FAILED` 且存在至少一个成功完成的业务节点时允许恢复；
+超过最大恢复次数或任务正在等待确认时返回 `409 Conflict`。
+
 ## 响应
 
 成功创建任务返回 `202 Accepted`，响应体为 `PptJobResponse`：
@@ -57,22 +65,30 @@ language: java
 |---|---|
 | `id` | 任务 ID |
 | `status` | `ACCEPTED`、`PREPARING`、`WAITING_CONFIRMATION`、`RUNNING_AGENT`、`EXPORTING`、`COMPLETED`、`FAILED`、`CANCELLED` |
+| `workflowMode` | 工作流模式：`BASIC` 或 `IMAGE_ENHANCED` |
 | `sources` | 已落盘源文件 |
 | `currentConfirmationId` | 当前待确认 ID，只有 `WAITING_CONFIRMATION` 状态存在 |
 | `confirmationPayload` | agent 给前端展示的确认信息；`WAITING_CONFIRMATION` 时也会通过 SSE 事件 `CONFIRMATION_REQUIRED.data.confirmationPayload` 下发 |
 | `events` | 任务事件历史 |
 | `artifactReady` | 是否已进入可下载状态；只有 `COMPLETED` 且产物路径存在时为 `true` |
 | `downloadUrl` | 只有 `COMPLETED` 且产物路径存在时才返回下载地址，否则为空 |
+| `currentNode` | 当前正在执行的业务节点；失败时可能为空 |
+| `lastCompletedNode` | 最近一个成功完成的业务节点，用于确定恢复 checkpoint |
+| `lastFailureNode` | 最近一次失败所在的业务节点 |
+| `resumeCount` | 已执行的恢复次数，初始为 0 |
+| `resumable` | 当前任务是否满足恢复条件（`FAILED` 且存在 `lastCompletedNode`） |
+| `nodeStates` | 各业务节点的执行状态映射，`key` 为节点名，`value` 包含 `node`（节点名）、`status`（节点状态）、`startedAt`（开始时间）、`completedAt`（完成/失败时间）、`errorMessage`（失败原因） |
 
 ## 业务流程
 
 1. 接收上传文件，校验扩展名并保存到 `ppt-master.workspace-path/jobs/{jobId}/uploads`。
 2. 创建内存任务记录并异步启动 agent 编排。
-3. `AgentScopePptAgentRunner` 基于 AgentScope Java v2 `ReActAgent.streamEvents()` 驱动真实事件流，使用 `JsonFileAgentStateStore` 按 `(serviceUserId, jobId)` 持久化会话状态。
+3. `AgentScopePptAgentRunner` 基于 AgentScope Java v2 `ReActAgent.streamEvents()` 驱动真实事件流，使用 `JsonFileAgentStateStore` 持久化会话状态：初始 attempt 按 `(serviceUserId, jobId)` 存储；checkpoint 恢复后会启用新的 attempt session，按 `(serviceUserId, jobId-attempt-N)` 存储，避免旧失败上下文污染新执行。
 4. agent 通过本地工具完成 `init_ppt_project`、`import_job_sources`、`collect_source_markdown`、`inspect_project_info`、`read_project_text_file` 等步骤，先走 markdown-first 路线分析资料与生成计划；当需要人工确认方案时，会调用外部执行工具 `request_plan_confirmation`，服务侧将 `RequireExternalExecutionEvent` 转成 `confirmationPayload`。
 5. 任务进入 `WAITING_CONFIRMATION`，服务会在 SSE 事件 `CONFIRMATION_REQUIRED` 的 `data.confirmationPayload` 中直接下发确认 UI 所需信息；前端可直接渲染确认面板，只有在 SSE 异常或恢复场景下才需要回退查询任务快照。
 6. 用户提交确认后，服务把确认结果封装为 `ToolResultMessage` 回喂给同一 AgentScope session，agent 从中断点继续执行；若再次触发人工确认，会生成新的 `confirmationId`。
 7. agent 在确认后可写入 `design_spec.md`、`spec_lock.md`、`notes/total.md`、`svg_output/*.svg`，再执行 `validate_svg_output`、`split_speaker_notes`、`finalize_project_svg` 和 `export_project_pptx`；任务完成时设置产物并通过下载接口获取 PPTX。若 agent 正常结束但未产出导出物，任务会失败并保留最终总结信息。
+8. 任务失败后，可调用 `POST /api/ppt-jobs/{jobId}/resume`。服务会校验任务状态、恢复次数上限和可恢复节点，通过后启动一次新的 attempt session，并指示 agent 从 `lastCompletedNode` 继续执行；agent 首先通过 `inspect_checkpoint_status` 确认项目当前状态，再推进后续节点。
 
 补充说明：`request_plan_confirmation` 作为外部工具时，AgentScope 可能先发出一条 `tool_result`，其 `state=RUNNING`。这不是“用户已确认”，而是“工具已挂起并等待人工确认”；服务端会立即把任务切换到 `WAITING_CONFIRMATION`，阻止 agent 在未确认时继续执行。
 
@@ -82,8 +98,9 @@ language: java
 |---|---|---|
 | `PptWorkflowService` | `createJob` | 创建任务、保存上传文件、触发异步 agent |
 | `PptWorkflowService` | `submitConfirmation` | 校验确认 ID 并恢复 agent |
+| `PptWorkflowService` | `resumeJob` | 校验恢复条件并触发 checkpoint 恢复 |
 | `PptJobEventPublisher` | `subscribe` | 建立 SSE 订阅 |
-| `PptAgentRunner` | `start` / `resume` | AgentScope 驱动适配层 |
+| `PptAgentRunner` | `start` / `resume` / `resumeFromCheckpoint` | AgentScope 驱动适配层 |
 
 ## 业务规则
 
@@ -95,6 +112,9 @@ language: java
 - 下载接口只允许 `COMPLETED` 状态访问。
 - 即使后台已生成临时产物，只要任务状态未收敛到 `COMPLETED`，响应也不会提前暴露 `artifactReady=true` 或 `downloadUrl`。
 - 响应不暴露服务器本地绝对路径，产物通过 `downloadUrl` 获取。
+- 只有 `FAILED` 状态且存在 `lastCompletedNode` 时允许恢复；`WAITING_CONFIRMATION` 任务应使用 `/confirm` 而非 `/resume`。
+- 恢复次数存在上限（默认 5 次），超过上限后返回 `409 Conflict`。
+- 恢复成功后会启动新的 attempt session，agent 从中断点继续而不是重写已完成的节点。
 
 ## 设计决策
 

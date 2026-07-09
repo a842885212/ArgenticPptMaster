@@ -122,6 +122,21 @@ public class PptJobController {
     }
 
     /**
+     * 从上一个成功节点恢复失败任务的执行。
+     * <p>
+     * 仅当任务当前处于失败状态且存在可恢复的成功节点时才允许调用。
+     * 恢复请求被接受后，任务会进入新的 attempt 并异步从 checkpoint 继续。
+     * </p>
+     *
+     * @param jobId 任务 UUID
+     * @return 更新后的任务信息响应 DTO，包含新的节点恢复状态
+     */
+    @PostMapping("/{jobId}/resume")
+    public PptJobResponse resume(@PathVariable UUID jobId) {
+        return PptJobResponse.from(workflowService.resumeJob(jobId));
+    }
+
+    /**
      * 下载生成的 PPT 文件。
      * <p>根据任务 ID 获取导出文件路径，以附件形式返回给客户端。</p>
      *

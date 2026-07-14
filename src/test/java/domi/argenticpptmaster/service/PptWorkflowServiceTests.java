@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import domi.argenticpptmaster.domain.PptJob;
 import domi.argenticpptmaster.domain.PptConfirmationAction;
 import domi.argenticpptmaster.domain.PptJobNode;
+import domi.argenticpptmaster.domain.PptJobNodeStatus;
 import domi.argenticpptmaster.domain.PptJobStatus;
 import domi.argenticpptmaster.domain.PptWorkflowMode;
 import domi.argenticpptmaster.exception.PptJobResumeException;
@@ -266,6 +267,38 @@ class PptWorkflowServiceTests {
     }
 
     @Test
+    void approvesOutlineConfirmationAndCompletesExplicitNode() {
+        PptJob job = new PptJob(
+                java.util.UUID.randomUUID(),
+                "demo",
+                "ppt169",
+                "make a deck",
+                PptWorkflowMode.BASIC,
+                tempDir.resolve("jobs/demo-outline-approved"));
+        repository.save(job);
+        job.waitNodeConfirmation(PptJobNode.OUTLINE_DRAFTED);
+        job.requireConfirmation("outline-approve-1", Map.of(
+                "stage", "outline_confirmation",
+                "contextData", Map.of(
+                        "type", "ppt_outline",
+                        "slides", List.of(Map.of(
+                                "slideNo", 1,
+                                "title", "测试页面",
+                                "keyMessage", "测试关键信息",
+                                "bullets", List.of("测试要点"),
+                                "visualSuggestion", "测试视觉方案")))));
+
+        PptJob result = workflowService.submitConfirmation(
+                job.id(), "outline-approve-1", true, Map.of(), null,
+                PptConfirmationAction.APPROVE, null, List.of());
+
+        assertThat(result.nodeExecution(PptJobNode.OUTLINE_DRAFTED).status())
+                .isEqualTo(PptJobNodeStatus.COMPLETED);
+        assertThat(result.nodeExecution(PptJobNode.OUTLINE_CONFIRMED).status())
+                .isEqualTo(PptJobNodeStatus.COMPLETED);
+    }
+
+    @Test
     void explicitCancelFailsWithoutResumingAgent() {
         PptJob job = new PptJob(
                 java.util.UUID.randomUUID(),
@@ -315,8 +348,17 @@ class PptWorkflowServiceTests {
                                             "call-1",
                                             "request_plan_confirmation",
                                             Map.of(
+                                                    "stage", "outline_confirmation",
                                                     "planSummary", "import and inspect sources",
-                                                    "pendingSteps", "wait for operator approval")))));
+                                                    "pendingSteps", "wait for operator approval",
+                                                    "contextData", Map.of(
+                                                            "type", "ppt_outline",
+                                                            "slides", List.of(Map.of(
+                                                                    "slideNo", 1,
+                                                                    "title", "测试页面",
+                                                                    "keyMessage", "测试关键信息",
+                                                                    "bullets", List.of("测试要点"),
+                                                                    "visualSuggestion", "测试视觉方案"))))))));
                 }
             };
         }

@@ -29,6 +29,8 @@ class PptJobCheckpointTests {
                 Path.of("var/ppt-master/jobs/demo"));
 
         assertThat(job.nodeExecution(PptJobNode.PROJECT_READY).status()).isEqualTo(PptJobNodeStatus.PENDING);
+        assertThat(job.nodeExecution(PptJobNode.OUTLINE_DRAFTED).status()).isEqualTo(PptJobNodeStatus.PENDING);
+        assertThat(job.nodeExecution(PptJobNode.OUTLINE_CONFIRMED).status()).isEqualTo(PptJobNodeStatus.PENDING);
         assertThat(job.nodeExecution(PptJobNode.PLAN_CONFIRMED).status()).isEqualTo(PptJobNodeStatus.PENDING);
         assertThat(job.nodeExecution(PptJobNode.DESIGN_SPEC_WRITTEN).status()).isEqualTo(PptJobNodeStatus.PENDING);
         assertThat(job.nodeExecution(PptJobNode.IMAGES_MANIFEST_WRITTEN)).isNull();
@@ -53,6 +55,20 @@ class PptJobCheckpointTests {
         assertThat(job.lastCompletedNode()).contains(PptJobNode.PROJECT_READY);
         assertThat(job.currentNode()).isEmpty();
         assertThat(job.nodeExecution(PptJobNode.PROJECT_READY).status()).isEqualTo(PptJobNodeStatus.COMPLETED);
+    }
+
+    @Test
+    void outlineRevisionLeavesConfirmedNodePending() {
+        PptJob job = new PptJob(
+                UUID.randomUUID(), "demo", "ppt169", "make a deck", PptWorkflowMode.BASIC,
+                Path.of("var/ppt-master/jobs/demo"));
+
+        job.waitNodeConfirmation(PptJobNode.OUTLINE_DRAFTED);
+
+        assertThat(job.nodeExecution(PptJobNode.OUTLINE_DRAFTED).status())
+                .isEqualTo(PptJobNodeStatus.WAITING_CONFIRMATION);
+        assertThat(job.nodeExecution(PptJobNode.OUTLINE_CONFIRMED).status())
+                .isEqualTo(PptJobNodeStatus.PENDING);
     }
 
     /**

@@ -235,6 +235,10 @@ public class PptWorkflowService {
                 ? PptConfirmationStageResolver.resolveConfirmedNode(job.confirmationPayload())
                 : null;
         if (confirmedNode != null) {
+            if (confirmedNode == PptJobNode.OUTLINE_CONFIRMED
+                    && job.currentNode().orElse(null) == PptJobNode.OUTLINE_DRAFTED) {
+                job.completeNode(PptJobNode.OUTLINE_DRAFTED, Map.of("confirmed", true));
+            }
             job.confirmNode(confirmedNode);
         }
         job.receiveConfirmation(confirmation);

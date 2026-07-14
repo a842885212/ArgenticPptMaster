@@ -40,8 +40,18 @@ class PptJobNodeTests {
     @Test
     void confirmationNodesIdentifiedCorrectly() {
         assertThat(PptJobNode.PLAN_CONFIRMED.requiresConfirmation()).isTrue();
+        assertThat(PptJobNode.OUTLINE_DRAFTED.requiresConfirmation()).isTrue();
+        assertThat(PptJobNode.OUTLINE_CONFIRMED.requiresConfirmation()).isTrue();
         assertThat(PptJobNode.IMAGE_CONTINUE_CONFIRMED.requiresConfirmation()).isTrue();
         assertThat(PptJobNode.DESIGN_SPEC_WRITTEN.requiresConfirmation()).isFalse();
         assertThat(PptJobNode.PPT_EXPORTED.requiresConfirmation()).isFalse();
+    }
+
+    @Test
+    void outlineNodesApplyToBothWorkflowModes() {
+        assertThat(PptJobNode.OUTLINE_DRAFTED.applicableTo(PptWorkflowMode.BASIC)).isTrue();
+        assertThat(PptJobNode.OUTLINE_DRAFTED.applicableTo(PptWorkflowMode.IMAGE_ENHANCED)).isTrue();
+        assertThat(PptJobNode.OUTLINE_CONFIRMED.applicableTo(PptWorkflowMode.BASIC)).isTrue();
+        assertThat(PptJobNode.OUTLINE_CONFIRMED.applicableTo(PptWorkflowMode.IMAGE_ENHANCED)).isTrue();
     }
 }

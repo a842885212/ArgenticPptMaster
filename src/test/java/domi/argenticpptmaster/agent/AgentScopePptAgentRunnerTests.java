@@ -359,7 +359,7 @@ class AgentScopePptAgentRunnerTests {
                 factory,
                 new PptWorkflowEvents(new PptJobEventPublisher()));
         PptJob job = newImageEnhancedJob();
-        job.confirmNode(PptJobNode.PLAN_CONFIRMED);
+        job.confirmNode(PptJobNode.OUTLINE_CONFIRMED);
 
         runner.start(job);
 
@@ -399,7 +399,7 @@ class AgentScopePptAgentRunnerTests {
                 factory,
                 new PptWorkflowEvents(new PptJobEventPublisher()));
         PptJob job = newImageEnhancedJob();
-        job.confirmNode(PptJobNode.PLAN_CONFIRMED);
+        job.confirmNode(PptJobNode.OUTLINE_CONFIRMED);
 
         runner.start(job);
 
@@ -555,7 +555,7 @@ class AgentScopePptAgentRunnerTests {
                 new PptWorkflowEvents(new PptJobEventPublisher()));
         PptJob job = newImageEnhancedJob();
 
-        job.confirmNode(PptJobNode.PLAN_CONFIRMED);
+        job.confirmNode(PptJobNode.OUTLINE_CONFIRMED);
         runner.start(job);
         PptConfirmation retryConfirmation = new PptConfirmation(
                 job.currentConfirmationId().orElseThrow(),
@@ -603,7 +603,7 @@ class AgentScopePptAgentRunnerTests {
 
     private static Map<String, Object> outlineConfirmationInput(String planSummary, String pendingSteps) {
         return Map.of(
-                "stage", "plan_confirmation",
+                "stage", "outline_confirmation",
                 "planSummary", planSummary,
                 "pendingSteps", pendingSteps,
                 "contextData", Map.of(
@@ -784,7 +784,7 @@ class AgentScopePptAgentRunnerTests {
         String text = factory.messages().get(0).get(0).getTextContent();
         assertThat(text).contains("inspect_checkpoint_status");
         assertThat(text).contains("PROJECT_READY");
-        assertThat(text).contains("PLAN_CONFIRMED");
+        assertThat(text).contains("OUTLINE_CONFIRMED");
         assertThat(text).contains("DESIGN_SPEC_WRITTEN");
         assertThat(text).contains("SPEC_LOCK_WRITTEN");
         assertThat(text).contains("IMAGES_MANIFEST_WRITTEN");

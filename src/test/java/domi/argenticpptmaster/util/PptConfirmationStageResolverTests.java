@@ -35,6 +35,13 @@ class PptConfirmationStageResolverTests {
                 .isEqualTo(PptJobNode.IMAGE_CONTINUE_CONFIRMED);
     }
 
+    @Test
+    void resolvesOutlineConfirmationStage() {
+        assertThat(PptConfirmationStageResolver.resolveConfirmedNode(
+                Map.of("stage", "outline_confirmation")))
+                .isEqualTo(PptJobNode.OUTLINE_CONFIRMED);
+    }
+
     /**
      * 验证图片重试决策 stage 不推进任何 checkpoint 节点，返回 null。
      */

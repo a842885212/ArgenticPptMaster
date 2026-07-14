@@ -8,6 +8,7 @@ import domi.argenticpptmaster.domain.PptJobEvent;
 import domi.argenticpptmaster.domain.PptJobEventType;
 import domi.argenticpptmaster.domain.PptJobNode;
 import domi.argenticpptmaster.domain.PptJobNodeStatus;
+import domi.argenticpptmaster.domain.PptNodeExecution;
 import domi.argenticpptmaster.domain.PptWorkflowMode;
 import domi.argenticpptmaster.service.PptWorkflowEvents;
 import io.agentscope.core.agent.RuntimeContext;
@@ -533,15 +534,16 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
                 payload.put("choices", choices);
             }
             Object contextData = input.get("contextData");
-            if (!hasApprovedOutline(job) && !"plan_confirmation".equals(stage)) {
+            if (!hasApprovedOutline(job) && !"outline_confirmation".equals(stage)
+                    && !"plan_confirmation".equals(stage)) {
                 throw new IllegalStateException(
-                        "the first request_plan_confirmation must use stage=plan_confirmation with a structured outline");
+                        "the first request_plan_confirmation must use stage=outline_confirmation with a structured outline");
             }
-            if ("plan_confirmation".equals(stage)) {
+            if ("outline_confirmation".equals(stage) || "plan_confirmation".equals(stage)) {
                 if (!(contextData instanceof Map<?, ?> contextMap)
                         || !"ppt_outline".equals(contextMap.get("type"))) {
                     throw new IllegalStateException(
-                            "plan_confirmation must contain contextData.type=ppt_outline with structured slides");
+                            "outline_confirmation must contain contextData.type=ppt_outline with structured slides");
                 }
                 validateOutlineContextData(contextMap);
                 payload.put("contextData", contextData);
@@ -559,6 +561,9 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
         payload.put("agent", Map.of(
                 "framework", "AgentScope Java",
                 "mode", "streamEvents + Human-in-the-Loop"));
+        if ("outline_confirmation".equals(stage)) {
+            job.waitNodeConfirmation(PptJobNode.OUTLINE_DRAFTED);
+        }
         job.requireConfirmation(confirmationId, payload);
         events.record(job, PptJobEvent.of(
                 PptJobEventType.CONFIRMATION_REQUIRED,
@@ -572,7 +577,13 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
     }
 
     private boolean hasApprovedOutline(PptJob job) {
-        return job.nodeExecution(PptJobNode.PLAN_CONFIRMED).status() == PptJobNodeStatus.COMPLETED;
+        return isNodeCompleted(job, PptJobNode.OUTLINE_CONFIRMED)
+                || isNodeCompleted(job, PptJobNode.PLAN_CONFIRMED);
+    }
+
+    private boolean isNodeCompleted(PptJob job, PptJobNode node) {
+        PptNodeExecution execution = job.nodeExecution(node);
+        return execution != null && execution.status() == PptJobNodeStatus.COMPLETED;
     }
 
     private void validateOutlineContextData(Map<?, ?> contextData) {
@@ -773,8 +784,8 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
     private String buildInitialInstruction(PptJob job) {
         String workflowSteps = job.workflowMode() == PptWorkflowMode.IMAGE_ENHANCED
                 ? """
-                3. 完成资料分析后，先生成逐页大纲（slideNo、title、keyMessage、bullets、visualSuggestion），通过 request_plan_confirmation（stage="plan_confirmation"）在 contextData 中返回 {type:"ppt_outline", slides:[...]}。
-                4. 收到 REQUEST_REVISION 时，读取 Operator 的整体意见和 outline_slide_edits，重生成完整大纲并再次请求 plan_confirmation；在 APPROVE 前不得写 design_spec.md、spec_lock.md、notes 或 svg。
+                3. 完成资料分析后，先生成逐页大纲（slideNo、title、keyMessage、bullets、visualSuggestion），通过 request_plan_confirmation（stage="outline_confirmation"）在 contextData 中返回 {type:"ppt_outline", slides:[...]}。
+                4. 收到 REQUEST_REVISION 时，读取 Operator 的整体意见和 outline_slide_edits，重生成完整大纲并再次请求 outline_confirmation；在 APPROVE 前不得写 design_spec.md、spec_lock.md、notes 或 svg。
                 5. 用户批准后，先产出 design_spec.md 与 spec_lock.md。
                 6. 如存在 AI 图片需求，写 images/image_prompts.json，然后调用 generate_project_images 生成图片。
                 7. 调用 inspect_image_manifest_status 检查图片状态：
@@ -784,8 +795,8 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
                 9. 生成 svg_output 后，调用 validate_svg_output，再 finalize 和导出。
                 """
                 : """
-                3. 完成资料分析后，先生成逐页大纲（slideNo、title、keyMessage、bullets、visualSuggestion），通过 request_plan_confirmation（stage="plan_confirmation"）在 contextData 中返回 {type:"ppt_outline", slides:[...]}。
-                4. 收到 REQUEST_REVISION 时，读取 Operator 的整体意见和 outline_slide_edits，重生成完整大纲并再次请求 plan_confirmation；在 APPROVE 前不得写 design_spec.md、spec_lock.md、notes 或 svg。
+                3. 完成资料分析后，先生成逐页大纲（slideNo、title、keyMessage、bullets、visualSuggestion），通过 request_plan_confirmation（stage="outline_confirmation"）在 contextData 中返回 {type:"ppt_outline", slides:[...]}。
+                4. 收到 REQUEST_REVISION 时，读取 Operator 的整体意见和 outline_slide_edits，重生成完整大纲并再次请求 outline_confirmation；在 APPROVE 前不得写 design_spec.md、spec_lock.md、notes 或 svg。
                 5. 用户批准后，再继续生成、校验、finalize 和导出。
                 """;
         return """
@@ -872,7 +883,7 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
     private List<PptJobNode> collectCompletedNodes(PptJob job, PptJobNode checkpoint) {
         List<PptJobNode> result = new ArrayList<>();
         for (PptJobNode node : PptJobNode.values()) {
-            if (!node.applicableTo(job.workflowMode())) {
+            if (!isActiveWorkflowNode(job, node) || !node.applicableTo(job.workflowMode())) {
                 continue;
             }
             result.add(node);
@@ -894,7 +905,7 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
         List<PptJobNode> result = new ArrayList<>();
         boolean afterCheckpoint = false;
         for (PptJobNode node : PptJobNode.values()) {
-            if (!node.applicableTo(job.workflowMode())) {
+            if (!isActiveWorkflowNode(job, node) || !node.applicableTo(job.workflowMode())) {
                 continue;
             }
             if (afterCheckpoint) {
@@ -905,6 +916,22 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
             }
         }
         return result;
+    }
+
+    /**
+     * 判断节点是否属于当前任务的主流程。
+     * <p>
+     * {@code PLAN_CONFIRMED} 仅为旧版整体计划确认保留。新任务使用大纲节点，
+     * 存量任务则依据历史确认载荷继续使用旧节点，避免两套阶段在恢复提示中交叉出现。
+     * </p>
+     */
+    private boolean isActiveWorkflowNode(PptJob job, PptJobNode node) {
+        boolean legacyPlanFlow = "plan_confirmation".equals(job.confirmationPayload().get("stage"))
+                || isNodeCompleted(job, PptJobNode.PLAN_CONFIRMED);
+        if (legacyPlanFlow) {
+            return node != PptJobNode.OUTLINE_DRAFTED && node != PptJobNode.OUTLINE_CONFIRMED;
+        }
+        return node != PptJobNode.PLAN_CONFIRMED;
     }
 
     private String formatNodeList(List<PptJobNode> nodes) {

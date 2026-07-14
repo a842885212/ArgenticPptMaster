@@ -384,7 +384,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                 执行顺序：
                 1. 调用 describe_job 了解任务，再调用 init_ppt_project，然后调用 import_job_sources。
                 2. 导入完成后，调用 collect_source_markdown、inspect_project_info、list_project_files、read_project_text_file 了解 sources/ 与 analysis/ 的真实内容。
-                3. 完成资料分析后，先生成按 slideNo 升序排列的逐页大纲；每页必须包含 slideNo、title、keyMessage、bullets、visualSuggestion，并通过 request_plan_confirmation（stage="plan_confirmation"）在 contextData 中以 {type:"ppt_outline", slides:[...]} 返回。
+                3. 完成资料分析后，先生成按 slideNo 升序排列的逐页大纲；每页必须包含 slideNo、title、keyMessage、bullets、visualSuggestion，并通过 request_plan_confirmation（stage="outline_confirmation"）在 contextData 中以 {type:"ppt_outline", slides:[...]} 返回。
                 4. 如果用户要求修改（REQUEST_REVISION），必须将整体意见和 slideEdits 逐项落实，重新生成完整逐页大纲并再次调用同一确认；在 APPROVE 前不得写任何下游产物。
                 5. 在写 design_spec.md、spec_lock.md、notes/total.md、svg_output/*.svg 之前，必须完成上述大纲确认。
                 6. 用户确认后，产出：
@@ -412,7 +412,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                 执行顺序：
                 1. 调用 describe_job 了解任务，再调用 init_ppt_project，然后调用 import_job_sources。
                 2. 导入完成后，调用 collect_source_markdown、inspect_project_info、list_project_files、read_project_text_file 了解 sources/ 与 analysis/ 的真实内容。
-                3. 完成资料分析后，先生成按 slideNo 升序排列的逐页大纲；每页必须包含 slideNo、title、keyMessage、bullets、visualSuggestion，并通过 request_plan_confirmation（stage="plan_confirmation"）在 contextData 中以 {type:"ppt_outline", slides:[...]} 返回；确认载荷中需说明将启用文生图。
+                3. 完成资料分析后，先生成按 slideNo 升序排列的逐页大纲；每页必须包含 slideNo、title、keyMessage、bullets、visualSuggestion，并通过 request_plan_confirmation（stage="outline_confirmation"）在 contextData 中以 {type:"ppt_outline", slides:[...]} 返回；确认载荷中需说明将启用文生图。
                 4. 如果用户要求修改（REQUEST_REVISION），必须将整体意见和 slideEdits 逐项落实，重新生成完整逐页大纲并再次调用同一确认；在 APPROVE 前不得写 design_spec.md、spec_lock.md 或任何图片/下游产物。
                 5. 用户批准逐页大纲后，先产出 design_spec.md 与 spec_lock.md。
                 6. 如果 design_spec 中声明了 AI 图片需求，必须写 images/image_prompts.json：
@@ -775,7 +775,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
         private boolean hasCheckpointEvidence(Path projectPath, Map<String, Object> files, PptJobNode node) {
             return switch (node) {
                 case PROJECT_READY -> hasAnyFile(files.get("sources"));
-                case PLAN_CONFIRMED, IMAGE_CONTINUE_CONFIRMED -> true;
+                case OUTLINE_DRAFTED, OUTLINE_CONFIRMED, PLAN_CONFIRMED, IMAGE_CONTINUE_CONFIRMED -> true;
                 case DESIGN_SPEC_WRITTEN -> Files.isRegularFile(projectPath.resolve("design_spec.md"));
                 case SPEC_LOCK_WRITTEN -> Files.isRegularFile(projectPath.resolve("spec_lock.md"));
                 case IMAGES_MANIFEST_WRITTEN -> Files.isRegularFile(projectPath.resolve("images/image_prompts.json"));
@@ -1239,8 +1239,13 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
         }
 
         private void requireApprovedOutline(PptAgentToolRuntime runtime, String operation) {
-            PptNodeExecution outlineExecution = runtime.job().nodeExecution(PptJobNode.PLAN_CONFIRMED);
-            if (outlineExecution == null || outlineExecution.status() != PptJobNodeStatus.COMPLETED) {
+            PptNodeExecution outlineExecution = runtime.job().nodeExecution(PptJobNode.OUTLINE_CONFIRMED);
+            PptNodeExecution legacyExecution = runtime.job().nodeExecution(PptJobNode.PLAN_CONFIRMED);
+            boolean outlineApproved = outlineExecution != null
+                    && outlineExecution.status() == PptJobNodeStatus.COMPLETED;
+            boolean legacyOutlineApproved = legacyExecution != null
+                    && legacyExecution.status() == PptJobNodeStatus.COMPLETED;
+            if (!outlineApproved && !legacyOutlineApproved) {
                 throw new IllegalStateException("逐页大纲尚未批准，禁止执行下游操作: " + operation);
             }
         }
@@ -1392,7 +1397,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
      *   <li>sourceFindings — 源文件分析结果</li>
      *   <li>pendingSteps — 待执行步骤（必填）</li>
      *   <li>risks — 风险评估</li>
-     *   <li>stage — 确认阶段标识（可选），例如 {@code plan_confirmation}、
+     *   <li>stage — 确认阶段标识（可选），例如 {@code outline_confirmation}、{@code plan_confirmation}、
      *       {@code image_retry_decision}、{@code image_ready_continue_confirmation}</li>
      *   <li>title — 展示给用户的标题（可选）</li>
      *   <li>message — 展示给用户的核心说明（可选）</li>
@@ -1428,7 +1433,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                                                     "required", List.of("label", "value"))),
                                     "contextData", Map.of(
                                             "type", "object",
-                                            "description", "For plan_confirmation use {type: ppt_outline, slides: [{slideNo, title, keyMessage, bullets, visualSuggestion}]}")),
+                                            "description", "For outline_confirmation use {type: ppt_outline, slides: [{slideNo, title, keyMessage, bullets, visualSuggestion}]}")),
                             "required", List.of("planSummary", "pendingSteps")))
                     .readOnly(false)
                     .concurrencySafe(true)

@@ -30,9 +30,20 @@ public enum PptJobNode {
     PROJECT_READY(PptWorkflowMode.BASIC, PptWorkflowMode.IMAGE_ENHANCED, false),
 
     /**
-     * 首次执行计划已获得人工确认。
+     * 逐页大纲已生成并进入人工确认，但尚未锁定。
+     */
+    OUTLINE_DRAFTED(PptWorkflowMode.BASIC, PptWorkflowMode.IMAGE_ENHANCED, true),
+
+    /**
+     * 逐页大纲已获得人工批准，可作为后续产物的依据。
+     */
+    OUTLINE_CONFIRMED(PptWorkflowMode.BASIC, PptWorkflowMode.IMAGE_ENHANCED, true),
+
+    /**
+     * 历史整体执行计划已获得人工确认。
      * <p>
-     * 通过 {@code request_plan_confirmation} 工具暂停，用户批准后进入此节点。
+     * 仅用于兼容历史 {@code plan_confirmation} 载荷；新的逐页大纲流程使用
+     * {@link #OUTLINE_CONFIRMED}。
      * </p>
      */
     PLAN_CONFIRMED(PptWorkflowMode.BASIC, PptWorkflowMode.IMAGE_ENHANCED, true),

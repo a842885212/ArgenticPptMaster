@@ -103,9 +103,8 @@ public class PptJobController {
     }
 
     /**
-     * 确认 PPT 生成结果。
-     * <p>在 Agent 生成内容后，用户可通过此端点提交确认结果，
-     * 包含确认 ID、审批状态、问答答案和备注信息。</p>
+     * 确认 PPT 计划或提交逐页大纲修订。
+     * <p>用户可通过此端点提交确认 ID、操作意图、问答答案和大纲反馈。</p>
      *
      * @param jobId   任务 UUID
      * @param request 确认请求体，包含确认 ID、审批状态、答案和评论
@@ -118,7 +117,10 @@ public class PptJobController {
                 request.confirmationId(),
                 request.approved(),
                 request.answers(),
-                request.comment()));
+                request.comment(),
+                request.action(),
+                request.overallComment(),
+                request.slideEdits()));
     }
 
     /**

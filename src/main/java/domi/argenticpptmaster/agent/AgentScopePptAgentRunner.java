@@ -7,6 +7,7 @@ import domi.argenticpptmaster.domain.PptJob;
 import domi.argenticpptmaster.domain.PptJobEvent;
 import domi.argenticpptmaster.domain.PptJobEventType;
 import domi.argenticpptmaster.domain.PptJobNode;
+import domi.argenticpptmaster.domain.PptJobNodeStatus;
 import domi.argenticpptmaster.domain.PptWorkflowMode;
 import domi.argenticpptmaster.service.PptWorkflowEvents;
 import io.agentscope.core.agent.RuntimeContext;
@@ -532,7 +533,20 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
                 payload.put("choices", choices);
             }
             Object contextData = input.get("contextData");
-            if (contextData instanceof Map<?, ?>) {
+            if (!hasApprovedOutline(job) && !"plan_confirmation".equals(stage)) {
+                throw new IllegalStateException(
+                        "the first request_plan_confirmation must use stage=plan_confirmation with a structured outline");
+            }
+            if ("plan_confirmation".equals(stage)) {
+                if (!(contextData instanceof Map<?, ?> contextMap)
+                        || !"ppt_outline".equals(contextMap.get("type"))) {
+                    throw new IllegalStateException(
+                            "plan_confirmation must contain contextData.type=ppt_outline with structured slides");
+                }
+                validateOutlineContextData(contextMap);
+                payload.put("contextData", contextData);
+            } else if (contextData instanceof Map<?, ?> contextMap) {
+                validateOutlineContextData(contextMap);
                 payload.put("contextData", contextData);
             }
         }
@@ -555,6 +569,45 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
                         "replyId", replyId,
                         "toolCallCount", toolCalls.size())));
         return true;
+    }
+
+    private boolean hasApprovedOutline(PptJob job) {
+        return job.nodeExecution(PptJobNode.PLAN_CONFIRMED).status() == PptJobNodeStatus.COMPLETED;
+    }
+
+    private void validateOutlineContextData(Map<?, ?> contextData) {
+        if (!"ppt_outline".equals(contextData.get("type"))) {
+            return;
+        }
+        Object slidesValue = contextData.get("slides");
+        if (!(slidesValue instanceof List<?> slides) || slides.isEmpty()) {
+            throw new IllegalStateException("ppt_outline contextData must contain slides");
+        }
+        int previousSlideNo = 0;
+        for (Object slideValue : slides) {
+            if (!(slideValue instanceof Map<?, ?> slide)) {
+                throw new IllegalStateException("ppt_outline slide must be an object");
+            }
+            Object slideNoValue = slide.get("slideNo");
+            if (!(slideNoValue instanceof Number number)
+                    || number.doubleValue() != number.intValue()
+                    || number.intValue() <= previousSlideNo) {
+                throw new IllegalStateException("ppt_outline slideNo values must be positive and ordered");
+            }
+            if (isBlankString(slide.get("title"))
+                    || isBlankString(slide.get("keyMessage"))
+                    || !(slide.get("bullets") instanceof List<?> bullets)
+                    || bullets.isEmpty()
+                    || bullets.stream().anyMatch(this::isBlankString)
+                    || isBlankString(slide.get("visualSuggestion"))) {
+                throw new IllegalStateException("ppt_outline slide is missing required fields");
+            }
+            previousSlideNo = number.intValue();
+        }
+    }
+
+    private boolean isBlankString(Object value) {
+        return !(value instanceof String string) || string.isBlank();
     }
 
     /**
@@ -679,7 +732,8 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
      */
     private String buildApprovalOutput(PptConfirmation confirmation, ToolUseBlock toolCall) {
         StringBuilder builder = new StringBuilder();
-        builder.append("Operator approved tool: ").append(toolCall.getName()).append('\n');
+        builder.append("Operator action: ").append(confirmation.action() == null ? "APPROVE" : confirmation.action())
+                .append(" for tool: ").append(toolCall.getName()).append('\n');
         Map<String, Object> input = extractStringKeyMap(toolCall.getInput());
         Object stage = input.get("stage");
         if (stage instanceof String stageStr && !stageStr.isBlank()) {
@@ -694,6 +748,12 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
         }
         if (confirmation.comment() != null && !confirmation.comment().isBlank()) {
             builder.append("operator_action=").append(confirmation.comment()).append('\n');
+        }
+        if (confirmation.overallComment() != null && !confirmation.overallComment().isBlank()) {
+            builder.append("outline_overall_comment=").append(confirmation.overallComment()).append('\n');
+        }
+        if (!confirmation.slideEdits().isEmpty()) {
+            builder.append("outline_slide_edits=").append(confirmation.slideEdits()).append('\n');
         }
         builder.append("original_input=").append(toolCall.getInput());
         return builder.toString();
@@ -713,18 +773,20 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
     private String buildInitialInstruction(PptJob job) {
         String workflowSteps = job.workflowMode() == PptWorkflowMode.IMAGE_ENHANCED
                 ? """
-                3. 在写 design_spec.md、spec_lock.md 之前，必须调用 request_plan_confirmation 请求人工确认；确认说明中需告知用户本任务将启用文生图。
-                4. 用户确认后，先产出 design_spec.md 与 spec_lock.md。
-                5. 如存在 AI 图片需求，写 images/image_prompts.json，然后调用 generate_project_images 生成图片。
-                6. 调用 inspect_image_manifest_status 检查图片状态：
+                3. 完成资料分析后，先生成逐页大纲（slideNo、title、keyMessage、bullets、visualSuggestion），通过 request_plan_confirmation（stage="plan_confirmation"）在 contextData 中返回 {type:"ppt_outline", slides:[...]}。
+                4. 收到 REQUEST_REVISION 时，读取 Operator 的整体意见和 outline_slide_edits，重生成完整大纲并再次请求 plan_confirmation；在 APPROVE 前不得写 design_spec.md、spec_lock.md、notes 或 svg。
+                5. 用户批准后，先产出 design_spec.md 与 spec_lock.md。
+                6. 如存在 AI 图片需求，写 images/image_prompts.json，然后调用 generate_project_images 生成图片。
+                7. 调用 inspect_image_manifest_status 检查图片状态：
                    - 若有 Failed：不要结束任务，不要输出总结；调用 request_plan_confirmation（stage="image_retry_decision"）询问用户是否重试失败图片，用户要求重试后再调用 generate_project_images，循环直到全部 Generated。
                    - 若全部 Generated：调用 request_plan_confirmation（stage="image_ready_continue_confirmation"）询问用户是否继续后续 PPT 制作（notes、SVG、finalize、导出），只有用户确认继续后才进入下一步。
-                7. 图片就绪且用户确认继续后，再写 notes/total.md 与 svg_output/*.svg；svg_output 引用图片时必须使用真实存在于 images/ 的文件。
-                8. 生成 svg_output 后，调用 validate_svg_output，再 finalize 和导出。
+                8. 图片就绪且用户确认继续后，再写 notes/total.md 与 svg_output/*.svg；svg_output 引用图片时必须使用真实存在于 images/ 的文件。
+                9. 生成 svg_output 后，调用 validate_svg_output，再 finalize 和导出。
                 """
                 : """
-                3. 在写 design_spec.md、spec_lock.md、notes/total.md、svg_output/*.svg 之前，必须调用 request_plan_confirmation 请求人工确认。
-                4. 用户确认后，再继续生成、校验、finalize 和导出。
+                3. 完成资料分析后，先生成逐页大纲（slideNo、title、keyMessage、bullets、visualSuggestion），通过 request_plan_confirmation（stage="plan_confirmation"）在 contextData 中返回 {type:"ppt_outline", slides:[...]}。
+                4. 收到 REQUEST_REVISION 时，读取 Operator 的整体意见和 outline_slide_edits，重生成完整大纲并再次请求 plan_confirmation；在 APPROVE 前不得写 design_spec.md、spec_lock.md、notes 或 svg。
+                5. 用户批准后，再继续生成、校验、finalize 和导出。
                 """;
         return """
                 请为当前 PPT 任务建立 ppt-master 工作区，并按 markdown 路线推进：

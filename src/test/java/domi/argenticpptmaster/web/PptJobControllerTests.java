@@ -2,12 +2,16 @@ package domi.argenticpptmaster.web;
 
 import static org.hamcrest.Matchers.containsString;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import domi.argenticpptmaster.domain.PptJob;
 import domi.argenticpptmaster.domain.PptJobNode;
+import domi.argenticpptmaster.domain.PptConfirmationAction;
 import domi.argenticpptmaster.domain.PptWorkflowMode;
 import domi.argenticpptmaster.exception.PptJobNotFoundException;
 import domi.argenticpptmaster.exception.PptJobResumeException;
@@ -15,6 +19,9 @@ import domi.argenticpptmaster.service.PptJobEventPublisher;
 import domi.argenticpptmaster.service.PptWorkflowService;
 import java.nio.file.Path;
 import java.util.UUID;
+import java.util.List;
+import java.util.Map;
+import domi.argenticpptmaster.web.dto.PptSlideEditRequest;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Import;
@@ -101,5 +108,39 @@ class PptJobControllerTests {
         mockMvc.perform(post("/api/ppt-jobs/{jobId}/resume", JOB_ID)
                         .contentType(MediaType.APPLICATION_JSON))
                 .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void confirmAcceptsStructuredOutlineRevisionPayload() throws Exception {
+        PptJob job = new PptJob(
+                JOB_ID, "demo", "ppt169", "make a deck",
+                PptWorkflowMode.BASIC, Path.of("var/ppt-master/jobs/demo"));
+        job.requireConfirmation("c-1", Map.of(
+                "stage", "plan_confirmation",
+                "contextData", Map.of("type", "ppt_outline")));
+        given(workflowService.submitConfirmation(
+                eq(JOB_ID), eq("c-1"), eq(true), any(), eq("旧备注"),
+                eq(PptConfirmationAction.REQUEST_REVISION), eq("整体修改"), any()))
+                .willReturn(job);
+
+        mockMvc.perform(post("/api/ppt-jobs/{jobId}/confirm", JOB_ID)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "confirmationId":"c-1",
+                                  "approved":true,
+                                  "comment":"旧备注",
+                                  "action":"REQUEST_REVISION",
+                                  "overallComment":"整体修改",
+                                  "slideEdits":[{"slideNo":2,"comment":"修改第2页"}]
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.currentConfirmationId").value("c-1"));
+
+        verify(workflowService).submitConfirmation(
+                eq(JOB_ID), eq("c-1"), eq(true), any(), eq("旧备注"),
+                eq(PptConfirmationAction.REQUEST_REVISION), eq("整体修改"),
+                eq(List.of(new PptSlideEditRequest(2, "修改第2页"))));
     }
 }

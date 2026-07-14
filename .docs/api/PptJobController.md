@@ -46,9 +46,14 @@ language: java
   "confirmationId": "active-confirmation-id",
   "approved": true,
   "answers": {},
-  "comment": "确认继续"
+  "comment": "确认继续",
+  "action": "APPROVE",
+  "overallComment": "",
+  "slideEdits": []
 }
 ```
+
+`action` 可取 `APPROVE`、`REQUEST_REVISION`、`CANCEL`。省略时沿用兼容规则：`approved=true` 等同于 `APPROVE`，`approved=false` 等同于 `CANCEL`。逐页修订时使用 `REQUEST_REVISION`，`slideEdits` 为 `{ "slideNo": 2, "comment": "修改该页视觉方案" }` 数组；必须提供整体意见或至少一条页级意见，页码必须存在于当前大纲。
 
 ### 恢复任务
 
@@ -84,9 +89,9 @@ language: java
 1. 接收上传文件，校验扩展名并保存到 `ppt-master.workspace-path/jobs/{jobId}/uploads`。
 2. 创建内存任务记录并异步启动 agent 编排。
 3. `AgentScopePptAgentRunner` 基于 AgentScope Java v2 `ReActAgent.streamEvents()` 驱动真实事件流，使用 `JsonFileAgentStateStore` 持久化会话状态：初始 attempt 按 `(serviceUserId, jobId)` 存储；checkpoint 恢复后会启用新的 attempt session，按 `(serviceUserId, jobId-attempt-N)` 存储，避免旧失败上下文污染新执行。
-4. agent 通过本地工具完成 `init_ppt_project`、`import_job_sources`、`collect_source_markdown`、`inspect_project_info`、`read_project_text_file` 等步骤，先走 markdown-first 路线分析资料与生成计划；当需要人工确认方案时，会调用外部执行工具 `request_plan_confirmation`，服务侧将 `RequireExternalExecutionEvent` 转成 `confirmationPayload`。
-5. 任务进入 `WAITING_CONFIRMATION`，服务会在 SSE 事件 `CONFIRMATION_REQUIRED` 的 `data.confirmationPayload` 中直接下发确认 UI 所需信息；前端可直接渲染确认面板，只有在 SSE 异常或恢复场景下才需要回退查询任务快照。
-6. 用户提交确认后，服务把确认结果封装为 `ToolResultMessage` 回喂给同一 AgentScope session，agent 从中断点继续执行；若再次触发人工确认，会生成新的 `confirmationId`。
+4. agent 通过本地工具完成 `init_ppt_project`、`import_job_sources`、`collect_source_markdown`、`inspect_project_info`、`read_project_text_file` 等步骤，先走 markdown-first 路线分析资料并生成包含 `slideNo`、`title`、`keyMessage`、`bullets`、`visualSuggestion` 的逐页大纲；随后以 `stage=plan_confirmation`、`contextData.type=ppt_outline` 调用 `request_plan_confirmation`。
+5. 任务仅在 `plan_confirmation` 含有合法的 `contextData.type=ppt_outline` 与完整 `slides` 时进入 `WAITING_CONFIRMATION`；服务会在 SSE 事件 `CONFIRMATION_REQUIRED` 的 `data.confirmationPayload` 中直接下发确认 UI 所需信息。前端按页渲染大纲，并可提交整体或页级修改意见。提交 `REQUEST_REVISION` 时任务不会失败，服务把整体和页级意见回喂 Agent，Agent 重生成大纲并再次确认。
+6. 用户提交 `APPROVE` 后，服务把确认结果封装为 `ToolResultMessage` 回喂给同一 AgentScope session，agent 从中断点继续执行；在批准前不得写入设计规格、备注、SVG 或图片产物。若再次触发人工确认，会生成新的 `confirmationId`。
 7. agent 在确认后可写入 `design_spec.md`、`spec_lock.md`、`notes/total.md`、`svg_output/*.svg`，再执行 `validate_svg_output`、`split_speaker_notes`、`finalize_project_svg` 和 `export_project_pptx`；任务完成时设置产物并通过下载接口获取 PPTX。若 agent 正常结束但未产出导出物，任务会失败并保留最终总结信息。
 8. 任务失败后，可调用 `POST /api/ppt-jobs/{jobId}/resume`。服务会校验任务状态、恢复次数上限和可恢复节点，通过后启动一次新的 attempt session，并指示 agent 从 `lastCompletedNode` 继续执行；agent 首先通过 `inspect_checkpoint_status` 确认项目当前状态，再推进后续节点。
 
@@ -109,6 +114,7 @@ language: java
 - 只有 `WAITING_CONFIRMATION` 状态允许提交确认。
 - `confirmationId` 必须匹配当前任务的活动确认 ID。
 - `CONFIRMATION_REQUIRED` 事件会携带 `confirmationId` 与完整 `confirmationPayload`，用于前端直接弹出确认 UI。
+- 首次确认必须使用 `stage=plan_confirmation` 并包含合法 `ppt_outline`；缺失、未知阶段或字段不完整时不得进入用户确认状态。
 - 下载接口只允许 `COMPLETED` 状态访问。
 - 即使后台已生成临时产物，只要任务状态未收敛到 `COMPLETED`，响应也不会提前暴露 `artifactReady=true` 或 `downloadUrl`。
 - 响应不暴露服务器本地绝对路径，产物通过 `downloadUrl` 获取。

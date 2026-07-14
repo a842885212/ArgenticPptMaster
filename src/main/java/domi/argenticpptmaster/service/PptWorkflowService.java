@@ -2,12 +2,14 @@ package domi.argenticpptmaster.service;
 
 import domi.argenticpptmaster.config.PptMasterProperties;
 import domi.argenticpptmaster.domain.PptConfirmation;
+import domi.argenticpptmaster.domain.PptConfirmationAction;
 import domi.argenticpptmaster.domain.PptJob;
 import domi.argenticpptmaster.domain.PptJobEvent;
 import domi.argenticpptmaster.domain.PptJobEventType;
 import domi.argenticpptmaster.domain.PptJobNode;
 import domi.argenticpptmaster.domain.PptJobStatus;
 import domi.argenticpptmaster.domain.PptSourceFile;
+import domi.argenticpptmaster.domain.PptSlideEdit;
 import domi.argenticpptmaster.domain.PptWorkflowMode;
 import domi.argenticpptmaster.util.PptConfirmationStageResolver;
 import domi.argenticpptmaster.exception.PptJobResumeException;
@@ -15,12 +17,15 @@ import domi.argenticpptmaster.exception.PptJobNotFoundException;
 import domi.argenticpptmaster.exception.PptJobStateException;
 import domi.argenticpptmaster.exception.PptStorageException;
 import domi.argenticpptmaster.repository.PptJobRepository;
+import domi.argenticpptmaster.web.dto.PptSlideEditRequest;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -138,12 +143,12 @@ public class PptWorkflowService {
     }
 
     /**
-     * 提交人工确认。
+     * 提交人工确认或大纲修订。
      * <p>
      * 验证当前任务状态为 {@link PptJobStatus#WAITING_CONFIRMATION}，
      * 且传入的 confirmationId 与待确认的 ID 一致。
-     * 如果用户拒绝确认，任务直接标记为失败。
-     * 如果用户批准，则异步恢复 AI 代理执行。
+     * 旧客户端的 approved 字段会兼容映射为批准或终止；新客户端可显式请求大纲修订。
+     * 只有批准和修订会异步恢复 AI 代理执行。
      * </p>
      *
      * @param jobId          任务 ID
@@ -160,7 +165,35 @@ public class PptWorkflowService {
             boolean approved,
             Map<String, Object> answers,
             String comment) {
+        return submitConfirmation(jobId, confirmationId, approved, answers, comment, null, null, List.of());
+    }
+
+    /**
+     * 提交带有明确操作意图的人工确认。
+     *
+     * @param jobId          任务 ID
+     * @param confirmationId 确认请求 ID
+     * @param approved       旧客户端兼容字段；action 为空时决定批准或取消
+     * @param answers        用户补充答案
+     * @param comment        旧客户端评论字段
+     * @param action         批准、要求修订或终止
+     * @param overallComment 大纲整体修订意见
+     * @param slideEdits     大纲逐页修订意见
+     * @return 更新后的任务实例
+     */
+    public PptJob submitConfirmation(
+            UUID jobId,
+            String confirmationId,
+            boolean approved,
+            Map<String, Object> answers,
+            String comment,
+            PptConfirmationAction action,
+            String overallComment,
+            List<PptSlideEditRequest> slideEdits) {
         PptJob job = getJob(jobId);
+        PptConfirmationAction effectiveAction = action == null
+                ? (approved ? PptConfirmationAction.APPROVE : PptConfirmationAction.CANCEL)
+                : action;
         log.info("ppt_job_confirmation_submit_received: jobId={}, confirmationId={}, currentStatus={}, approved={}",
                 jobId, confirmationId, job.status(), approved);
         if (job.status() != PptJobStatus.WAITING_CONFIRMATION) {
@@ -174,7 +207,7 @@ public class PptWorkflowService {
                     jobId, expectedConfirmationId, confirmationId);
             throw new PptJobStateException("confirmationId does not match active confirmation");
         }
-        if (!approved) {
+        if (effectiveAction == PptConfirmationAction.CANCEL) {
             String rejectReason = "confirmation rejected: " + (comment == null ? "" : comment);
             log.warn("ppt_job_confirmation_rejected: jobId={}, confirmationId={}, commentPresent={}, commentLength={}",
                     jobId, confirmationId, comment != null && !comment.isBlank(),
@@ -183,26 +216,100 @@ public class PptWorkflowService {
             events.record(job, PptJobEvent.of(PptJobEventType.JOB_FAILED, "confirmation rejected"));
             return job;
         }
+        List<PptSlideEdit> validatedEdits = validateSlideEdits(job, effectiveAction, slideEdits);
+        String resolvedOverallComment = firstNonBlank(overallComment, comment);
+        if (effectiveAction == PptConfirmationAction.REQUEST_REVISION
+                && isBlank(resolvedOverallComment) && validatedEdits.isEmpty()) {
+            throw new PptJobStateException("outline revision requires feedback");
+        }
         PptConfirmation confirmation = new PptConfirmation(
                 confirmationId,
                 true,
                 answers == null ? Map.of() : Map.copyOf(answers),
                 comment,
-                Instant.now());
-        PptJobNode confirmedNode = PptConfirmationStageResolver.resolveConfirmedNode(job.confirmationPayload());
+                Instant.now(),
+                effectiveAction,
+                resolvedOverallComment,
+                validatedEdits);
+        PptJobNode confirmedNode = effectiveAction == PptConfirmationAction.APPROVE
+                ? PptConfirmationStageResolver.resolveConfirmedNode(job.confirmationPayload())
+                : null;
         if (confirmedNode != null) {
             job.confirmNode(confirmedNode);
         }
         job.receiveConfirmation(confirmation);
         events.record(job, PptJobEvent.of(PptJobEventType.CONFIRMATION_RECEIVED, "confirmation received",
                 Map.of("confirmationId", confirmationId, "confirmedNode",
-                        confirmedNode == null ? "unknown" : confirmedNode.name())));
-        log.info("ppt_job_confirmation_approved: jobId={}, confirmationId={}, confirmedNode={}, answersKeys={}",
+                        confirmedNode == null ? "unknown" : confirmedNode.name(),
+                        "action", effectiveAction.name())));
+        log.info("ppt_job_confirmation_submitted: jobId={}, confirmationId={}, action={}, confirmedNode={}, answersKeys={}",
                 jobId, confirmationId,
+                effectiveAction,
                 confirmedNode == null ? "unknown" : confirmedNode.name(),
                 confirmation.answers().keySet());
         asyncRunner.resumeAgent(job.id());
         return job;
+    }
+
+    private List<PptSlideEdit> validateSlideEdits(
+            PptJob job,
+            PptConfirmationAction action,
+            List<PptSlideEditRequest> slideEdits) {
+        List<PptSlideEditRequest> requests = slideEdits == null ? List.of() : slideEdits;
+        if (action != PptConfirmationAction.REQUEST_REVISION) {
+            return List.of();
+        }
+        Object contextData = job.confirmationPayload().get("contextData");
+        if (!(contextData instanceof Map<?, ?> contextMap)
+                || !"ppt_outline".equals(contextMap.get("type"))) {
+            throw new PptJobStateException("outline revision is not available for current confirmation");
+        }
+        Set<Integer> validSlideNumbers = outlineSlideNumbers(contextMap.get("slides"));
+        Set<Integer> seen = new HashSet<>();
+        List<PptSlideEdit> result = new ArrayList<>();
+        for (PptSlideEditRequest request : requests) {
+            if (request == null || request.slideNo() <= 0 || !validSlideNumbers.contains(request.slideNo())) {
+                throw new PptJobStateException("slide edit references an invalid slide number");
+            }
+            if (!seen.add(request.slideNo())) {
+                throw new PptJobStateException("slide edit contains duplicate slide number");
+            }
+            if (isBlank(request.comment())) {
+                throw new PptJobStateException("slide edit comment is required");
+            }
+            result.add(new PptSlideEdit(request.slideNo(), request.comment().trim()));
+        }
+        return List.copyOf(result);
+    }
+
+    private Set<Integer> outlineSlideNumbers(Object slides) {
+        if (!(slides instanceof List<?> slideList)) {
+            throw new PptJobStateException("outline slides are missing");
+        }
+        Set<Integer> result = new HashSet<>();
+        int previousSlideNo = 0;
+        for (Object slide : slideList) {
+            if (!(slide instanceof Map<?, ?> slideMap)) {
+                throw new PptJobStateException("outline slide is invalid");
+            }
+            Object slideNo = slideMap.get("slideNo");
+            if (!(slideNo instanceof Number number)
+                    || number.doubleValue() != number.intValue()
+                    || number.intValue() <= previousSlideNo) {
+                throw new PptJobStateException("outline slide number is invalid");
+            }
+            result.add(number.intValue());
+            previousSlideNo = number.intValue();
+        }
+        return result;
+    }
+
+    private String firstNonBlank(String first, String second) {
+        return isBlank(first) ? second : first.trim();
+    }
+
+    private boolean isBlank(String value) {
+        return value == null || value.isBlank();
     }
 
     /**

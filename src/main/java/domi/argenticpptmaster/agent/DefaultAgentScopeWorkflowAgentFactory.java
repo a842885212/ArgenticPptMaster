@@ -384,14 +384,16 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                 执行顺序：
                 1. 调用 describe_job 了解任务，再调用 init_ppt_project，然后调用 import_job_sources。
                 2. 导入完成后，调用 collect_source_markdown、inspect_project_info、list_project_files、read_project_text_file 了解 sources/ 与 analysis/ 的真实内容。
-                3. 在写 design_spec.md、spec_lock.md、notes/total.md、svg_output/*.svg 之前，必须调用 request_plan_confirmation 请求用户确认。
-                4. 用户确认后，产出：
+                3. 完成资料分析后，先生成按 slideNo 升序排列的逐页大纲；每页必须包含 slideNo、title、keyMessage、bullets、visualSuggestion，并通过 request_plan_confirmation（stage="plan_confirmation"）在 contextData 中以 {type:"ppt_outline", slides:[...]} 返回。
+                4. 如果用户要求修改（REQUEST_REVISION），必须将整体意见和 slideEdits 逐项落实，重新生成完整逐页大纲并再次调用同一确认；在 APPROVE 前不得写任何下游产物。
+                5. 在写 design_spec.md、spec_lock.md、notes/total.md、svg_output/*.svg 之前，必须完成上述大纲确认。
+                6. 用户确认后，产出：
                    - design_spec.md
                    - spec_lock.md
                    - notes/total.md
                    - svg_output/*.svg
-                5. 生成 svg_output 后，调用 validate_svg_output，再调用 split_speaker_notes、finalize_project_svg，最后调用 export_project_pptx。
-                6. 当前模式不生成 images/image_prompts.json，也不调用 generate_project_images。
+                7. 生成 svg_output 后，调用 validate_svg_output，再调用 split_speaker_notes、finalize_project_svg，最后调用 export_project_pptx。
+                8. 当前模式不生成 images/image_prompts.json，也不调用 generate_project_images。
                 """;
     }
 
@@ -410,13 +412,14 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                 执行顺序：
                 1. 调用 describe_job 了解任务，再调用 init_ppt_project，然后调用 import_job_sources。
                 2. 导入完成后，调用 collect_source_markdown、inspect_project_info、list_project_files、read_project_text_file 了解 sources/ 与 analysis/ 的真实内容。
-                3. 在写 design_spec.md、spec_lock.md 之前，必须调用 request_plan_confirmation 请求用户确认；确认载荷中需说明将启用文生图。
-                4. 用户确认后，先产出 design_spec.md 与 spec_lock.md。
-                5. 如果 design_spec 中声明了 AI 图片需求，必须写 images/image_prompts.json：
+                3. 完成资料分析后，先生成按 slideNo 升序排列的逐页大纲；每页必须包含 slideNo、title、keyMessage、bullets、visualSuggestion，并通过 request_plan_confirmation（stage="plan_confirmation"）在 contextData 中以 {type:"ppt_outline", slides:[...]} 返回；确认载荷中需说明将启用文生图。
+                4. 如果用户要求修改（REQUEST_REVISION），必须将整体意见和 slideEdits 逐项落实，重新生成完整逐页大纲并再次调用同一确认；在 APPROVE 前不得写 design_spec.md、spec_lock.md 或任何图片/下游产物。
+                5. 用户批准逐页大纲后，先产出 design_spec.md 与 spec_lock.md。
+                6. 如果 design_spec 中声明了 AI 图片需求，必须写 images/image_prompts.json：
                    - 每个 item 必须包含 filename、prompt、aspect_ratio、status（初始为 Pending）
                    - 可包含 image_size、model、alt_text、purpose 等可选字段
-                6. 调用 generate_project_images 执行 image_gen.py --manifest 生成图片。
-                7. 调用 inspect_image_manifest_status 确认所有 item 状态：
+                7. 调用 generate_project_images 执行 image_gen.py --manifest 生成图片。
+                8. 调用 inspect_image_manifest_status 确认所有 item 状态：
                    - 若存在 Failed：
                      a. 绝不要直接结束任务、不要输出 FINAL 总结、不要写 notes/svg、不要导出。
                      b. 必须调用 request_plan_confirmation，stage 固定为 "image_retry_decision"。
@@ -427,8 +430,8 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                      a. 必须调用 request_plan_confirmation，stage 固定为 "image_ready_continue_confirmation"。
                      b. 询问用户“图片已全部生成，是否继续后续 PPT 制作（notes、SVG、finalize、导出）”。
                      c. 只有用户确认继续后，才进入步骤 8。
-                8. 图片就绪且用户确认继续后，再写 notes/total.md 与 svg_output/*.svg；svg_output 中引用图片时必须使用 images/<filename> 且文件真实存在。
-                9. 生成 svg_output 后，调用 validate_svg_output，再调用 split_speaker_notes、finalize_project_svg，最后调用 export_project_pptx。
+                9. 图片就绪且用户确认继续后，再写 notes/total.md 与 svg_output/*.svg；svg_output 中引用图片时必须使用 images/<filename> 且文件真实存在。
+                10. 生成 svg_output 后，调用 validate_svg_output，再调用 split_speaker_notes、finalize_project_svg，最后调用 export_project_pptx。
 
                 图片阶段约束：
                 - 第一版只支持 Path A：调用 generate_project_images（底层 image_gen.py --manifest）。
@@ -949,6 +952,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
          */
         @Tool(name = "split_speaker_notes", description = "Split notes/total.md into per-slide notes files under notes/ using ppt-master total_md_split.py.")
         public String splitSpeakerNotes(PptAgentToolRuntime runtime) {
+            requireApprovedOutline(runtime, "split speaker notes");
             Path projectPath = runtime.job().projectPath()
                     .orElseThrow(() -> new IllegalStateException("job project path is not prepared"));
             PptMasterCommandExecutor.CommandResult result = runtime.executor().runPythonScript(
@@ -997,6 +1001,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
          */
         @Tool(name = "finalize_project_svg", description = "Run ppt-master finalize_svg.py to build svg_final from svg_output.")
         public String finalizeProjectSvg(PptAgentToolRuntime runtime) {
+            requireApprovedOutline(runtime, "finalize SVG");
             Path projectPath = runtime.job().projectPath()
                     .orElseThrow(() -> new IllegalStateException("job project path is not prepared"));
             PptMasterCommandExecutor.CommandResult result = runtime.executor().runPythonScript(
@@ -1022,6 +1027,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
          */
         @Tool(name = "export_project_pptx", description = "Export the prepared svg_final project into a PPTX artifact.")
         public String exportProjectPptx(PptAgentToolRuntime runtime) {
+            requireApprovedOutline(runtime, "export PPTX");
             Path projectPath = runtime.job().projectPath()
                     .orElseThrow(() -> new IllegalStateException("job project path is not prepared"));
             Path svgFinal = projectPath.resolve("svg_final");
@@ -1063,6 +1069,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
          */
         @Tool(name = "generate_project_images", description = "Run ppt-master image_gen.py --manifest to generate AI images listed in images/image_prompts.json.")
         public String generateProjectImages(PptAgentToolRuntime runtime) {
+            requireApprovedOutline(runtime, "generate images");
             Path projectPath = runtime.job().projectPath()
                     .orElseThrow(() -> new IllegalStateException("job project path is not prepared"));
             Path manifestPath = projectPath.resolve("images/image_prompts.json");
@@ -1220,7 +1227,22 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
             if (!allowed) {
                 throw new IllegalStateException("writing this project path is not allowed: " + relativePath);
             }
+            boolean downstreamArtifact = normalized.equals("design_spec.md")
+                    || normalized.equals("spec_lock.md")
+                    || normalized.startsWith("notes/")
+                    || normalized.startsWith("svg_output/")
+                    || normalized.startsWith("images/");
+            if (downstreamArtifact) {
+                requireApprovedOutline(runtime, relativePath);
+            }
             return target;
+        }
+
+        private void requireApprovedOutline(PptAgentToolRuntime runtime, String operation) {
+            PptNodeExecution outlineExecution = runtime.job().nodeExecution(PptJobNode.PLAN_CONFIRMED);
+            if (outlineExecution == null || outlineExecution.status() != PptJobNodeStatus.COMPLETED) {
+                throw new IllegalStateException("逐页大纲尚未批准，禁止执行下游操作: " + operation);
+            }
         }
 
         /**
@@ -1404,7 +1426,9 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                                                             "label", Map.of("type", "string"),
                                                             "value", Map.of("type", "string")),
                                                     "required", List.of("label", "value"))),
-                                    "contextData", Map.of("type", "object")),
+                                    "contextData", Map.of(
+                                            "type", "object",
+                                            "description", "For plan_confirmation use {type: ppt_outline, slides: [{slideNo, title, keyMessage, bullets, visualSuggestion}]}")),
                             "required", List.of("planSummary", "pendingSteps")))
                     .readOnly(false)
                     .concurrencySafe(true)

@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import domi.argenticpptmaster.domain.PptJob;
+import domi.argenticpptmaster.domain.PptConfirmationAction;
 import domi.argenticpptmaster.domain.PptJobNode;
 import domi.argenticpptmaster.domain.PptJobStatus;
 import domi.argenticpptmaster.domain.PptWorkflowMode;
@@ -23,6 +24,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import domi.argenticpptmaster.web.dto.PptSlideEditRequest;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -231,6 +233,56 @@ class PptWorkflowServiceTests {
         assertThatThrownBy(() -> workflowService.resumeJob(job.id()))
                 .isInstanceOf(PptJobResumeException.class)
                 .hasMessageContaining("not in failed state");
+    }
+
+    @Test
+    void rejectsOutlineRevisionForUnknownSlideAndKeepsWaitingState() {
+        PptJob job = new PptJob(
+                java.util.UUID.randomUUID(),
+                "demo",
+                "ppt169",
+                "make a deck",
+                PptWorkflowMode.BASIC,
+                tempDir.resolve("jobs/demo-outline"));
+        repository.save(job);
+        job.requireConfirmation("outline-1", Map.of(
+                "stage", "plan_confirmation",
+                "contextData", Map.of(
+                        "type", "ppt_outline",
+                        "slides", List.of(Map.of("slideNo", 1)))));
+
+        assertThatThrownBy(() -> workflowService.submitConfirmation(
+                job.id(),
+                "outline-1",
+                true,
+                Map.of(),
+                null,
+                PptConfirmationAction.REQUEST_REVISION,
+                null,
+                List.of(new PptSlideEditRequest(2, "修改"))))
+                .isInstanceOf(PptJobStateException.class)
+                .hasMessage("slide edit references an invalid slide number");
+        assertThat(job.status()).isEqualTo(PptJobStatus.WAITING_CONFIRMATION);
+    }
+
+    @Test
+    void explicitCancelFailsWithoutResumingAgent() {
+        PptJob job = new PptJob(
+                java.util.UUID.randomUUID(),
+                "demo",
+                "ppt169",
+                "make a deck",
+                PptWorkflowMode.BASIC,
+                tempDir.resolve("jobs/demo-cancel"));
+        repository.save(job);
+        job.requireConfirmation("cancel-1", Map.of("stage", "plan_confirmation"));
+
+        PptJob result = workflowService.submitConfirmation(
+                job.id(), "cancel-1", true, Map.of(), "用户终止",
+                PptConfirmationAction.CANCEL, null, List.of());
+
+        assertThat(result.status()).isEqualTo(PptJobStatus.FAILED);
+        assertThat(result.confirmation()).isEmpty();
     }
 
     /**

@@ -8,6 +8,7 @@ import domi.argenticpptmaster.config.AgentScopeProperties.Execution;
 import domi.argenticpptmaster.config.AgentScopeProperties.ModelGroup;
 import domi.argenticpptmaster.config.PptMasterProperties;
 import domi.argenticpptmaster.domain.PptJob;
+import domi.argenticpptmaster.domain.PptJobNode;
 import domi.argenticpptmaster.domain.PptWorkflowMode;
 import domi.argenticpptmaster.infra.PptMasterCommandExecutor;
 import domi.argenticpptmaster.service.PptJobEventPublisher;
@@ -67,6 +68,7 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
     @Test
     void writeProjectTextFileWritesAllowedPathsAndRejectsOthers() throws IOException {
         TestContext context = createContext();
+        context.job.confirmNode(PptJobNode.PLAN_CONFIRMED);
 
         Map<String, Object> writeResult = context.tools.writeProjectTextFile(
                 "notes/total.md",
@@ -86,6 +88,7 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
     @Test
     void writeProjectTextFileAllowsImagePromptsManifest() throws IOException {
         TestContext context = createContext();
+        context.job.confirmNode(PptJobNode.PLAN_CONFIRMED);
         String manifest = """
                 {"items": [{"filename": "cover.png", "prompt": "a cover", "aspect_ratio": "16:9", "status": "Pending"}]}
                 """;
@@ -99,12 +102,41 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
         assertThat(Files.readString(context.projectPath.resolve("images/image_prompts.json"))).isEqualTo(manifest);
     }
 
+    @Test
+    void downstreamWritesRequireApprovedOutline() throws IOException {
+        TestContext context = createContext();
+        PptJob pendingJob = new PptJob(
+                UUID.randomUUID(), "pending", "ppt169", "make a deck", PptWorkflowMode.BASIC,
+                tempDir.resolve("workspace/jobs/pending"));
+        pendingJob.prepareProject(context.projectPath);
+        DefaultAgentScopeWorkflowAgentFactory.PptAgentToolRuntime pendingRuntime =
+                new DefaultAgentScopeWorkflowAgentFactory.PptAgentToolRuntime(
+                        pendingJob, context.properties, context.executor, context.events);
+
+        assertThatThrownBy(() -> context.tools.writeProjectTextFile("design_spec.md", "draft", pendingRuntime))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("逐页大纲尚未批准");
+        assertThatThrownBy(() -> context.tools.splitSpeakerNotes(pendingRuntime))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("逐页大纲尚未批准");
+        assertThatThrownBy(() -> context.tools.finalizeProjectSvg(pendingRuntime))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("逐页大纲尚未批准");
+        assertThatThrownBy(() -> context.tools.exportProjectPptx(pendingRuntime))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("逐页大纲尚未批准");
+        assertThatThrownBy(() -> context.tools.generateProjectImages(pendingRuntime))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("逐页大纲尚未批准");
+    }
+
     /**
      * 验证 {@code generateProjectImages} 在 manifest 存在时调用 image_gen.py --manifest。
      */
     @Test
     void generateProjectImagesDelegatesToImageGenScript() throws IOException {
         TestContext context = createContext();
+        context.job.confirmNode(PptJobNode.PLAN_CONFIRMED);
         Files.createDirectories(context.projectPath.resolve("images"));
         Files.writeString(context.projectPath.resolve("images/image_prompts.json"), """
                 {"items": [{"filename": "cover.png", "prompt": "a cover", "aspect_ratio": "16:9", "status": "Pending"}]}
@@ -195,6 +227,7 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
     @Test
     void postProcessingToolsDelegateToExpectedScripts() throws IOException {
         TestContext context = createContext();
+        context.job.confirmNode(PptJobNode.PLAN_CONFIRMED);
         Files.writeString(context.projectPath.resolve("notes/total.md"), "# 01_cover\nhello");
 
         context.tools.validateSvgOutput(context.runtime);

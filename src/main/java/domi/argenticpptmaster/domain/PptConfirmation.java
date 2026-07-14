@@ -1,6 +1,7 @@
 package domi.argenticpptmaster.domain;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -15,11 +16,31 @@ import java.util.Map;
  * @param answers        用户对代理提出问题的补充回答
  * @param comment        用户备注
  * @param confirmedAt    确认时间
+ * @param action         用户明确的操作意图
+ * @param overallComment 逐页大纲整体修改意见
+ * @param slideEdits     逐页大纲修改意见
  */
 public record PptConfirmation(
         String confirmationId,
         boolean approved,
         Map<String, Object> answers,
         String comment,
-        Instant confirmedAt) {
+        Instant confirmedAt,
+        PptConfirmationAction action,
+        String overallComment,
+        List<PptSlideEdit> slideEdits) {
+
+    public PptConfirmation(
+            String confirmationId,
+            boolean approved,
+            Map<String, Object> answers,
+            String comment,
+            Instant confirmedAt) {
+        this(confirmationId, approved, answers, comment, confirmedAt, null, comment, List.of());
+    }
+
+    public PptConfirmation {
+        answers = answers == null ? Map.of() : Map.copyOf(answers);
+        slideEdits = slideEdits == null ? List.of() : List.copyOf(slideEdits);
+    }
 }

@@ -147,6 +147,12 @@ public class PptJob {
         return confirmationPayload;
     }
 
+    /** 更新当前确认载荷中的版本化大纲快照。 */
+    public synchronized void updateConfirmationPayload(Map<String, Object> payload) {
+        this.confirmationPayload = payload == null ? Map.of() : Map.copyOf(payload);
+        touch();
+    }
+
     public synchronized Optional<PptConfirmation> confirmation() {
         return Optional.ofNullable(confirmation);
     }

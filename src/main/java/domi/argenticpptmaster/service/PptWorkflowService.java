@@ -8,6 +8,8 @@ import domi.argenticpptmaster.domain.PptJobEvent;
 import domi.argenticpptmaster.domain.PptJobEventType;
 import domi.argenticpptmaster.domain.PptJobNode;
 import domi.argenticpptmaster.domain.PptJobStatus;
+import domi.argenticpptmaster.domain.PptOutline;
+import domi.argenticpptmaster.domain.PptOutlineEdit;
 import domi.argenticpptmaster.domain.PptSourceFile;
 import domi.argenticpptmaster.domain.PptSlideEdit;
 import domi.argenticpptmaster.domain.PptWorkflowMode;
@@ -18,6 +20,7 @@ import domi.argenticpptmaster.exception.PptJobStateException;
 import domi.argenticpptmaster.exception.PptStorageException;
 import domi.argenticpptmaster.repository.PptJobRepository;
 import domi.argenticpptmaster.web.dto.PptSlideEditRequest;
+import domi.argenticpptmaster.web.dto.PptOutlineEditRequest;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
@@ -76,6 +79,7 @@ public class PptWorkflowService {
     private final PptJobRepository repository;
     private final PptWorkflowEvents events;
     private final PptWorkflowAsyncRunner asyncRunner;
+    private final PptOutlineStore outlineStore = new PptOutlineStore();
 
     public PptWorkflowService(
             PptMasterProperties properties,
@@ -190,6 +194,22 @@ public class PptWorkflowService {
             PptConfirmationAction action,
             String overallComment,
             List<PptSlideEditRequest> slideEdits) {
+        return submitConfirmation(jobId, confirmationId, approved, answers, comment, action, overallComment,
+                slideEdits, null, List.of());
+    }
+
+    /** 提交带版本和结构化页级操作的确认。 */
+    public PptJob submitConfirmation(
+            UUID jobId,
+            String confirmationId,
+            boolean approved,
+            Map<String, Object> answers,
+            String comment,
+            PptConfirmationAction action,
+            String overallComment,
+            List<PptSlideEditRequest> slideEdits,
+            Integer outlineVersion,
+            List<PptOutlineEditRequest> outlineEdits) {
         PptJob job = getJob(jobId);
         PptConfirmationAction effectiveAction = action == null
                 ? (approved ? PptConfirmationAction.APPROVE : PptConfirmationAction.CANCEL)
@@ -217,9 +237,10 @@ public class PptWorkflowService {
             return job;
         }
         List<PptSlideEdit> validatedEdits = validateSlideEdits(job, effectiveAction, slideEdits);
+        List<PptOutlineEdit> validatedOutlineEdits = validateOutlineEdits(job, effectiveAction, outlineVersion, outlineEdits);
         String resolvedOverallComment = firstNonBlank(overallComment, comment);
         if (effectiveAction == PptConfirmationAction.REQUEST_REVISION
-                && isBlank(resolvedOverallComment) && validatedEdits.isEmpty()) {
+                && isBlank(resolvedOverallComment) && validatedEdits.isEmpty() && validatedOutlineEdits.isEmpty()) {
             throw new PptJobStateException("outline revision requires feedback");
         }
         PptConfirmation confirmation = new PptConfirmation(
@@ -230,11 +251,14 @@ public class PptWorkflowService {
                 Instant.now(),
                 effectiveAction,
                 resolvedOverallComment,
-                validatedEdits);
+                validatedEdits,
+                outlineVersion,
+                validatedOutlineEdits);
         PptJobNode confirmedNode = effectiveAction == PptConfirmationAction.APPROVE
                 ? PptConfirmationStageResolver.resolveConfirmedNode(job.confirmationPayload())
                 : null;
         if (confirmedNode != null) {
+            lockApprovedOutline(job, outlineVersion);
             if (confirmedNode == PptJobNode.OUTLINE_CONFIRMED
                     && job.currentNode().orElse(null) == PptJobNode.OUTLINE_DRAFTED) {
                 job.completeNode(PptJobNode.OUTLINE_DRAFTED, Map.of("confirmed", true));
@@ -306,6 +330,126 @@ public class PptWorkflowService {
             previousSlideNo = number.intValue();
         }
         return result;
+    }
+
+    private List<PptOutlineEdit> validateOutlineEdits(
+            PptJob job, PptConfirmationAction action, Integer outlineVersion,
+            List<PptOutlineEditRequest> requests) {
+        if (action != PptConfirmationAction.REQUEST_REVISION && (requests == null || requests.isEmpty())) {
+            return List.of();
+        }
+        List<PptOutlineEditRequest> edits = requests == null ? List.of() : requests;
+        if (edits.isEmpty()) {
+            return List.of();
+        }
+        if (action != PptConfirmationAction.REQUEST_REVISION) {
+            throw new PptJobStateException("outline edits are only allowed for REQUEST_REVISION");
+        }
+        if (!isOutlineConfirmation(job) || outlineVersion == null || outlineVersion <= 0) {
+            throw new PptJobStateException("structured outline edits require a valid outline version");
+        }
+        PptOutline outline = currentOutline(job, outlineVersion);
+        List<PptOutlineEdit> result = new ArrayList<>();
+        for (PptOutlineEditRequest request : edits) {
+            if (request == null) {
+                throw new PptJobStateException("outline edit is required");
+            }
+            PptOutlineEdit edit = new PptOutlineEdit(request.operation(), request.slideNo(), request.slide());
+            try {
+                edit.validate();
+            } catch (IllegalArgumentException ex) {
+                throw new PptJobStateException(ex.getMessage());
+            }
+            result.add(edit);
+        }
+        try {
+            PptOutline next = outline.apply(result);
+            job.projectPath().ifPresent(path -> outlineStore.write(path, next));
+            updateOutlinePayload(job, next);
+        } catch (IllegalArgumentException | IllegalStateException ex) {
+            throw new PptJobStateException(ex.getMessage());
+        }
+        return List.copyOf(result);
+    }
+
+    private void updateOutlinePayload(PptJob job, PptOutline outline) {
+        Object contextData = job.confirmationPayload().get("contextData");
+        if (!(contextData instanceof Map<?, ?> map)) {
+            return;
+        }
+        Map<String, Object> updatedContext = new java.util.LinkedHashMap<>();
+        map.forEach((key, value) -> updatedContext.put(String.valueOf(key), value));
+        updatedContext.put("version", outline.version());
+        updatedContext.put("locked", outline.locked());
+        updatedContext.put("slides", outline.slides().stream().map(slide -> {
+            Map<String, Object> value = new java.util.LinkedHashMap<>();
+            value.put("slideNo", slide.slideNo());
+            value.put("title", slide.title());
+            value.put("keyMessage", slide.keyMessage());
+            value.put("bullets", slide.bullets());
+            value.put("visualSuggestion", slide.visualSuggestion());
+            value.put("imageRequirement", slide.imageRequirement());
+            return value;
+        }).toList());
+        Map<String, Object> payload = new java.util.LinkedHashMap<>(job.confirmationPayload());
+        payload.put("contextData", updatedContext);
+        job.updateConfirmationPayload(payload);
+    }
+
+    private void lockApprovedOutline(PptJob job, Integer outlineVersion) {
+        if (!isOutlineConfirmation(job)) {
+            return;
+        }
+        Object contextData = job.confirmationPayload().get("contextData");
+        Integer payloadVersion = outlineVersion != null ? outlineVersion : outlineVersionFrom(contextData);
+        if (payloadVersion == null) {
+            if (job.projectPath().isPresent()) {
+                throw new PptJobStateException("outline confirmation requires a version");
+            }
+            return;
+        }
+        PptOutline outline = currentOutline(job, payloadVersion);
+        if (outline.locked()) {
+            return;
+        }
+        PptOutline locked = outline.lock();
+        job.projectPath().ifPresent(path -> outlineStore.write(path, locked));
+        if (contextData instanceof Map<?, ?> map) {
+            Map<String, Object> updatedContext = new java.util.LinkedHashMap<>();
+            map.forEach((key, value) -> updatedContext.put(String.valueOf(key), value));
+            updatedContext.put("version", locked.version());
+            updatedContext.put("locked", true);
+            Map<String, Object> payload = new java.util.LinkedHashMap<>(job.confirmationPayload());
+            payload.put("contextData", updatedContext);
+            job.updateConfirmationPayload(payload);
+        }
+    }
+
+    private PptOutline currentOutline(PptJob job, int expectedVersion) {
+        PptOutline outline = job.projectPath().filter(path -> Files.isRegularFile(outlineStore.path(path)))
+                .map(outlineStore::read)
+                .orElseGet(() -> {
+                    Object contextData = job.confirmationPayload().get("contextData");
+                    return contextData instanceof Map<?, ?> map
+                            ? PptOutline.fromPayload(expectedVersion, map.get("slides"))
+                            : null;
+                });
+        if (outline == null || outline.version() != expectedVersion) {
+            throw new PptJobStateException("outline version does not match active outline");
+        }
+        return outline;
+    }
+
+    private boolean isOutlineConfirmation(PptJob job) {
+        return "outline_confirmation".equals(job.confirmationPayload().get("stage"));
+    }
+
+    private Integer outlineVersionFrom(Object contextData) {
+        if (contextData instanceof Map<?, ?> map && map.get("version") instanceof Number number
+                && number.intValue() > 0) {
+            return number.intValue();
+        }
+        return null;
     }
 
     private String firstNonBlank(String first, String second) {

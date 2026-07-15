@@ -19,6 +19,8 @@ import java.util.Map;
  * @param action         用户明确的操作意图
  * @param overallComment 逐页大纲整体修改意见
  * @param slideEdits     逐页大纲修改意见
+ * @param outlineVersion 结构化大纲版本
+ * @param outlineEdits   结构化页级编辑
  */
 public record PptConfirmation(
         String confirmationId,
@@ -28,7 +30,9 @@ public record PptConfirmation(
         Instant confirmedAt,
         PptConfirmationAction action,
         String overallComment,
-        List<PptSlideEdit> slideEdits) {
+        List<PptSlideEdit> slideEdits,
+        Integer outlineVersion,
+        List<PptOutlineEdit> outlineEdits) {
 
     public PptConfirmation(
             String confirmationId,
@@ -36,11 +40,17 @@ public record PptConfirmation(
             Map<String, Object> answers,
             String comment,
             Instant confirmedAt) {
-        this(confirmationId, approved, answers, comment, confirmedAt, null, comment, List.of());
+        this(confirmationId, approved, answers, comment, confirmedAt, null, comment, List.of(), null, List.of());
+    }
+
+    public PptConfirmation(String confirmationId, boolean approved, Map<String, Object> answers, String comment,
+            Instant confirmedAt, PptConfirmationAction action, String overallComment, List<PptSlideEdit> slideEdits) {
+        this(confirmationId, approved, answers, comment, confirmedAt, action, overallComment, slideEdits, null, List.of());
     }
 
     public PptConfirmation {
         answers = answers == null ? Map.of() : Map.copyOf(answers);
         slideEdits = slideEdits == null ? List.of() : List.copyOf(slideEdits);
+        outlineEdits = outlineEdits == null ? List.of() : List.copyOf(outlineEdits);
     }
 }

@@ -11,6 +11,7 @@ import domi.argenticpptmaster.domain.PptNodeExecution;
 import domi.argenticpptmaster.domain.PptWorkflowMode;
 import domi.argenticpptmaster.infra.PptMasterCommandExecutor;
 import domi.argenticpptmaster.service.PptWorkflowEvents;
+import domi.argenticpptmaster.service.PptOutlineStore;
 import io.agentscope.core.ReActAgent;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
@@ -42,6 +43,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.function.Predicate;
 import java.util.stream.Stream;
 import org.slf4j.Logger;
@@ -384,7 +387,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                 执行顺序：
                 1. 调用 describe_job 了解任务，再调用 init_ppt_project，然后调用 import_job_sources。
                 2. 导入完成后，调用 collect_source_markdown、inspect_project_info、list_project_files、read_project_text_file 了解 sources/ 与 analysis/ 的真实内容。
-                3. 完成资料分析后，先生成按 slideNo 升序排列的逐页大纲；每页必须包含 slideNo、title、keyMessage、bullets、visualSuggestion，并通过 request_plan_confirmation（stage="outline_confirmation"）在 contextData 中以 {type:"ppt_outline", slides:[...]} 返回。
+                3. 完成资料分析后，先生成按 slideNo 升序排列的逐页大纲并写入 outline.json（version 从 1 开始、locked=false）；每页必须包含 slideNo、title、keyMessage、bullets、visualSuggestion，并通过 request_plan_confirmation（stage="outline_confirmation"）在 contextData 中以 {type:"ppt_outline", version, locked:false, slides:[...]} 返回。
                 4. 如果用户要求修改（REQUEST_REVISION），必须将整体意见和 slideEdits 逐项落实，重新生成完整逐页大纲并再次调用同一确认；在 APPROVE 前不得写任何下游产物。
                 5. 在写 design_spec.md、spec_lock.md、notes/total.md、svg_output/*.svg 之前，必须完成上述大纲确认。
                 6. 用户确认后，产出：
@@ -412,7 +415,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                 执行顺序：
                 1. 调用 describe_job 了解任务，再调用 init_ppt_project，然后调用 import_job_sources。
                 2. 导入完成后，调用 collect_source_markdown、inspect_project_info、list_project_files、read_project_text_file 了解 sources/ 与 analysis/ 的真实内容。
-                3. 完成资料分析后，先生成按 slideNo 升序排列的逐页大纲；每页必须包含 slideNo、title、keyMessage、bullets、visualSuggestion，并通过 request_plan_confirmation（stage="outline_confirmation"）在 contextData 中以 {type:"ppt_outline", slides:[...]} 返回；确认载荷中需说明将启用文生图。
+                3. 完成资料分析后，先生成按 slideNo 升序排列的逐页大纲并写入 outline.json（version 从 1 开始、locked=false）；每页必须包含 slideNo、title、keyMessage、bullets、visualSuggestion 和可选 imageRequirement，并通过 request_plan_confirmation（stage="outline_confirmation"）在 contextData 中以 {type:"ppt_outline", version, locked:false, slides:[...]} 返回；确认载荷中需说明将启用文生图。
                 4. 如果用户要求修改（REQUEST_REVISION），必须将整体意见和 slideEdits 逐项落实，重新生成完整逐页大纲并再次调用同一确认；在 APPROVE 前不得写 design_spec.md、spec_lock.md 或任何图片/下游产物。
                 5. 用户批准逐页大纲后，先产出 design_spec.md 与 spec_lock.md。
                 6. 如果 design_spec 中声明了 AI 图片需求，必须写 images/image_prompts.json：
@@ -775,7 +778,15 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
         private boolean hasCheckpointEvidence(Path projectPath, Map<String, Object> files, PptJobNode node) {
             return switch (node) {
                 case PROJECT_READY -> hasAnyFile(files.get("sources"));
-                case OUTLINE_DRAFTED, OUTLINE_CONFIRMED, PLAN_CONFIRMED, IMAGE_CONTINUE_CONFIRMED -> true;
+                case OUTLINE_DRAFTED -> Files.isRegularFile(projectPath.resolve("outline.json"));
+                case OUTLINE_CONFIRMED -> {
+                    try {
+                        yield new PptOutlineStore().read(projectPath).locked();
+                    } catch (IllegalStateException ex) {
+                        yield false;
+                    }
+                }
+                case PLAN_CONFIRMED, IMAGE_CONTINUE_CONFIRMED -> true;
                 case DESIGN_SPEC_WRITTEN -> Files.isRegularFile(projectPath.resolve("design_spec.md"));
                 case SPEC_LOCK_WRITTEN -> Files.isRegularFile(projectPath.resolve("spec_lock.md"));
                 case IMAGES_MANIFEST_WRITTEN -> Files.isRegularFile(projectPath.resolve("images/image_prompts.json"));
@@ -925,14 +936,31 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                 String content,
                 PptAgentToolRuntime runtime) {
             Path target = resolveWritableProjectFile(runtime, relativePath);
+            Path projectPath = runtime.job().projectPath().orElseThrow();
+            String normalized = projectPath.relativize(target).toString().replace('\\', '/');
+            if (normalized.equals("outline.json") && Files.isRegularFile(target)) {
+                try {
+                    if (new PptOutlineStore().read(projectPath).locked()) {
+                        throw new IllegalStateException("locked outline cannot be overwritten");
+                    }
+                } catch (IllegalStateException ex) {
+                    throw new IllegalStateException("outline.json cannot be overwritten after lock", ex);
+                }
+            }
+            if ((normalized.equals("design_spec.md") || normalized.equals("spec_lock.md"))
+                    && Files.isRegularFile(new PptOutlineStore().path(projectPath))) {
+                int expectedVersion = new PptOutlineStore().read(projectPath).version();
+                Matcher matcher = Pattern.compile("outlineVersion\\s*[:=]\\s*(\\d+)").matcher(content);
+                if (!matcher.find() || Integer.parseInt(matcher.group(1)) != expectedVersion) {
+                    throw new IllegalStateException(normalized + " must record current outlineVersion=" + expectedVersion);
+                }
+            }
             try {
                 Files.createDirectories(target.getParent());
                 Files.writeString(target, content, StandardCharsets.UTF_8);
             } catch (IOException ex) {
                 throw new IllegalStateException("failed to write project file: " + relativePath, ex);
             }
-            Path projectPath = runtime.job().projectPath().orElseThrow();
-            String normalized = projectPath.relativize(target).toString().replace('\\', '/');
             advanceNodeForWrittenFile(runtime, normalized);
             return Map.of(
                     "relativePath", normalized,
@@ -1218,7 +1246,8 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                 throw new IllegalStateException("relativePath escapes project: " + relativePath);
             }
             String normalized = projectPath.relativize(target).toString().replace('\\', '/');
-            boolean allowed = normalized.equals("design_spec.md")
+            boolean allowed = normalized.equals("outline.json")
+                    || normalized.equals("design_spec.md")
                     || normalized.equals("spec_lock.md")
                     || normalized.startsWith("notes/")
                     || normalized.startsWith("svg_output/")
@@ -1245,6 +1274,16 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                     && outlineExecution.status() == PptJobNodeStatus.COMPLETED;
             boolean legacyOutlineApproved = legacyExecution != null
                     && legacyExecution.status() == PptJobNodeStatus.COMPLETED;
+            if (outlineApproved) {
+                Path projectPath = runtime.job().projectPath().orElseThrow();
+                try {
+                    if (!new PptOutlineStore().read(projectPath).locked()) {
+                        throw new IllegalStateException("outline is not locked");
+                    }
+                } catch (IllegalStateException ex) {
+                    throw new IllegalStateException("锁定大纲无效，禁止执行下游操作: " + operation, ex);
+                }
+            }
             if (!outlineApproved && !legacyOutlineApproved) {
                 throw new IllegalStateException("逐页大纲尚未批准，禁止执行下游操作: " + operation);
             }
@@ -1433,7 +1472,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                                                     "required", List.of("label", "value"))),
                                     "contextData", Map.of(
                                             "type", "object",
-                                            "description", "For outline_confirmation use {type: ppt_outline, slides: [{slideNo, title, keyMessage, bullets, visualSuggestion}]}")),
+                                            "description", "For outline_confirmation use {type: ppt_outline, version, locked:false, slides: [{slideNo, title, keyMessage, bullets, visualSuggestion, imageRequirement}]}")),
                             "required", List.of("planSummary", "pendingSteps")))
                     .readOnly(false)
                     .concurrencySafe(true)

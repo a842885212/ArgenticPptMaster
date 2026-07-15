@@ -9,8 +9,10 @@ import domi.argenticpptmaster.domain.PptJobEventType;
 import domi.argenticpptmaster.domain.PptJobNode;
 import domi.argenticpptmaster.domain.PptJobNodeStatus;
 import domi.argenticpptmaster.domain.PptNodeExecution;
+import domi.argenticpptmaster.domain.PptOutline;
 import domi.argenticpptmaster.domain.PptWorkflowMode;
 import domi.argenticpptmaster.service.PptWorkflowEvents;
+import domi.argenticpptmaster.service.PptOutlineStore;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
 import io.agentscope.core.event.AgentResultEvent;
@@ -31,6 +33,7 @@ import io.agentscope.core.message.UserMessage;
 import io.agentscope.core.state.AgentState;
 import io.agentscope.core.state.JsonFileAgentStateStore;
 import java.nio.file.Path;
+import java.nio.file.Files;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -546,9 +549,33 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
                             "outline_confirmation must contain contextData.type=ppt_outline with structured slides");
                 }
                 validateOutlineContextData(contextMap);
-                payload.put("contextData", contextData);
+                Map<String, Object> normalizedContext = new LinkedHashMap<>();
+                contextMap.forEach((key, value) -> normalizedContext.put(String.valueOf(key), value));
+                if ("outline_confirmation".equals(stage)) {
+                    int version = contextMap.get("version") instanceof Number number ? number.intValue() : 1;
+                    if (version <= 0) {
+                        throw new IllegalStateException("outline version must be positive");
+                    }
+                    normalizedContext.put("version", version);
+                    normalizedContext.put("locked", false);
+                    PptOutline outline = PptOutline.fromPayload(version, contextMap.get("slides"));
+                    job.projectPath().ifPresent(path -> {
+                        Path outlinePath = new PptOutlineStore().path(path);
+                        if (Files.isRegularFile(outlinePath)) {
+                            PptOutline existing = new PptOutlineStore().read(path);
+                            if (existing.locked() || version < existing.version()
+                                    || (version == existing.version() && !existing.equals(outline))) {
+                                throw new IllegalStateException("outline version is stale or already locked");
+                            }
+                        }
+                        new PptOutlineStore().write(path, outline);
+                    });
+                }
+                payload.put("contextData", normalizedContext);
             } else if (contextData instanceof Map<?, ?> contextMap) {
-                validateOutlineContextData(contextMap);
+                if (contextMap.get("slides") != null) {
+                    validateOutlineContextData(contextMap);
+                }
                 payload.put("contextData", contextData);
             }
         }
@@ -588,7 +615,7 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
 
     private void validateOutlineContextData(Map<?, ?> contextData) {
         if (!"ppt_outline".equals(contextData.get("type"))) {
-            return;
+            throw new IllegalStateException("contextData.type must be ppt_outline");
         }
         Object slidesValue = contextData.get("slides");
         if (!(slidesValue instanceof List<?> slides) || slides.isEmpty()) {
@@ -766,6 +793,12 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
         if (!confirmation.slideEdits().isEmpty()) {
             builder.append("outline_slide_edits=").append(confirmation.slideEdits()).append('\n');
         }
+        if (confirmation.outlineVersion() != null) {
+            builder.append("outline_version=").append(confirmation.outlineVersion()).append('\n');
+        }
+        if (!confirmation.outlineEdits().isEmpty()) {
+            builder.append("outline_edits=").append(confirmation.outlineEdits()).append('\n');
+        }
         builder.append("original_input=").append(toolCall.getInput());
         return builder.toString();
     }
@@ -784,8 +817,8 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
     private String buildInitialInstruction(PptJob job) {
         String workflowSteps = job.workflowMode() == PptWorkflowMode.IMAGE_ENHANCED
                 ? """
-                3. 完成资料分析后，先生成逐页大纲（slideNo、title、keyMessage、bullets、visualSuggestion），通过 request_plan_confirmation（stage="outline_confirmation"）在 contextData 中返回 {type:"ppt_outline", slides:[...]}。
-                4. 收到 REQUEST_REVISION 时，读取 Operator 的整体意见和 outline_slide_edits，重生成完整大纲并再次请求 outline_confirmation；在 APPROVE 前不得写 design_spec.md、spec_lock.md、notes 或 svg。
+                3. 完成资料分析后，先生成逐页大纲并写入 outline.json（version 从 1 开始、locked=false），通过 request_plan_confirmation（stage="outline_confirmation"）在 contextData 中返回 {type:"ppt_outline", version, locked:false, slides:[...]}。
+                4. 收到 REQUEST_REVISION 时，读取 Operator 的整体意见、outline_slide_edits 和 outline_edits，重生成完整的新版本大纲并再次请求 outline_confirmation；在 APPROVE 前不得写 design_spec.md、spec_lock.md、notes 或 svg。
                 5. 用户批准后，先产出 design_spec.md 与 spec_lock.md。
                 6. 如存在 AI 图片需求，写 images/image_prompts.json，然后调用 generate_project_images 生成图片。
                 7. 调用 inspect_image_manifest_status 检查图片状态：
@@ -795,8 +828,8 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
                 9. 生成 svg_output 后，调用 validate_svg_output，再 finalize 和导出。
                 """
                 : """
-                3. 完成资料分析后，先生成逐页大纲（slideNo、title、keyMessage、bullets、visualSuggestion），通过 request_plan_confirmation（stage="outline_confirmation"）在 contextData 中返回 {type:"ppt_outline", slides:[...]}。
-                4. 收到 REQUEST_REVISION 时，读取 Operator 的整体意见和 outline_slide_edits，重生成完整大纲并再次请求 outline_confirmation；在 APPROVE 前不得写 design_spec.md、spec_lock.md、notes 或 svg。
+                3. 完成资料分析后，先生成逐页大纲并写入 outline.json（version 从 1 开始、locked=false），通过 request_plan_confirmation（stage="outline_confirmation"）在 contextData 中返回 {type:"ppt_outline", version, locked:false, slides:[...]}。
+                4. 收到 REQUEST_REVISION 时，读取 Operator 的整体意见、outline_slide_edits 和 outline_edits，重生成完整的新版本大纲并再次请求 outline_confirmation；在 APPROVE 前不得写 design_spec.md、spec_lock.md、notes 或 svg。
                 5. 用户批准后，再继续生成、校验、finalize 和导出。
                 """;
         return """

@@ -62,6 +62,9 @@ public record PptJobResponse(
         String downloadUrl,
         String currentConfirmationId,
         Map<String, Object> confirmationPayload,
+        Integer outlineVersion,
+        boolean outlineLocked,
+        int outlineSlideCount,
         String errorMessage,
         List<PptJobEvent> events) {
 
@@ -92,8 +95,30 @@ public record PptJobResponse(
                 downloadReady ? "/api/ppt-jobs/" + job.id() + "/download" : null,
                 job.currentConfirmationId().orElse(null),
                 job.confirmationPayload(),
+                outlineVersion(job.confirmationPayload()),
+                outlineLocked(job.confirmationPayload()),
+                outlineSlideCount(job.confirmationPayload()),
                 job.errorMessage().orElse(null),
                 job.events());
+    }
+
+    private static Integer outlineVersion(Map<String, Object> payload) {
+        Object contextData = payload.get("contextData");
+        if (contextData instanceof Map<?, ?> map && map.get("version") instanceof Number number) {
+            return number.intValue();
+        }
+        return null;
+    }
+
+    private static boolean outlineLocked(Map<String, Object> payload) {
+        Object contextData = payload.get("contextData");
+        return contextData instanceof Map<?, ?> map && Boolean.TRUE.equals(map.get("locked"));
+    }
+
+    private static int outlineSlideCount(Map<String, Object> payload) {
+        Object contextData = payload.get("contextData");
+        Object slides = contextData instanceof Map<?, ?> map ? map.get("slides") : null;
+        return slides instanceof List<?> list ? list.size() : 0;
     }
 
     private static Map<String, NodeStateResponse> buildNodeStates(PptJob job) {

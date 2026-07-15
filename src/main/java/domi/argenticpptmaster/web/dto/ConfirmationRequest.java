@@ -19,6 +19,8 @@ import java.util.Map;
  * @param action         明确的确认操作；为空时由 approved 兼容推导
  * @param overallComment 逐页大纲修订时的整体意见
  * @param slideEdits     逐页大纲修订意见
+ * @param outlineVersion 结构化大纲版本（可选）
+ * @param outlineEdits 结构化页级编辑操作
  */
 public record ConfirmationRequest(
         @NotBlank String confirmationId,
@@ -27,13 +29,21 @@ public record ConfirmationRequest(
         String comment,
         PptConfirmationAction action,
         String overallComment,
-        List<PptSlideEditRequest> slideEdits) {
+        List<PptSlideEditRequest> slideEdits,
+        Integer outlineVersion,
+        List<PptOutlineEditRequest> outlineEdits) {
 
     public ConfirmationRequest(String confirmationId, boolean approved, Map<String, Object> answers, String comment) {
-        this(confirmationId, approved, answers, comment, null, null, List.of());
+        this(confirmationId, approved, answers, comment, null, null, List.of(), null, List.of());
+    }
+
+    public ConfirmationRequest(String confirmationId, boolean approved, Map<String, Object> answers, String comment,
+            PptConfirmationAction action, String overallComment, List<PptSlideEditRequest> slideEdits) {
+        this(confirmationId, approved, answers, comment, action, overallComment, slideEdits, null, List.of());
     }
 
     public ConfirmationRequest {
         slideEdits = slideEdits == null ? List.of() : List.copyOf(slideEdits);
+        outlineEdits = outlineEdits == null ? List.of() : List.copyOf(outlineEdits);
     }
 }

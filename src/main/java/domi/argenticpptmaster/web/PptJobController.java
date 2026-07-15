@@ -112,15 +112,13 @@ public class PptJobController {
      */
     @PostMapping("/{jobId}/confirm")
     public PptJobResponse confirm(@PathVariable UUID jobId, @Valid @RequestBody ConfirmationRequest request) {
-        return PptJobResponse.from(workflowService.submitConfirmation(
-                jobId,
-                request.confirmationId(),
-                request.approved(),
-                request.answers(),
-                request.comment(),
-                request.action(),
-                request.overallComment(),
-                request.slideEdits()));
+        PptJob job = request.outlineVersion() == null && request.outlineEdits().isEmpty()
+                ? workflowService.submitConfirmation(jobId, request.confirmationId(), request.approved(),
+                        request.answers(), request.comment(), request.action(), request.overallComment(), request.slideEdits())
+                : workflowService.submitConfirmation(jobId, request.confirmationId(), request.approved(),
+                        request.answers(), request.comment(), request.action(), request.overallComment(), request.slideEdits(),
+                        request.outlineVersion(), request.outlineEdits());
+        return PptJobResponse.from(job);
     }
 
     /**

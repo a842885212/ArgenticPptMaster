@@ -22,5 +22,23 @@ class PptOutlineStoreTests {
         store.write(tempDir, outline);
         assertThat(Files.readString(store.path(tempDir))).contains("市场背景");
         assertThat(store.read(tempDir)).isEqualTo(outline);
+        assertThat(Files.exists(store.historyPath(tempDir, 1))).isTrue();
+        assertThat(Files.exists(store.metadataPath(tempDir))).isTrue();
+    }
+
+    @Test
+    void keepsPreviousVersionSnapshotWhenWritingRevision() throws Exception {
+        PptOutlineStore store = new PptOutlineStore();
+        PptOutline first = new PptOutline(1, false,
+                List.of(new SlideOutline(1, "旧标题", "结论", List.of("要点"), "图表", null)));
+        PptOutline second = new PptOutline(2, false,
+                List.of(new SlideOutline(1, "新标题", "结论", List.of("要点"), "图表", null)));
+
+        store.write(tempDir, first);
+        store.write(tempDir, second);
+
+        assertThat(store.read(tempDir)).isEqualTo(second);
+        assertThat(Files.readString(store.historyPath(tempDir, 1))).contains("旧标题");
+        assertThat(Files.readString(store.historyPath(tempDir, 2))).contains("新标题");
     }
 }

@@ -449,6 +449,31 @@ class AgentScopePptAgentRunnerTests {
     }
 
     @Test
+    void reusesExistingUnlockedOutlineWhenRecoveringSameConfirmationVersion() {
+        RecordingAgentFactory factory = new RecordingAgentFactory();
+        Map<String, Object> confirmationInput = outlineConfirmationInput("首次大纲", "等待确认");
+        factory.enqueue((messages, runtimeContext) -> Flux.just(
+                new AgentStartEvent("reply-1", runtimeContext.getSessionId(), "test-agent"),
+                new RequireExternalExecutionEvent("reply-1", List.of(new ToolUseBlock(
+                        "call-1", "request_plan_confirmation", confirmationInput)))));
+        factory.enqueue((messages, runtimeContext) -> Flux.just(
+                new AgentStartEvent("reply-2", runtimeContext.getSessionId(), "test-agent"),
+                new RequireExternalExecutionEvent("reply-2", List.of(new ToolUseBlock(
+                        "call-2", "request_plan_confirmation", confirmationInput)))));
+
+        AgentScopePptAgentRunner runner = new AgentScopePptAgentRunner(
+                pptMasterProperties(), agentScopeProperties(), factory,
+                new PptWorkflowEvents(new PptJobEventPublisher()));
+        PptJob job = sampleJob();
+
+        runner.start(job);
+        runner.start(job);
+
+        assertThat(job.status()).isEqualTo(PptJobStatus.WAITING_CONFIRMATION);
+        assertThat(job.confirmationPayload()).containsEntry("stage", "outline_confirmation");
+    }
+
+    @Test
     void planConfirmationWithoutStructuredOutlineIsRejectedBeforeWaitingForUser() {
         RecordingAgentFactory factory = new RecordingAgentFactory();
         factory.enqueue((messages, runtimeContext) -> Flux.just(

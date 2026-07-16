@@ -65,6 +65,8 @@ public record PptJobResponse(
         Integer outlineVersion,
         boolean outlineLocked,
         int outlineSlideCount,
+        Map<String, Object> outlineDiff,
+        Map<String, Object> impactPreview,
         String errorMessage,
         List<PptJobEvent> events) {
 
@@ -98,6 +100,8 @@ public record PptJobResponse(
                 outlineVersion(job.confirmationPayload()),
                 outlineLocked(job.confirmationPayload()),
                 outlineSlideCount(job.confirmationPayload()),
+                outlineDiff(job.confirmationPayload()),
+                impactPreview(job.confirmationPayload()),
                 job.errorMessage().orElse(null),
                 job.events());
     }
@@ -119,6 +123,26 @@ public record PptJobResponse(
         Object contextData = payload.get("contextData");
         Object slides = contextData instanceof Map<?, ?> map ? map.get("slides") : null;
         return slides instanceof List<?> list ? list.size() : 0;
+    }
+
+    private static Map<String, Object> outlineDiff(Map<String, Object> payload) {
+        Object contextData = payload.get("contextData");
+        if (contextData instanceof Map<?, ?> map && map.get("diff") instanceof Map<?, ?> diff) {
+            Map<String, Object> result = new LinkedHashMap<>();
+            diff.forEach((key, value) -> result.put(String.valueOf(key), value));
+            return result;
+        }
+        return Map.of();
+    }
+
+    private static Map<String, Object> impactPreview(Map<String, Object> payload) {
+        Object contextData = payload.get("contextData");
+        if (contextData instanceof Map<?, ?> map && map.get("impactPreview") instanceof Map<?, ?> preview) {
+            Map<String, Object> result = new LinkedHashMap<>();
+            preview.forEach((key, value) -> result.put(String.valueOf(key), value));
+            return result;
+        }
+        return Map.of();
     }
 
     private static Map<String, NodeStateResponse> buildNodeStates(PptJob job) {

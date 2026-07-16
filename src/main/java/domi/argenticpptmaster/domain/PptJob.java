@@ -362,6 +362,20 @@ public class PptJob {
         completeNode(node, Map.of());
     }
 
+    /** 锁定大纲启动再修订时，使大纲确认之后的节点重新进入待执行状态。 */
+    public synchronized void invalidateAfterOutlineRevision() {
+        for (PptJobNode node : PptJobNode.values()) {
+            if (node.ordinal() >= PptJobNode.OUTLINE_CONFIRMED.ordinal()
+                    && node.applicableTo(workflowMode)) {
+                nodeExecutions.put(node, PptNodeExecution.pending(node));
+            }
+        }
+        currentNode = PptJobNode.OUTLINE_DRAFTED;
+        lastCompletedNode = PptJobNode.OUTLINE_DRAFTED;
+        status = PptJobStatus.WAITING_CONFIRMATION;
+        touch();
+    }
+
     /**
      * 启动一次新的恢复尝试。
      * <p>

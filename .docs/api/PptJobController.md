@@ -53,7 +53,7 @@ language: java
 }
 ```
 
-`action` 可取 `APPROVE`、`REQUEST_REVISION`、`CANCEL`。省略时沿用兼容规则：`approved=true` 等同于 `APPROVE`，`approved=false` 等同于 `CANCEL`。逐页修订时使用 `REQUEST_REVISION`，`slideEdits` 为 `{ "slideNo": 2, "comment": "修改该页视觉方案" }` 数组；必须提供整体意见或至少一条页级意见，页码必须存在于当前大纲。
+`action` 可取 `APPROVE`、`REQUEST_REVISION`、`CANCEL`。省略时沿用兼容规则：`approved=true` 等同于 `APPROVE`，`approved=false` 等同于 `CANCEL`。逐页修订时使用 `REQUEST_REVISION`，`slideEdits` 为 `{ "slideNo": 2, "comment": "修改该页视觉方案" }` 数组；必须提供整体意见或至少一条页级意见，页码必须存在于当前大纲。前端新增页面但由 Agent 补全页面内容时，应把新增页要求合并到 `overallComment`，不要提交字段不完整的结构化 `ADD`；只有 `title`、`keyMessage`、`bullets`、`visualSuggestion` 均完整时才使用 `outlineEdits` 的 `ADD`。
 
 ### 恢复任务
 

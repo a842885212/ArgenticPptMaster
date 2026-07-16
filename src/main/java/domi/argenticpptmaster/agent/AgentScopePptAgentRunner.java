@@ -560,15 +560,41 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
                     normalizedContext.put("locked", false);
                     PptOutline outline = PptOutline.fromPayload(version, contextMap.get("slides"));
                     job.projectPath().ifPresent(path -> {
-                        Path outlinePath = new PptOutlineStore().path(path);
+                        PptOutlineStore outlineStore = new PptOutlineStore();
+                        Path outlinePath = outlineStore.path(path);
+                        PptOutline effectiveOutline = outline;
                         if (Files.isRegularFile(outlinePath)) {
-                            PptOutline existing = new PptOutlineStore().read(path);
-                            if (existing.locked() || version < existing.version()
-                                    || (version == existing.version() && !existing.equals(outline))) {
+                            PptOutline existing = outlineStore.read(path);
+                            if (existing.locked() || version < existing.version()) {
                                 throw new IllegalStateException("outline version is stale or already locked");
                             }
+                            if (version == existing.version()) {
+                                effectiveOutline = existing;
+                            }
                         }
-                        new PptOutlineStore().write(path, outline);
+                        if (effectiveOutline == outline) {
+                            outlineStore.write(path, outline);
+                        }
+                        PptOutline finalOutline = effectiveOutline;
+                        normalizedContext.put("version", finalOutline.version());
+                        normalizedContext.put("slides", finalOutline.slides().stream().map(slide -> {
+                            Map<String, Object> value = new LinkedHashMap<>();
+                            value.put("slideNo", slide.slideNo());
+                            value.put("title", slide.title());
+                            value.put("keyMessage", slide.keyMessage());
+                            value.put("bullets", slide.bullets());
+                            value.put("visualSuggestion", slide.visualSuggestion());
+                            value.put("imageRequirement", slide.imageRequirement());
+                            return value;
+                        }).toList());
+                        outlineStore.snapshot(path, finalOutline.version()).ifPresent(snapshot -> {
+                            if (snapshot.parentVersion() != null) {
+                                normalizedContext.put("parentVersion", snapshot.parentVersion());
+                            }
+                            if (snapshot.diff() != null) {
+                                normalizedContext.put("diff", snapshot.diff());
+                            }
+                        });
                     });
                 }
                 payload.put("contextData", normalizedContext);

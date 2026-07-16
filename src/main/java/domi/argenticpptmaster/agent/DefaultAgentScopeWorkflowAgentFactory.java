@@ -12,6 +12,7 @@ import domi.argenticpptmaster.domain.PptWorkflowMode;
 import domi.argenticpptmaster.infra.PptMasterCommandExecutor;
 import domi.argenticpptmaster.service.PptWorkflowEvents;
 import domi.argenticpptmaster.service.PptOutlineStore;
+import domi.argenticpptmaster.service.PptArtifactRegistry;
 import io.agentscope.core.ReActAgent;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
@@ -88,6 +89,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
     private final PptMasterProperties pptMasterProperties;
     private final PptMasterCommandExecutor commandExecutor;
     private final PptWorkflowEvents events;
+    private final PptArtifactRegistry artifactRegistry = new PptArtifactRegistry();
 
     public DefaultAgentScopeWorkflowAgentFactory(
             AgentScopeProperties agentScopeProperties,
@@ -387,8 +389,8 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                 执行顺序：
                 1. 调用 describe_job 了解任务，再调用 init_ppt_project，然后调用 import_job_sources。
                 2. 导入完成后，调用 collect_source_markdown、inspect_project_info、list_project_files、read_project_text_file 了解 sources/ 与 analysis/ 的真实内容。
-                3. 完成资料分析后，先生成按 slideNo 升序排列的逐页大纲并写入 outline.json（version 从 1 开始、locked=false）；每页必须包含 slideNo、title、keyMessage、bullets、visualSuggestion，并通过 request_plan_confirmation（stage="outline_confirmation"）在 contextData 中以 {type:"ppt_outline", version, locked:false, slides:[...]} 返回。
-                4. 如果用户要求修改（REQUEST_REVISION），必须将整体意见和 slideEdits 逐项落实，重新生成完整逐页大纲并再次调用同一确认；在 APPROVE 前不得写任何下游产物。
+                3. 完成资料分析后，先生成按 slideNo 升序排列的逐页大纲并写入 outline.json（version 从 1 开始、locked=false）；每页必须包含 slideNo、title、keyMessage、bullets、visualSuggestion，并通过 request_plan_confirmation（stage="outline_confirmation"）在 contextData 中以 {type:"ppt_outline", version, parentVersion, diff, locked:false, slides:[...]} 返回。
+                4. 如果用户要求修改（REQUEST_REVISION），必须将整体意见和 slideEdits 逐项落实，重新生成完整逐页大纲并再次调用同一确认；锁定版本再次修改前必须先取得 revisionImpactToken；在 APPROVE 前不得写任何下游产物。
                 5. 在写 design_spec.md、spec_lock.md、notes/total.md、svg_output/*.svg 之前，必须完成上述大纲确认。
                 6. 用户确认后，产出：
                    - design_spec.md
@@ -415,8 +417,8 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                 执行顺序：
                 1. 调用 describe_job 了解任务，再调用 init_ppt_project，然后调用 import_job_sources。
                 2. 导入完成后，调用 collect_source_markdown、inspect_project_info、list_project_files、read_project_text_file 了解 sources/ 与 analysis/ 的真实内容。
-                3. 完成资料分析后，先生成按 slideNo 升序排列的逐页大纲并写入 outline.json（version 从 1 开始、locked=false）；每页必须包含 slideNo、title、keyMessage、bullets、visualSuggestion 和可选 imageRequirement，并通过 request_plan_confirmation（stage="outline_confirmation"）在 contextData 中以 {type:"ppt_outline", version, locked:false, slides:[...]} 返回；确认载荷中需说明将启用文生图。
-                4. 如果用户要求修改（REQUEST_REVISION），必须将整体意见和 slideEdits 逐项落实，重新生成完整逐页大纲并再次调用同一确认；在 APPROVE 前不得写 design_spec.md、spec_lock.md 或任何图片/下游产物。
+                3. 完成资料分析后，先生成按 slideNo 升序排列的逐页大纲并写入 outline.json（version 从 1 开始、locked=false）；每页必须包含 slideNo、title、keyMessage、bullets、visualSuggestion 和可选 imageRequirement，并通过 request_plan_confirmation（stage="outline_confirmation"）在 contextData 中以 {type:"ppt_outline", version, parentVersion, diff, locked:false, slides:[...]} 返回；确认载荷中需说明将启用文生图。
+                4. 如果用户要求修改（REQUEST_REVISION），必须将整体意见和 slideEdits 逐项落实，重新生成完整逐页大纲并再次调用同一确认；锁定版本再次修改前必须先取得 revisionImpactToken；在 APPROVE 前不得写 design_spec.md、spec_lock.md 或任何图片/下游产物。
                 5. 用户批准逐页大纲后，先产出 design_spec.md 与 spec_lock.md。
                 6. 如果 design_spec 中声明了 AI 图片需求，必须写 images/image_prompts.json：
                    - 每个 item 必须包含 filename、prompt、aspect_ratio、status（初始为 Pending）
@@ -961,6 +963,12 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
             } catch (IOException ex) {
                 throw new IllegalStateException("failed to write project file: " + relativePath, ex);
             }
+            if (isTrackedDownstreamArtifact(normalized)) {
+                PptOutlineStore outlineStore = new PptOutlineStore();
+                if (Files.isRegularFile(outlineStore.path(projectPath))) {
+                    artifactRegistry.register(projectPath, normalized, outlineStore.read(projectPath).version());
+                }
+            }
             advanceNodeForWrittenFile(runtime, normalized);
             return Map.of(
                     "relativePath", normalized,
@@ -1074,6 +1082,11 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                 throw new IllegalStateException("ppt export failed: " + result.output());
             }
             Path artifact = detectLatestExport(projectPath);
+            PptOutlineStore outlineStore = new PptOutlineStore();
+            if (Files.isRegularFile(outlineStore.path(projectPath))) {
+                artifactRegistry.register(projectPath, projectPath.relativize(artifact).toString().replace('\\', '/'),
+                        outlineStore.read(projectPath).version());
+            }
             runtime.job().complete(artifact);
             runtime.completeNode(PptJobNode.PPT_EXPORTED, Map.of("fileName", artifact.getFileName().toString()));
             runtime.events().record(runtime.job(), PptJobEvent.of(
@@ -1265,6 +1278,15 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                 requireApprovedOutline(runtime, relativePath);
             }
             return target;
+        }
+
+        private boolean isTrackedDownstreamArtifact(String normalized) {
+            return normalized.equals("design_spec.md")
+                    || normalized.equals("spec_lock.md")
+                    || normalized.equals("images/image_prompts.json")
+                    || normalized.startsWith("notes/")
+                    || normalized.startsWith("svg_output/")
+                    || normalized.startsWith("images/");
         }
 
         private void requireApprovedOutline(PptAgentToolRuntime runtime, String operation) {

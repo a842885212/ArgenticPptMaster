@@ -69,6 +69,14 @@ public record PptOutline(int version, boolean locked, List<SlideOutline> slides)
         return next;
     }
 
+    /** 在显式影响确认后，从锁定版本创建新的未锁定修订草稿。 */
+    public PptOutline reviseFromLocked(List<PptOutlineEdit> edits) {
+        if (!locked) {
+            return apply(edits);
+        }
+        return new PptOutline(version, false, slides).apply(edits);
+    }
+
     /** 将确认 payload 中的通用 Map 转换为领域大纲。 */
     public static PptOutline fromPayload(int version, Object slidesValue) {
         if (!(slidesValue instanceof List<?> values)) {

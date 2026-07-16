@@ -10,6 +10,7 @@ import domi.argenticpptmaster.domain.PptJobNode;
 import domi.argenticpptmaster.domain.PptJobStatus;
 import domi.argenticpptmaster.domain.PptOutline;
 import domi.argenticpptmaster.domain.PptOutlineEdit;
+import domi.argenticpptmaster.domain.PptRevisionImpactPreview;
 import domi.argenticpptmaster.domain.PptSourceFile;
 import domi.argenticpptmaster.domain.PptSlideEdit;
 import domi.argenticpptmaster.domain.PptWorkflowMode;
@@ -34,6 +35,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -80,6 +82,9 @@ public class PptWorkflowService {
     private final PptWorkflowEvents events;
     private final PptWorkflowAsyncRunner asyncRunner;
     private final PptOutlineStore outlineStore = new PptOutlineStore();
+    private final PptArtifactRegistry artifactRegistry = new PptArtifactRegistry();
+    private final Map<String, PptRevisionImpactPreview> revisionImpactPreviews = new ConcurrentHashMap<>();
+    private final Map<String, UUID> revisionImpactOwners = new ConcurrentHashMap<>();
 
     public PptWorkflowService(
             PptMasterProperties properties,
@@ -195,7 +200,7 @@ public class PptWorkflowService {
             String overallComment,
             List<PptSlideEditRequest> slideEdits) {
         return submitConfirmation(jobId, confirmationId, approved, answers, comment, action, overallComment,
-                slideEdits, null, List.of());
+                slideEdits, null, List.of(), null);
     }
 
     /** 提交带版本和结构化页级操作的确认。 */
@@ -210,6 +215,14 @@ public class PptWorkflowService {
             List<PptSlideEditRequest> slideEdits,
             Integer outlineVersion,
             List<PptOutlineEditRequest> outlineEdits) {
+        return submitConfirmation(jobId, confirmationId, approved, answers, comment, action, overallComment,
+                slideEdits, outlineVersion, outlineEdits, null);
+    }
+
+    public PptJob submitConfirmation(
+            UUID jobId, String confirmationId, boolean approved, Map<String, Object> answers, String comment,
+            PptConfirmationAction action, String overallComment, List<PptSlideEditRequest> slideEdits,
+            Integer outlineVersion, List<PptOutlineEditRequest> outlineEdits, String revisionImpactToken) {
         PptJob job = getJob(jobId);
         PptConfirmationAction effectiveAction = action == null
                 ? (approved ? PptConfirmationAction.APPROVE : PptConfirmationAction.CANCEL)
@@ -237,7 +250,12 @@ public class PptWorkflowService {
             return job;
         }
         List<PptSlideEdit> validatedEdits = validateSlideEdits(job, effectiveAction, slideEdits);
-        List<PptOutlineEdit> validatedOutlineEdits = validateOutlineEdits(job, effectiveAction, outlineVersion, outlineEdits);
+        if (effectiveAction == PptConfirmationAction.REQUEST_REVISION && isLockedOutline(job)
+                && (revisionImpactToken == null || revisionImpactToken.isBlank())) {
+            throw new PptJobStateException("locked outline revision requires revisionImpactToken");
+        }
+        List<PptOutlineEdit> validatedOutlineEdits = validateOutlineEdits(job, effectiveAction, outlineVersion,
+                outlineEdits, revisionImpactToken);
         String resolvedOverallComment = firstNonBlank(overallComment, comment);
         if (effectiveAction == PptConfirmationAction.REQUEST_REVISION
                 && isBlank(resolvedOverallComment) && validatedEdits.isEmpty() && validatedOutlineEdits.isEmpty()) {
@@ -277,6 +295,39 @@ public class PptWorkflowService {
                 confirmation.answers().keySet());
         asyncRunner.resumeAgent(job.id());
         return job;
+    }
+
+    /** 为锁定大纲生成不改变任务状态的影响预览。 */
+    public PptRevisionImpactPreview previewOutlineRevision(UUID jobId, Integer outlineVersion) {
+        PptJob job = getJob(jobId);
+        if (!isOutlineConfirmation(job) || outlineVersion == null) {
+            throw new PptJobStateException("outline revision preview is not available");
+        }
+        PptOutline outline = currentOutline(job, outlineVersion);
+        if (!outline.locked()) {
+            throw new PptJobStateException("impact preview is only required for a locked outline");
+        }
+        String token = UUID.randomUUID().toString();
+        Path projectPath = job.projectPath().orElseThrow(() -> new PptJobStateException("project path is missing"));
+        PptRevisionImpactPreview preview = new PptRevisionImpactPreview(token, outlineVersion,
+                artifactRegistry.affected(projectPath, outlineVersion).stream().map(record -> record.path()).toList(),
+                Instant.now().plusSeconds(600));
+        revisionImpactPreviews.put(token, preview);
+        revisionImpactOwners.put(token, jobId);
+        Map<String, Object> context = new java.util.LinkedHashMap<>();
+        Object rawContext = job.confirmationPayload().get("contextData");
+        if (rawContext instanceof Map<?, ?> map) {
+            map.forEach((key, value) -> context.put(String.valueOf(key), value));
+        }
+        context.put("impactPreview", Map.of(
+                "revisionImpactToken", preview.revisionImpactToken(),
+                "outlineVersion", preview.outlineVersion(),
+                "affectedArtifacts", preview.affectedArtifacts(),
+                "expiresAt", preview.expiresAt().toString()));
+        Map<String, Object> payload = new java.util.LinkedHashMap<>(job.confirmationPayload());
+        payload.put("contextData", context);
+        job.updateConfirmationPayload(payload);
+        return preview;
     }
 
     private List<PptSlideEdit> validateSlideEdits(
@@ -334,7 +385,7 @@ public class PptWorkflowService {
 
     private List<PptOutlineEdit> validateOutlineEdits(
             PptJob job, PptConfirmationAction action, Integer outlineVersion,
-            List<PptOutlineEditRequest> requests) {
+            List<PptOutlineEditRequest> requests, String revisionImpactToken) {
         if (action != PptConfirmationAction.REQUEST_REVISION && (requests == null || requests.isEmpty())) {
             return List.of();
         }
@@ -363,9 +414,28 @@ public class PptWorkflowService {
             result.add(edit);
         }
         try {
-            PptOutline next = outline.apply(result);
-            job.projectPath().ifPresent(path -> outlineStore.write(path, next));
+            PptOutline next;
+            if (outline.locked()) {
+                PptRevisionImpactPreview preview = revisionImpactPreviews.remove(revisionImpactToken);
+                UUID owner = revisionImpactOwners.remove(revisionImpactToken);
+                if (preview == null || !job.id().equals(owner) || preview.outlineVersion() != outline.version()
+                        || preview.expiresAt().isBefore(Instant.now())) {
+                    throw new PptJobStateException("locked outline revision requires a valid revisionImpactToken");
+                }
+                next = outline.reviseFromLocked(result);
+                PptOutline revised = next;
+                job.projectPath().ifPresent(path -> {
+                    artifactRegistry.markStale(path, outline.version());
+                    outlineStore.write(path, revised);
+                });
+                job.invalidateAfterOutlineRevision();
+            } else {
+                next = outline.apply(result);
+                job.projectPath().ifPresent(path -> outlineStore.write(path, next));
+            }
             updateOutlinePayload(job, next);
+        } catch (PptJobStateException ex) {
+            throw ex;
         } catch (IllegalArgumentException | IllegalStateException ex) {
             throw new PptJobStateException(ex.getMessage());
         }
@@ -391,6 +461,10 @@ public class PptWorkflowService {
             value.put("imageRequirement", slide.imageRequirement());
             return value;
         }).toList());
+        job.projectPath().ifPresent(path -> new PptOutlineStore().snapshot(path, outline.version()).ifPresent(snapshot -> {
+            if (snapshot.parentVersion() != null) updatedContext.put("parentVersion", snapshot.parentVersion());
+            if (snapshot.diff() != null) updatedContext.put("diff", snapshot.diff());
+        }));
         Map<String, Object> payload = new java.util.LinkedHashMap<>(job.confirmationPayload());
         payload.put("contextData", updatedContext);
         job.updateConfirmationPayload(payload);
@@ -442,6 +516,14 @@ public class PptWorkflowService {
 
     private boolean isOutlineConfirmation(PptJob job) {
         return "outline_confirmation".equals(job.confirmationPayload().get("stage"));
+    }
+
+    private boolean isLockedOutline(PptJob job) {
+        if (!isOutlineConfirmation(job)) {
+            return false;
+        }
+        Integer version = outlineVersionFrom(job.confirmationPayload().get("contextData"));
+        return version != null && currentOutline(job, version).locked();
     }
 
     private Integer outlineVersionFrom(Object contextData) {
@@ -521,8 +603,16 @@ public class PptWorkflowService {
      * @return 有效的恢复 checkpoint
      */
     private PptJobNode resolveEffectiveCheckpoint(PptJob job) {
-        return job.lastCompletedNode().orElseThrow(() ->
+        PptJobNode checkpoint = job.lastCompletedNode().orElseThrow(() ->
                 new PptJobResumeException(job.id(), "job has no completed node to resume from"));
+        if (checkpoint.ordinal() > PptJobNode.OUTLINE_CONFIRMED.ordinal()) {
+            job.projectPath().ifPresent(path -> {
+                if (artifactRegistry.hasAnyStale(path)) {
+                    throw new PptJobResumeException(job.id(), "downstream artifacts are stale after outline revision");
+                }
+            });
+        }
+        return checkpoint;
     }
 
     /**

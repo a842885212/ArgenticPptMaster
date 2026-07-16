@@ -3,6 +3,7 @@ package domi.argenticpptmaster.web;
 import domi.argenticpptmaster.service.PptJobEventPublisher;
 import domi.argenticpptmaster.service.PptWorkflowService;
 import domi.argenticpptmaster.domain.PptJob;
+import domi.argenticpptmaster.domain.PptRevisionImpactPreview;
 import domi.argenticpptmaster.web.dto.ConfirmationRequest;
 import domi.argenticpptmaster.web.dto.PptJobResponse;
 import jakarta.validation.Valid;
@@ -117,8 +118,15 @@ public class PptJobController {
                         request.answers(), request.comment(), request.action(), request.overallComment(), request.slideEdits())
                 : workflowService.submitConfirmation(jobId, request.confirmationId(), request.approved(),
                         request.answers(), request.comment(), request.action(), request.overallComment(), request.slideEdits(),
-                        request.outlineVersion(), request.outlineEdits());
+                        request.outlineVersion(), request.outlineEdits(), request.revisionImpactToken());
         return PptJobResponse.from(job);
+    }
+
+    /** 预览锁定大纲再次修订会影响的下游产物。 */
+    @PostMapping("/{jobId}/outline-revision/preview")
+    public PptRevisionImpactPreview previewOutlineRevision(
+            @PathVariable UUID jobId, @RequestParam Integer outlineVersion) {
+        return workflowService.previewOutlineRevision(jobId, outlineVersion);
     }
 
     /**

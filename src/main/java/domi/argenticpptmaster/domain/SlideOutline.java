@@ -23,5 +23,21 @@ public record SlideOutline(
                 || visualSuggestion == null || visualSuggestion.isBlank()) {
             throw new IllegalArgumentException("slide outline has invalid required fields");
         }
+        if (imageRequirement != null) {
+            validateImageRequirement();
+        }
+    }
+
+    private void validateImageRequirement() {
+        Object purpose = imageRequirement.get("purpose");
+        Object prompt = imageRequirement.get("prompt");
+        if (!(purpose instanceof String purposeText) || purposeText.isBlank()
+                || !(prompt instanceof String promptText) || promptText.isBlank()) {
+            throw new IllegalArgumentException("imageRequirement purpose and prompt are required");
+        }
+        if (imageRequirement.entrySet().stream().anyMatch(entry -> entry.getKey() == null || entry.getKey().isBlank()
+                || !(entry.getValue() instanceof String value) || value.isBlank())) {
+            throw new IllegalArgumentException("imageRequirement fields must be non-blank strings");
+        }
     }
 }

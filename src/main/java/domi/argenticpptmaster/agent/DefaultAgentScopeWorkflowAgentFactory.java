@@ -13,6 +13,7 @@ import domi.argenticpptmaster.infra.PptMasterCommandExecutor;
 import domi.argenticpptmaster.service.PptWorkflowEvents;
 import domi.argenticpptmaster.service.PptOutlineStore;
 import domi.argenticpptmaster.service.PptArtifactRegistry;
+import domi.argenticpptmaster.service.PptImageManifestStore;
 import io.agentscope.core.ReActAgent;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
@@ -420,21 +421,21 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                 3. 完成资料分析后，先生成按 slideNo 升序排列的逐页大纲并写入 outline.json（version 从 1 开始、locked=false）；每页必须包含 slideNo、title、keyMessage、bullets、visualSuggestion 和可选 imageRequirement，并通过 request_plan_confirmation（stage="outline_confirmation"）在 contextData 中以 {type:"ppt_outline", version, parentVersion, diff, locked:false, slides:[...]} 返回；确认载荷中需说明将启用文生图。
                 4. 如果用户要求修改（REQUEST_REVISION），必须将整体意见和 slideEdits 逐项落实，重新生成完整逐页大纲并再次调用同一确认；锁定版本再次修改前必须先取得 revisionImpactToken；在 APPROVE 前不得写 design_spec.md、spec_lock.md 或任何图片/下游产物。
                 5. 用户批准逐页大纲后，先产出 design_spec.md 与 spec_lock.md。
-                6. 如果 design_spec 中声明了 AI 图片需求，必须写 images/image_prompts.json：
-                   - 每个 item 必须包含 filename、prompt、aspect_ratio、status（初始为 Pending）
-                   - 可包含 image_size、model、alt_text、purpose 等可选字段
-                7. 调用 generate_project_images 执行 image_gen.py --manifest 生成图片。
+                6. 必须调用 derive_image_manifest_from_locked_outline 从已锁定 outline.json 中各页的 imageRequirement 派生 images/image_prompts.json；不得由 design_spec 新增或改变图片需求。每个 item 必须包含 outlineVersion、slideNo、purpose、filename、prompt、aspect_ratio、status（初始为 Pending）。
+                   写入后必须调用 request_plan_confirmation，stage 固定为 "image_manifest_confirmation"，并在 contextData 中返回 {type:"ppt_image_manifest", outlineVersion, items}；不得在用户 APPROVE 前调用 generate_project_images。
+                   - 没有 imageRequirement 时也必须提交空清单确认；确认后不得调用图片生成命令。
+                7. 仅在图片清单确认后，且清单有待生成条目时，调用 generate_project_images 执行 image_gen.py --manifest 生成图片。
                 8. 调用 inspect_image_manifest_status 确认所有 item 状态：
                    - 若存在 Failed：
                      a. 绝不要直接结束任务、不要输出 FINAL 总结、不要写 notes/svg、不要导出。
                      b. 必须调用 request_plan_confirmation，stage 固定为 "image_retry_decision"。
-                     c. 在 message/contextData 中说明失败图片、失败原因（取 manifest 的 last_error）、建议操作。
+                     c. 在 message/contextData 中说明清单与大纲版本、失败图片、失败原因（取 manifest 的 last_error）、建议操作。
                      d. 用户回复后，如果其意图是“重试/继续生成/再试一次”，再次调用 generate_project_images。
                      e. 然后重新调用 inspect_image_manifest_status，重复本步骤，直到全部 Generated 或用户明确放弃。
                    - 若全部 Generated：
                      a. 必须调用 request_plan_confirmation，stage 固定为 "image_ready_continue_confirmation"。
-                     b. 询问用户“图片已全部生成，是否继续后续 PPT 制作（notes、SVG、finalize、导出）”。
-                     c. 只有用户确认继续后，才进入步骤 8。
+                     b. 在 contextData 中说明清单与大纲版本、所有图片状态及可执行操作，并询问用户“图片已全部生成，是否继续后续 PPT 制作（notes、SVG、finalize、导出）”。
+                     c. 只有用户确认继续后，才进入步骤 9。
                 9. 图片就绪且用户确认继续后，再写 notes/total.md 与 svg_output/*.svg；svg_output 中引用图片时必须使用 images/<filename> 且文件真实存在。
                 10. 生成 svg_output 后，调用 validate_svg_output，再调用 split_speaker_notes、finalize_project_svg，最后调用 export_project_pptx。
 
@@ -478,7 +479,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
     private String buildLocalToolingConstraintsPrompt() {
         return """
                 本地工具约束：
-                - 可用工具：describe_job, init_ppt_project, import_job_sources, inspect_project_info, validate_project, list_project_files, collect_source_markdown, read_project_text_file, write_project_text_file, split_speaker_notes, validate_svg_output, finalize_project_svg, export_project_pptx, generate_project_images, inspect_image_manifest_status, inspect_checkpoint_status, request_plan_confirmation。
+                - 可用工具：describe_job, init_ppt_project, import_job_sources, inspect_project_info, validate_project, list_project_files, collect_source_markdown, read_project_text_file, write_project_text_file, split_speaker_notes, validate_svg_output, finalize_project_svg, export_project_pptx, derive_image_manifest_from_locked_outline, generate_project_images, inspect_image_manifest_status, inspect_checkpoint_status, request_plan_confirmation。
                 - 允许写入的路径：design_spec.md、spec_lock.md、notes/*、svg_output/*、analysis/*、images/*。
                 - 人工确认统一通过 request_plan_confirmation；只有该工具能暂停工作流等待用户回复。
                 - 不要假设本地文件内容；所有文件状态通过 list_project_files / read_project_text_file / inspect_image_manifest_status / inspect_checkpoint_status 确认。
@@ -792,6 +793,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                 case DESIGN_SPEC_WRITTEN -> Files.isRegularFile(projectPath.resolve("design_spec.md"));
                 case SPEC_LOCK_WRITTEN -> Files.isRegularFile(projectPath.resolve("spec_lock.md"));
                 case IMAGES_MANIFEST_WRITTEN -> Files.isRegularFile(projectPath.resolve("images/image_prompts.json"));
+                case IMAGE_MANIFEST_CONFIRMED -> Files.isRegularFile(projectPath.resolve("images/image_prompts.json"));
                 case IMAGES_GENERATED -> hasGeneratedImages(projectPath);
                 case NOTES_TOTAL_WRITTEN -> Files.isRegularFile(projectPath.resolve("notes/total.md"));
                 case SVG_OUTPUT_VALIDATED -> hasAnyFile(files.get("svgOutput"));
@@ -989,6 +991,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
         @Tool(name = "split_speaker_notes", description = "Split notes/total.md into per-slide notes files under notes/ using ppt-master total_md_split.py.")
         public String splitSpeakerNotes(PptAgentToolRuntime runtime) {
             requireApprovedOutline(runtime, "split speaker notes");
+            requireImagesReadyToContinue(runtime, "split speaker notes");
             Path projectPath = runtime.job().projectPath()
                     .orElseThrow(() -> new IllegalStateException("job project path is not prepared"));
             PptMasterCommandExecutor.CommandResult result = runtime.executor().runPythonScript(
@@ -1013,6 +1016,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
          */
         @Tool(name = "validate_svg_output", description = "Run ppt-master svg_quality_checker.py against the current project before finalize/export.", readOnly = true)
         public String validateSvgOutput(PptAgentToolRuntime runtime) {
+            requireImagesReadyToContinue(runtime, "validate SVG");
             Path projectPath = runtime.job().projectPath()
                     .orElseThrow(() -> new IllegalStateException("job project path is not prepared"));
             PptMasterCommandExecutor.CommandResult result = runtime.executor().runPythonScript(
@@ -1038,6 +1042,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
         @Tool(name = "finalize_project_svg", description = "Run ppt-master finalize_svg.py to build svg_final from svg_output.")
         public String finalizeProjectSvg(PptAgentToolRuntime runtime) {
             requireApprovedOutline(runtime, "finalize SVG");
+            requireImagesReadyToContinue(runtime, "finalize SVG");
             Path projectPath = runtime.job().projectPath()
                     .orElseThrow(() -> new IllegalStateException("job project path is not prepared"));
             PptMasterCommandExecutor.CommandResult result = runtime.executor().runPythonScript(
@@ -1064,6 +1069,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
         @Tool(name = "export_project_pptx", description = "Export the prepared svg_final project into a PPTX artifact.")
         public String exportProjectPptx(PptAgentToolRuntime runtime) {
             requireApprovedOutline(runtime, "export PPTX");
+            requireImagesReadyToContinue(runtime, "export PPTX");
             Path projectPath = runtime.job().projectPath()
                     .orElseThrow(() -> new IllegalStateException("job project path is not prepared"));
             Path svgFinal = projectPath.resolve("svg_final");
@@ -1111,12 +1117,14 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
         @Tool(name = "generate_project_images", description = "Run ppt-master image_gen.py --manifest to generate AI images listed in images/image_prompts.json.")
         public String generateProjectImages(PptAgentToolRuntime runtime) {
             requireApprovedOutline(runtime, "generate images");
+            requireConfirmedImageManifest(runtime);
             Path projectPath = runtime.job().projectPath()
                     .orElseThrow(() -> new IllegalStateException("job project path is not prepared"));
             Path manifestPath = projectPath.resolve("images/image_prompts.json");
             if (!Files.isRegularFile(manifestPath)) {
                 throw new IllegalStateException("image prompts manifest not found: " + manifestPath);
             }
+            requireCurrentImageManifest(projectPath);
             runtime.events().record(runtime.job(), PptJobEvent.of(
                     PptJobEventType.AGENT_MESSAGE,
                     "generating ai images from manifest",
@@ -1130,6 +1138,18 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                 throw new IllegalStateException("image generation failed: " + result.output());
             }
             return result.output().isBlank() ? "image generation completed" : result.output();
+        }
+
+        @Tool(name = "derive_image_manifest_from_locked_outline", description = "Create images/image_prompts.json only from the current locked outline.json imageRequirement entries.")
+        public Map<String, Object> deriveImageManifestFromLockedOutline(PptAgentToolRuntime runtime) {
+            requireApprovedOutline(runtime, "derive image manifest");
+            Path projectPath = runtime.job().projectPath()
+                    .orElseThrow(() -> new IllegalStateException("job project path is not prepared"));
+            Map<String, Object> manifest = new PptImageManifestStore().writeFromLockedOutline(projectPath);
+            PptOutlineStore outlineStore = new PptOutlineStore();
+            artifactRegistry.register(projectPath, "images/image_prompts.json", outlineStore.read(projectPath).version());
+            advanceNodeForWrittenFile(runtime, "images/image_prompts.json");
+            return manifest;
         }
 
         /**
@@ -1156,10 +1176,20 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                         "items", List.of());
             }
             try {
-                String json = Files.readString(manifestPath, StandardCharsets.UTF_8);
-                com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
-                java.util.Map<String, Object> manifest = mapper.readValue(json, new com.fasterxml.jackson.core.type.TypeReference<>() {
-                });
+                PptOutlineStore outlineStore = new PptOutlineStore();
+                Integer outlineVersion = Files.isRegularFile(outlineStore.path(projectPath))
+                        ? outlineStore.read(projectPath).version() : null;
+                Map<String, Object> manifest;
+                if (outlineVersion == null) {
+                    String json = Files.readString(manifestPath, StandardCharsets.UTF_8);
+                    manifest = new com.fasterxml.jackson.databind.ObjectMapper().readValue(json,
+                            new com.fasterxml.jackson.core.type.TypeReference<>() {});
+                } else {
+                    manifest = new PptImageManifestStore().readForOutlineVersion(projectPath, outlineVersion);
+                    if (!artifactRegistry.isUsable(projectPath, "images/image_prompts.json", outlineVersion)) {
+                        throw new IllegalStateException("image manifest is stale or not registered for current outline");
+                    }
+                }
                 Object itemsObj = manifest.get("items");
                 List<?> items = itemsObj instanceof List<?> list ? list : List.of();
                 int pending = 0;
@@ -1186,7 +1216,18 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                             // no-op
                         }
                     }
+                    if ("Generated".equals(status) && outlineVersion != null) {
+                        String filename = item.get("filename") instanceof String text ? text : "";
+                        Path imagePath = projectPath.resolve("images").resolve(filename).normalize();
+                        if (filename.isBlank() || !imagePath.startsWith(projectPath.resolve("images"))
+                                || !Files.isRegularFile(imagePath)) {
+                            throw new IllegalStateException("generated image file is missing: " + filename);
+                        }
+                        artifactRegistry.register(projectPath,
+                                "images/" + filename.replace('\\', '/'), outlineVersion);
+                    }
                     itemSummaries.add(Map.of(
+                            "slideNo", item.getOrDefault("slideNo", ""),
                             "filename", item.getOrDefault("filename", ""),
                             "status", status,
                             "lastError", item.getOrDefault("last_error", "")));
@@ -1197,12 +1238,13 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                         "generated", generated,
                         "failed", failed,
                         "needsManual", needsManual);
-                if (generated == items.size() && items.size() > 0) {
+                if (generated == items.size() && (outlineVersion == null || isImageManifestConfirmed(runtime))) {
                     runtime.completeNode(PptJobNode.IMAGES_GENERATED, summary);
                 }
                 return Map.of(
                         "manifestPath", manifestPath.toString(),
                         "exists", true,
+                        "outlineVersion", outlineVersion == null ? "legacy" : outlineVersion,
                         "summary", summary,
                         "items", itemSummaries);
             } catch (IOException ex) {
@@ -1269,6 +1311,9 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
             if (!allowed) {
                 throw new IllegalStateException("writing this project path is not allowed: " + relativePath);
             }
+            if (normalized.equals("images/image_prompts.json")) {
+                throw new IllegalStateException("image prompts manifest must be derived from the locked outline");
+            }
             boolean downstreamArtifact = normalized.equals("design_spec.md")
                     || normalized.equals("spec_lock.md")
                     || normalized.startsWith("notes/")
@@ -1276,6 +1321,9 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                     || normalized.startsWith("images/");
             if (downstreamArtifact) {
                 requireApprovedOutline(runtime, relativePath);
+            }
+            if (normalized.startsWith("notes/") || normalized.startsWith("svg_output/")) {
+                requireImagesReadyToContinue(runtime, relativePath);
             }
             return target;
         }
@@ -1309,6 +1357,62 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
             if (!outlineApproved && !legacyOutlineApproved) {
                 throw new IllegalStateException("逐页大纲尚未批准，禁止执行下游操作: " + operation);
             }
+        }
+
+        private void requireConfirmedImageManifest(PptAgentToolRuntime runtime) {
+            if (!isImageManifestConfirmed(runtime)) {
+                throw new IllegalStateException("图片清单尚未确认，禁止生成图片");
+            }
+        }
+
+        private void requireCurrentImageManifest(Path projectPath) {
+            PptOutlineStore outlineStore = new PptOutlineStore();
+            if (!Files.isRegularFile(outlineStore.path(projectPath))) {
+                return;
+            }
+            int outlineVersion = outlineStore.read(projectPath).version();
+            new PptImageManifestStore().readForOutlineVersion(projectPath, outlineVersion);
+            if (!artifactRegistry.isUsable(projectPath, "images/image_prompts.json", outlineVersion)) {
+                throw new IllegalStateException("image manifest is stale or not registered for current outline");
+            }
+        }
+
+        private void requireImagesReadyToContinue(PptAgentToolRuntime runtime, String operation) {
+            if (runtime.job().workflowMode() != PptWorkflowMode.IMAGE_ENHANCED) {
+                return;
+            }
+            Path projectPath = runtime.job().projectPath().orElseThrow();
+            PptOutlineStore outlineStore = new PptOutlineStore();
+            if (!Files.isRegularFile(outlineStore.path(projectPath))) {
+                return;
+            }
+            int outlineVersion = outlineStore.read(projectPath).version();
+            Map<String, Object> manifest = new PptImageManifestStore().readForOutlineVersion(projectPath, outlineVersion);
+            if (!artifactRegistry.isUsable(projectPath, "images/image_prompts.json", outlineVersion)) {
+                throw new IllegalStateException("图片清单已失效，禁止执行下游操作: " + operation);
+            }
+            for (Object candidate : (List<?>) manifest.get("items")) {
+                if (!(candidate instanceof Map<?, ?> raw)) {
+                    throw new IllegalStateException("image manifest item is invalid");
+                }
+                Object filenameValue = raw.get("filename");
+                String filename = filenameValue instanceof String text ? text : "";
+                if (!"Generated".equals(raw.get("status"))
+                        || filename.isBlank()
+                        || !Files.isRegularFile(projectPath.resolve("images").resolve(filename))
+                        || !artifactRegistry.isUsable(projectPath, "images/" + filename, outlineVersion)) {
+                    throw new IllegalStateException("当前大纲版本的图片尚未就绪，禁止执行下游操作: " + operation);
+                }
+            }
+            PptNodeExecution execution = runtime.job().nodeExecution(PptJobNode.IMAGE_CONTINUE_CONFIRMED);
+            if (execution == null || execution.status() != PptJobNodeStatus.COMPLETED) {
+                throw new IllegalStateException("图片就绪后尚未确认继续，禁止执行下游操作: " + operation);
+            }
+        }
+
+        private boolean isImageManifestConfirmed(PptAgentToolRuntime runtime) {
+            PptNodeExecution execution = runtime.job().nodeExecution(PptJobNode.IMAGE_MANIFEST_CONFIRMED);
+            return execution != null && execution.status() == PptJobNodeStatus.COMPLETED;
         }
 
         /**
@@ -1459,7 +1563,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
      *   <li>pendingSteps — 待执行步骤（必填）</li>
      *   <li>risks — 风险评估</li>
      *   <li>stage — 确认阶段标识（可选），例如 {@code outline_confirmation}、{@code plan_confirmation}、
-     *       {@code image_retry_decision}、{@code image_ready_continue_confirmation}</li>
+     *       {@code image_manifest_confirmation}、{@code image_retry_decision}、{@code image_ready_continue_confirmation}</li>
      *   <li>title — 展示给用户的标题（可选）</li>
      *   <li>message — 展示给用户的核心说明（可选）</li>
      *   <li>choices — 建议操作列表（可选），每个条目包含 {@code label} 与 {@code value}</li>
@@ -1472,8 +1576,8 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
             super(ToolBase.builder()
                     .name(APPROVAL_TOOL_NAME)
                     .description("Request operator confirmation for the proposed PPT execution plan. "
-                            + "For image-enhanced workflows, this tool is also used to pause after image "
-                            + "generation failures so the operator can choose to retry failed images or continue.")
+                            + "For image-enhanced workflows, this tool confirms the image manifest before generation "
+                            + "and pauses after image generation failures so the operator can choose to retry failed images or continue.")
                     .inputSchema(Map.of(
                             "type", "object",
                             "properties", Map.of(
@@ -1494,7 +1598,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                                                     "required", List.of("label", "value"))),
                                     "contextData", Map.of(
                                             "type", "object",
-                                            "description", "For outline_confirmation use {type: ppt_outline, version, locked:false, slides: [{slideNo, title, keyMessage, bullets, visualSuggestion, imageRequirement}]}")),
+                                            "description", "For outline_confirmation use {type: ppt_outline, version, locked:false, slides: [{slideNo, title, keyMessage, bullets, visualSuggestion, imageRequirement}]}; for image_manifest_confirmation use {type: ppt_image_manifest, outlineVersion, items}.")),
                             "required", List.of("planSummary", "pendingSteps")))
                     .readOnly(false)
                     .concurrencySafe(true)

@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 class PptOutlineTests {
@@ -29,6 +30,16 @@ class PptOutlineTests {
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> outline.lock().apply(List.of()))
                 .isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
+    void rejectsImageRequirementWithoutPurposeAndPrompt() {
+        PptOutline outline = new PptOutline(1, false, List.of(
+                new SlideOutline(1, "封面", "结论", List.of("要点"), "插图", Map.of("purpose", "封面"))));
+
+        assertThatThrownBy(outline::validate)
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("purpose and prompt");
     }
 
     @Test

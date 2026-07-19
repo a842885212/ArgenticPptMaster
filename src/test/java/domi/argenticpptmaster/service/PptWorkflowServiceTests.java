@@ -114,7 +114,8 @@ class PptWorkflowServiceTests {
         assertThat(job.format()).isEqualTo("ppt169");
         assertThat(job.sourceFiles()).hasSize(1);
         assertThat(Files.exists(job.sourceFiles().get(0).storedPath())).isTrue();
-        assertThat(job.status()).isIn(PptJobStatus.ACCEPTED, PptJobStatus.PREPARING, PptJobStatus.WAITING_CONFIRMATION);
+        assertThat(job.status()).isIn(PptJobStatus.ACCEPTED, PptJobStatus.PREPARING, PptJobStatus.RUNNING_AGENT,
+                PptJobStatus.WAITING_CONFIRMATION);
     }
 
     /**

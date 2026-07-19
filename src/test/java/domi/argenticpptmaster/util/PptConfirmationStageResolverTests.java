@@ -36,6 +36,13 @@ class PptConfirmationStageResolverTests {
     }
 
     @Test
+    void resolvesImageManifestConfirmationStage() {
+        assertThat(PptConfirmationStageResolver.resolveConfirmedNode(
+                Map.of("stage", "image_manifest_confirmation")))
+                .isEqualTo(PptJobNode.IMAGE_MANIFEST_CONFIRMED);
+    }
+
+    @Test
     void resolvesOutlineConfirmationStage() {
         assertThat(PptConfirmationStageResolver.resolveConfirmedNode(
                 Map.of("stage", "outline_confirmation")))

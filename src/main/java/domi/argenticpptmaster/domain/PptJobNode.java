@@ -73,6 +73,11 @@ public enum PptJobNode {
     IMAGES_MANIFEST_WRITTEN(PptWorkflowMode.IMAGE_ENHANCED, false),
 
     /**
+     * 图片生成清单已由用户确认，允许执行图片生成（仅文生图流程）。
+     */
+    IMAGE_MANIFEST_CONFIRMED(PptWorkflowMode.IMAGE_ENHANCED, true),
+
+    /**
      * 图片已全部生成且状态满足继续条件（仅文生图流程）。
      * <p>
      * 第一版要求所有图片 item 的状态均为 {@code Generated}，无 Failed。

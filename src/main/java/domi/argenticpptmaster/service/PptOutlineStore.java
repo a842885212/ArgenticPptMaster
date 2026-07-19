@@ -100,9 +100,22 @@ public final class PptOutlineStore {
             }
             return;
         }
-        Path temporary = Files.createTempFile(history, "outline-version-", ".json.tmp");
-        objectMapper.writerWithDefaultPrettyPrinter().writeValue(temporary.toFile(), snapshot);
-        moveAtomically(temporary, target);
+        for (int attempt = 0; attempt < 2; attempt++) {
+            Files.createDirectories(history);
+            Path temporary = Files.createTempFile(history, "outline-version-", ".json.tmp");
+            objectMapper.writerWithDefaultPrettyPrinter().writeValue(temporary.toFile(), snapshot);
+            try {
+                moveAtomically(temporary, target);
+                return;
+            } catch (java.nio.file.NoSuchFileException ex) {
+                if (Files.isRegularFile(target)) {
+                    return;
+                }
+                if (attempt == 1) {
+                    throw ex;
+                }
+            }
+        }
     }
 
     private void writeMetadata(Path projectPath, PptOutline outline, PptOutline previous) throws IOException {

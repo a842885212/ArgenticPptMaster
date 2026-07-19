@@ -12,6 +12,7 @@ import domi.argenticpptmaster.domain.PptJobNode;
 import domi.argenticpptmaster.domain.PptWorkflowMode;
 import domi.argenticpptmaster.infra.PptMasterCommandExecutor;
 import domi.argenticpptmaster.service.PptJobEventPublisher;
+import domi.argenticpptmaster.service.PptOutlineStore;
 import domi.argenticpptmaster.service.PptWorkflowEvents;
 import io.agentscope.core.model.Model;
 import java.io.IOException;
@@ -82,24 +83,19 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
                 .hasMessageContaining("not allowed");
     }
 
-    /**
-     * 验证 {@code writeProjectTextFile} 允许写入 images/image_prompts.json。
-     */
+    /** 验证图片清单只能由锁定大纲派生工具写入，不能通过通用写入工具伪造。 */
     @Test
-    void writeProjectTextFileAllowsImagePromptsManifest() throws IOException {
+    void writeProjectTextFileRejectsImagePromptsManifest() throws IOException {
         TestContext context = createContext();
         context.job.confirmNode(PptJobNode.PLAN_CONFIRMED);
         String manifest = """
                 {"items": [{"filename": "cover.png", "prompt": "a cover", "aspect_ratio": "16:9", "status": "Pending"}]}
                 """;
 
-        Map<String, Object> writeResult = context.tools.writeProjectTextFile(
-                "images/image_prompts.json",
-                manifest,
-                context.runtime);
-
-        assertThat(writeResult).containsEntry("relativePath", "images/image_prompts.json");
-        assertThat(Files.readString(context.projectPath.resolve("images/image_prompts.json"))).isEqualTo(manifest);
+        assertThatThrownBy(() -> context.tools.writeProjectTextFile(
+                "images/image_prompts.json", manifest, context.runtime))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("must be derived from the locked outline");
     }
 
     @Test
@@ -137,6 +133,7 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
     void generateProjectImagesDelegatesToImageGenScript() throws IOException {
         TestContext context = createContext();
         context.job.confirmNode(PptJobNode.PLAN_CONFIRMED);
+        context.job.confirmNode(PptJobNode.IMAGE_MANIFEST_CONFIRMED);
         Files.createDirectories(context.projectPath.resolve("images"));
         Files.writeString(context.projectPath.resolve("images/image_prompts.json"), """
                 {"items": [{"filename": "cover.png", "prompt": "a cover", "aspect_ratio": "16:9", "status": "Pending"}]}
@@ -220,6 +217,26 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
         assertThat(context.job.lastCompletedNode()).isEmpty();
     }
 
+    @Test
+    void inspectImageManifestStatusRejectsGeneratedCurrentVersionItemWhenFileIsMissing() throws IOException {
+        TestContext context = createContextWithImageEnhancedMode();
+        context.job.confirmNode(PptJobNode.OUTLINE_CONFIRMED);
+        new PptOutlineStore().write(context.projectPath, new domi.argenticpptmaster.domain.PptOutline(1, true, List.of(
+                new domi.argenticpptmaster.domain.SlideOutline(1, "封面", "结论", List.of("要点"), "插图",
+                        Map.of("purpose", "封面", "prompt", "蓝色城市")))));
+        context.tools.deriveImageManifestFromLockedOutline(context.runtime);
+        context.job.confirmNode(PptJobNode.IMAGE_MANIFEST_CONFIRMED);
+        Files.writeString(context.projectPath.resolve("images/image_prompts.json"), """
+                {"outlineVersion": 1, "items": [{"outlineVersion": 1, "slideNo": 1,
+                  "requirementFingerprint": "fingerprint", "filename": "slide-01-image.png",
+                  "purpose": "封面", "prompt": "蓝色城市", "aspect_ratio": "16:9", "status": "Generated"}]}
+                """);
+
+        assertThatThrownBy(() -> context.tools.inspectImageManifestStatus(context.runtime))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("generated image file is missing");
+    }
+
     /**
      * 验证后处理工具方法（validateSvgOutput、splitSpeakerNotes、finalizeProjectSvg）
      * 正确委托到对应的 Python 脚本，且传入正确的项目路径和格式参数。
@@ -252,9 +269,11 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
 
         assertThat(prompt).contains("image_retry_decision");
         assertThat(prompt).contains("image_ready_continue_confirmation");
+        assertThat(prompt).contains("image_manifest_confirmation");
+        assertThat(prompt).contains("derive_image_manifest_from_locked_outline");
         assertThat(prompt).contains("绝不要直接结束任务");
         assertThat(prompt).contains("不要输出 FINAL 总结");
-        assertThat(prompt).contains("只有用户确认继续后，才进入步骤 8");
+        assertThat(prompt).contains("只有用户确认继续后，才进入步骤 9");
     }
 
     /**

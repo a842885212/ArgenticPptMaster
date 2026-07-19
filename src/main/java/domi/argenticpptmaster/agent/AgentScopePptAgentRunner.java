@@ -846,7 +846,7 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
                 3. 完成资料分析后，先生成逐页大纲并写入 outline.json（version 从 1 开始、locked=false），通过 request_plan_confirmation（stage="outline_confirmation"）在 contextData 中返回 {type:"ppt_outline", version, locked:false, slides:[...]}。
                 4. 收到 REQUEST_REVISION 时，读取 Operator 的整体意见、outline_slide_edits 和 outline_edits，重生成完整的新版本大纲并再次请求 outline_confirmation；在 APPROVE 前不得写 design_spec.md、spec_lock.md、notes 或 svg。
                 5. 用户批准后，先产出 design_spec.md 与 spec_lock.md。
-                6. 如存在 AI 图片需求，写 images/image_prompts.json，然后调用 generate_project_images 生成图片。
+                6. 调用 derive_image_manifest_from_locked_outline 从锁定大纲派生 images/image_prompts.json；调用 request_plan_confirmation（stage="image_manifest_confirmation"）展示清单。只有 APPROVE 后才调用 generate_project_images；收到 REQUEST_REVISION 时保留锁定大纲版本，重新派生未生成清单并再次请求确认。
                 7. 调用 inspect_image_manifest_status 检查图片状态：
                    - 若有 Failed：不要结束任务，不要输出总结；调用 request_plan_confirmation（stage="image_retry_decision"）询问用户是否重试失败图片，用户要求重试后再调用 generate_project_images，循环直到全部 Generated。
                    - 若全部 Generated：调用 request_plan_confirmation（stage="image_ready_continue_confirmation"）询问用户是否继续后续 PPT 制作（notes、SVG、finalize、导出），只有用户确认继续后才进入下一步。

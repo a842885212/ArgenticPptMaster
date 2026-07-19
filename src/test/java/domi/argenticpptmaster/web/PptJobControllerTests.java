@@ -12,9 +12,11 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import domi.argenticpptmaster.domain.PptJob;
 import domi.argenticpptmaster.domain.PptJobNode;
 import domi.argenticpptmaster.domain.PptConfirmationAction;
+import domi.argenticpptmaster.domain.PptRevisionImpactPreview;
 import domi.argenticpptmaster.domain.PptWorkflowMode;
 import domi.argenticpptmaster.exception.PptJobNotFoundException;
 import domi.argenticpptmaster.exception.PptJobResumeException;
+import domi.argenticpptmaster.exception.PptJobStateException;
 import domi.argenticpptmaster.service.PptJobEventPublisher;
 import domi.argenticpptmaster.service.PptWorkflowService;
 import java.nio.file.Path;
@@ -142,5 +144,102 @@ class PptJobControllerTests {
                 eq(JOB_ID), eq("c-1"), eq(true), any(), eq("旧备注"),
                 eq(PptConfirmationAction.REQUEST_REVISION), eq("整体修改"),
                 eq(List.of(new PptSlideEditRequest(2, "修改第2页"))));
+    }
+
+    @Test
+    void previewLockedOutlineRevisionReturnsImpactToken() throws Exception {
+        PptRevisionImpactPreview preview = new PptRevisionImpactPreview(
+                "impact-token", 3, List.of("svg_output/slide_01.svg"), java.time.Instant.parse("2026-07-16T06:00:00Z"));
+        given(workflowService.previewOutlineRevision(JOB_ID, 3)).willReturn(preview);
+
+        mockMvc.perform(post("/api/ppt-jobs/{jobId}/outline-revision/preview", JOB_ID)
+                        .param("outlineVersion", "3"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.revisionImpactToken").value("impact-token"))
+                .andExpect(jsonPath("$.outlineVersion").value(3))
+                .andExpect(jsonPath("$.affectedArtifacts[0]").value("svg_output/slide_01.svg"));
+
+        verify(workflowService).previewOutlineRevision(JOB_ID, 3);
+    }
+
+    @Test
+    void confirmPassesStructuredEditVersionAndImpactToken() throws Exception {
+        PptJob job = new PptJob(
+                JOB_ID, "demo", "ppt169", "make a deck",
+                PptWorkflowMode.BASIC, Path.of("var/ppt-master/jobs/demo"));
+        job.requireConfirmation("c-1", Map.of(
+                "stage", "outline_confirmation",
+                "contextData", Map.of("type", "ppt_outline", "version", 1)));
+        given(workflowService.submitConfirmation(
+                eq(JOB_ID), eq("c-1"), eq(true), any(), eq("更新标题"),
+                eq(PptConfirmationAction.REQUEST_REVISION), eq("更新标题"), any(), eq(1), any(), eq("impact-token")))
+                .willReturn(job);
+
+        mockMvc.perform(post("/api/ppt-jobs/{jobId}/confirm", JOB_ID)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "confirmationId":"c-1",
+                                  "approved":true,
+                                  "comment":"更新标题",
+                                  "action":"REQUEST_REVISION",
+                                  "overallComment":"更新标题",
+                                  "outlineVersion":1,
+                                  "outlineEdits":[{
+                                    "operation":"UPDATE",
+                                    "slideNo":1,
+                                    "slide":{"slideNo":1,"title":"新标题","keyMessage":"新结论",
+                                      "bullets":["新要点"],"visualSuggestion":"新视觉方案"}
+                                  }],
+                                  "revisionImpactToken":"impact-token"
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.outlineVersion").value(1));
+
+        verify(workflowService).submitConfirmation(
+                eq(JOB_ID), eq("c-1"), eq(true), any(), eq("更新标题"),
+                eq(PptConfirmationAction.REQUEST_REVISION), eq("更新标题"), any(), eq(1), any(), eq("impact-token"));
+    }
+
+    @Test
+    void previewRejectsMismatchedOutlineVersion() throws Exception {
+        given(workflowService.previewOutlineRevision(JOB_ID, 2))
+                .willThrow(new PptJobStateException("outline version does not match active outline"));
+
+        mockMvc.perform(post("/api/ppt-jobs/{jobId}/outline-revision/preview", JOB_ID)
+                        .param("outlineVersion", "2"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message", containsString("outline version does not match")));
+    }
+
+    @Test
+    void confirmRejectsInvalidImpactToken() throws Exception {
+        given(workflowService.submitConfirmation(
+                eq(JOB_ID), eq("c-1"), eq(true), any(), eq("更新标题"),
+                eq(PptConfirmationAction.REQUEST_REVISION), eq("更新标题"), any(), eq(1), any(), eq("invalid-token")))
+                .willThrow(new PptJobStateException("locked outline revision requires a valid revisionImpactToken"));
+
+        mockMvc.perform(post("/api/ppt-jobs/{jobId}/confirm", JOB_ID)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "confirmationId":"c-1",
+                                  "approved":true,
+                                  "comment":"更新标题",
+                                  "action":"REQUEST_REVISION",
+                                  "overallComment":"更新标题",
+                                  "outlineVersion":1,
+                                  "outlineEdits":[{
+                                    "operation":"UPDATE",
+                                    "slideNo":1,
+                                    "slide":{"slideNo":1,"title":"新标题","keyMessage":"新结论",
+                                      "bullets":["新要点"],"visualSuggestion":"新视觉方案"}
+                                  }],
+                                  "revisionImpactToken":"invalid-token"
+                                }
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message", containsString("valid revisionImpactToken")));
     }
 }

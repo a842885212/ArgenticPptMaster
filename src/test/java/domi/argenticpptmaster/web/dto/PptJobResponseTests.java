@@ -115,4 +115,28 @@ class PptJobResponseTests {
         assertThat(response.resumable()).isFalse();
         assertThat(response.lastCompletedNode()).isNull();
     }
+
+    @Test
+    void exposesOutlineReviewDiffAndImpactPreview() {
+        PptJob job = new PptJob(
+                UUID.randomUUID(), "demo", "ppt169", "make a deck", PptWorkflowMode.BASIC,
+                Path.of("var/ppt-master/jobs/demo"));
+        job.requireConfirmation("outline-1", Map.of(
+                "stage", "outline_confirmation",
+                "contextData", Map.of(
+                        "type", "ppt_outline",
+                        "version", 2,
+                        "locked", true,
+                        "slides", java.util.List.of(Map.of("slideNo", 1)),
+                        "diff", Map.of("fromVersion", 1, "toVersion", 2),
+                        "impactPreview", Map.of("revisionImpactToken", "impact-token"))));
+
+        PptJobResponse response = PptJobResponse.from(job);
+
+        assertThat(response.outlineVersion()).isEqualTo(2);
+        assertThat(response.outlineLocked()).isTrue();
+        assertThat(response.outlineSlideCount()).isEqualTo(1);
+        assertThat(response.outlineDiff()).containsEntry("toVersion", 2);
+        assertThat(response.impactPreview()).containsEntry("revisionImpactToken", "impact-token");
+    }
 }

@@ -249,6 +249,8 @@ public class PptWorkflowService {
             events.record(job, PptJobEvent.of(PptJobEventType.JOB_FAILED, "confirmation rejected"));
             return job;
         }
+        validateImageManifestConfirmation(job, effectiveAction);
+        validateImageReadyContinuation(job, effectiveAction);
         List<PptSlideEdit> validatedEdits = validateSlideEdits(job, effectiveAction, slideEdits);
         if (effectiveAction == PptConfirmationAction.REQUEST_REVISION && isLockedOutline(job)
                 && (revisionImpactToken == null || revisionImpactToken.isBlank())) {
@@ -259,7 +261,7 @@ public class PptWorkflowService {
         String resolvedOverallComment = firstNonBlank(overallComment, comment);
         if (effectiveAction == PptConfirmationAction.REQUEST_REVISION
                 && isBlank(resolvedOverallComment) && validatedEdits.isEmpty() && validatedOutlineEdits.isEmpty()) {
-            throw new PptJobStateException("outline revision requires feedback");
+            throw new PptJobStateException("confirmation revision requires feedback");
         }
         PptConfirmation confirmation = new PptConfirmation(
                 confirmationId,
@@ -336,6 +338,12 @@ public class PptWorkflowService {
             List<PptSlideEditRequest> slideEdits) {
         List<PptSlideEditRequest> requests = slideEdits == null ? List.of() : slideEdits;
         if (action != PptConfirmationAction.REQUEST_REVISION) {
+            return List.of();
+        }
+        if (isImageManifestConfirmation(job)) {
+            if (!requests.isEmpty()) {
+                throw new PptJobStateException("image manifest revision does not accept slide edits");
+            }
             return List.of();
         }
         Object contextData = job.confirmationPayload().get("contextData");
@@ -516,6 +524,60 @@ public class PptWorkflowService {
 
     private boolean isOutlineConfirmation(PptJob job) {
         return "outline_confirmation".equals(job.confirmationPayload().get("stage"));
+    }
+
+    private boolean isImageManifestConfirmation(PptJob job) {
+        return "image_manifest_confirmation".equals(job.confirmationPayload().get("stage"));
+    }
+
+    private void validateImageManifestConfirmation(PptJob job, PptConfirmationAction action) {
+        if (!isImageManifestConfirmation(job)) {
+            return;
+        }
+        Object contextData = job.confirmationPayload().get("contextData");
+        if (!(contextData instanceof Map<?, ?> context)
+                || !"ppt_image_manifest".equals(context.get("type"))
+                || !(context.get("outlineVersion") instanceof Number number)
+                || number.intValue() <= 0) {
+            throw new PptJobStateException("image manifest confirmation payload is invalid");
+        }
+        Path projectPath = job.projectPath().orElseThrow(() ->
+                new PptJobStateException("image manifest confirmation requires a project path"));
+        PptOutline outline = outlineStore.read(projectPath);
+        if (!outline.locked() || outline.version() != number.intValue()) {
+            throw new PptJobStateException("image manifest does not match current locked outline");
+        }
+        Map<String, Object> manifest = new PptImageManifestStore().readForOutlineVersion(projectPath, outline.version());
+        if (action == PptConfirmationAction.REQUEST_REVISION
+                && ((List<?>) manifest.get("items")).stream().anyMatch(item -> item instanceof Map<?, ?> map
+                && "Generated".equals(map.get("status")))) {
+            throw new PptJobStateException("generated image manifest cannot be revised");
+        }
+    }
+
+    private void validateImageReadyContinuation(PptJob job, PptConfirmationAction action) {
+        if (action != PptConfirmationAction.APPROVE
+                || !"image_ready_continue_confirmation".equals(job.confirmationPayload().get("stage"))) {
+            return;
+        }
+        Path projectPath = job.projectPath().orElse(null);
+        if (projectPath == null || !Files.isRegularFile(outlineStore.path(projectPath))) {
+            return; // 保持旧任务不含版本化大纲时的确认兼容性。
+        }
+        PptOutline outline = outlineStore.read(projectPath);
+        Map<String, Object> manifest = new PptImageManifestStore().readForOutlineVersion(projectPath, outline.version());
+        if (!artifactRegistry.isUsable(projectPath, "images/image_prompts.json", outline.version())) {
+            throw new PptJobStateException("image manifest is stale or not registered for current outline");
+        }
+        for (Object item : (List<?>) manifest.get("items")) {
+            if (!(item instanceof Map<?, ?> image)
+                    || !(image.get("filename") instanceof String filename)
+                    || !"Generated".equals(image.get("status"))
+                    || !Files.isRegularFile(projectPath.resolve("images").resolve(filename))
+                    || !artifactRegistry.isUsable(projectPath, "images/" + filename, outline.version())) {
+                throw new PptJobStateException("current outline images are not ready to continue");
+            }
+        }
     }
 
     private boolean isLockedOutline(PptJob job) {

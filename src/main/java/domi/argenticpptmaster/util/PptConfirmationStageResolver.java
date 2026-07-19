@@ -39,6 +39,7 @@ public final class PptConfirmationStageResolver {
             return PptJobNode.PLAN_CONFIRMED;
         }
         return switch (stageStr) {
+            case "image_manifest_confirmation" -> PptJobNode.IMAGE_MANIFEST_CONFIRMED;
             case "image_ready_continue_confirmation" -> PptJobNode.IMAGE_CONTINUE_CONFIRMED;
             case "image_retry_decision" -> null;
             case "outline_confirmation" -> PptJobNode.OUTLINE_CONFIRMED;

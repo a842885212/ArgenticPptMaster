@@ -159,4 +159,37 @@ class PptJobResponseTests {
                 .extracting(SourceFileResponse::originalName).isEqualTo("source.pptx");
         assertThat(response.toString()).doesNotContain("/private/workspace");
     }
+
+    @Test
+    void exposesTemplateFillProgressWithoutAbsolutePaths() {
+        PptJob job = new PptJob(
+                UUID.randomUUID(), "demo", "ppt169", "fill", PptWorkflowMode.TEMPLATE_FILL,
+                Path.of("/private/workspace/job"));
+        job.updateTemplateAnalysis(new domi.argenticpptmaster.domain.TemplateFillAnalysisSummary(
+                10, 1920, 1080, "1920x1080", 3, 1, 0, "template_fill_pptx_library.v1"));
+        job.updateFillPlanStatus(domi.argenticpptmaster.domain.FillPlanStatus.VALIDATED, 5, 2, 0);
+
+        PptJobResponse response = PptJobResponse.from(job);
+
+        assertThat(response.templateAnalysisReady()).isTrue();
+        assertThat(response.fillPlanStatus()).isEqualTo("VALIDATED");
+        assertThat(response.templateFillProgress()).isNotNull();
+        assertThat(response.templateFillProgress().templateSlideCount()).isEqualTo(10);
+        assertThat(response.templateFillProgress().planSlideCount()).isEqualTo(5);
+        assertThat(response.templateFillProgress().validationWarningCount()).isEqualTo(2);
+        assertThat(response.toString()).doesNotContain("/private/workspace");
+    }
+
+    @Test
+    void basicJobHasNullTemplateFillFields() {
+        PptJob job = new PptJob(
+                UUID.randomUUID(), "demo", "ppt169", "make a deck", PptWorkflowMode.BASIC,
+                Path.of("var/ppt-master/jobs/demo"));
+
+        PptJobResponse response = PptJobResponse.from(job);
+
+        assertThat(response.templateAnalysisReady()).isFalse();
+        assertThat(response.fillPlanStatus()).isNull();
+        assertThat(response.templateFillProgress()).isNull();
+    }
 }

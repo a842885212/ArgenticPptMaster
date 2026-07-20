@@ -59,6 +59,23 @@ public class PptTemplateFillService {
         return job;
     }
 
+    /** 异步运行工作区准备与分析至 {@code TEMPLATE_ANALYZED}。 */
+    public PptJob prepareWorkspace(UUID jobId, String accessToken) {
+        verifyAccess(accessToken);
+        PptJob job = repository.findById(jobId).orElseThrow(() -> new PptJobNotFoundException(jobId));
+        if (job.workflowMode() != PptWorkflowMode.TEMPLATE_FILL) {
+            throw new PptTemplateFillConflictException("job is not a template-fill workflow");
+        }
+        if (!job.tryStartPrepare()) {
+            throw new PptTemplateFillConflictException("template-fill prepare cannot start in status: " + job.status());
+        }
+        repository.save(job);
+        events.record(job, PptJobEvent.of(PptJobEventType.TEMPLATE_FILL_STAGE_STARTED,
+                "template-fill prepare started", Map.of("stage", "PREPARE")));
+        asyncRunner.prepareAndAnalyze(job.id());
+        return job;
+    }
+
     private void verifyAccess(String accessToken) {
         String configured = properties.templateFillDebugToken();
         if (configured == null || configured.isBlank() || accessToken == null) {

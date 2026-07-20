@@ -52,6 +52,13 @@ public class PptJob {
     private String activeAttemptSessionId;
     private int resumeCount;
 
+    // 模板填充分析与计划状态（安全摘要，不含路径或槽位全文）
+    private TemplateFillAnalysisSummary templateAnalysisSummary;
+    private FillPlanStatus fillPlanStatus = FillPlanStatus.NONE;
+    private int planSlideCount;
+    private int validationWarningCount;
+    private int validationErrorCount;
+
     /**
      * 创建一个新的 PPT 任务实例。
      *
@@ -182,6 +189,43 @@ public class PptJob {
         return resumeCount;
     }
 
+    public synchronized boolean templateAnalysisReady() {
+        return templateAnalysisSummary != null;
+    }
+
+    public synchronized Optional<TemplateFillAnalysisSummary> templateAnalysisSummary() {
+        return Optional.ofNullable(templateAnalysisSummary);
+    }
+
+    public synchronized FillPlanStatus fillPlanStatus() {
+        return fillPlanStatus;
+    }
+
+    public synchronized int planSlideCount() {
+        return planSlideCount;
+    }
+
+    public synchronized int validationWarningCount() {
+        return validationWarningCount;
+    }
+
+    public synchronized int validationErrorCount() {
+        return validationErrorCount;
+    }
+
+    public synchronized void updateTemplateAnalysis(TemplateFillAnalysisSummary summary) {
+        this.templateAnalysisSummary = summary;
+        touch();
+    }
+
+    public synchronized void updateFillPlanStatus(FillPlanStatus status, int planSlides, int warnings, int errors) {
+        this.fillPlanStatus = status == null ? FillPlanStatus.NONE : status;
+        this.planSlideCount = planSlides;
+        this.validationWarningCount = warnings;
+        this.validationErrorCount = errors;
+        touch();
+    }
+
     public synchronized String activeAttemptSessionId() {
         return activeAttemptSessionId;
     }
@@ -254,6 +298,27 @@ public class PptJob {
         status = PptJobStatus.PREPARING;
         touch();
         return true;
+    }
+
+    /**
+     * 启动模板填充工作区准备（ACCEPTED 或 FAILED 状态）。
+     *
+     * @return 仅当任务为模板填充且处于可启动状态时返回 true
+     */
+    public synchronized boolean tryStartPrepare() {
+        if (workflowMode != PptWorkflowMode.TEMPLATE_FILL) {
+            return false;
+        }
+        if (status == PptJobStatus.ACCEPTED) {
+            return tryStartTemplateFill();
+        }
+        if (status == PptJobStatus.FAILED) {
+            status = PptJobStatus.PREPARING;
+            lastFailureNode = null;
+            touch();
+            return true;
+        }
+        return false;
     }
 
     /**
@@ -421,7 +486,9 @@ public class PptJob {
     public synchronized void startNewResumeAttempt() {
         this.resumeCount++;
         this.activeAttemptSessionId = buildAttemptSessionId(resumeCount);
-        this.status = PptJobStatus.RUNNING_AGENT;
+        this.status = workflowMode == PptWorkflowMode.TEMPLATE_FILL
+                ? PptJobStatus.PREPARING
+                : PptJobStatus.RUNNING_AGENT;
         this.lastFailureNode = null;
         touch();
     }

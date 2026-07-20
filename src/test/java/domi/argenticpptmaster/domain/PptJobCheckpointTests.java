@@ -49,7 +49,25 @@ class PptJobCheckpointTests {
 
         assertThat(job.status()).isEqualTo(PptJobStatus.ACCEPTED);
         assertThat(job.template()).contains(template);
-        assertThat(job.nodeExecutions()).isEmpty();
+        assertThat(job.nodeExecution(PptJobNode.PROJECT_READY).status()).isEqualTo(PptJobNodeStatus.PENDING);
+        assertThat(job.nodeExecution(PptJobNode.TEMPLATE_ANALYZED).status()).isEqualTo(PptJobNodeStatus.PENDING);
+        assertThat(job.nodeExecution(PptJobNode.FILL_PLAN_VALIDATED).status()).isEqualTo(PptJobNodeStatus.PENDING);
+        assertThat(job.nodeExecution(PptJobNode.PPT_EXPORTED).status()).isEqualTo(PptJobNodeStatus.PENDING);
+        assertThat(job.nodeExecution(PptJobNode.OUTPUT_VALIDATED).status()).isEqualTo(PptJobNodeStatus.PENDING);
+        assertThat(job.nodeExecution(PptJobNode.SVG_OUTPUT_VALIDATED)).isNull();
+        assertThat(job.nodeExecution(PptJobNode.OUTLINE_DRAFTED)).isNull();
+    }
+
+    @Test
+    void templateFillIncludesProjectReadyAndPptExportedAcrossModes() {
+        PptJob job = new PptJob(
+                UUID.randomUUID(), "demo", "ppt169", "fill", PptWorkflowMode.TEMPLATE_FILL,
+                Path.of("var/ppt-master/jobs/demo"));
+
+        assertThat(PptJobNode.PROJECT_READY.applicableTo(PptWorkflowMode.TEMPLATE_FILL)).isTrue();
+        assertThat(PptJobNode.PPT_EXPORTED.applicableTo(PptWorkflowMode.TEMPLATE_FILL)).isTrue();
+        assertThat(PptJobNode.SVG_FINALIZED.applicableTo(PptWorkflowMode.TEMPLATE_FILL)).isFalse();
+        assertThat(job.nodeExecutions()).hasSize(7);
     }
 
     @Test

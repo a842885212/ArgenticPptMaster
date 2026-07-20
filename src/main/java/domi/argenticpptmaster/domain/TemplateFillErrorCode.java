@@ -1,0 +1,15 @@
+package domi.argenticpptmaster.domain;
+
+/** 模板填充稳定错误码，供事件与 API 映射。 */
+public enum TemplateFillErrorCode {
+    TEMPLATE_ANALYSIS_FAILED,
+    FILL_PLAN_INVALID,
+    TEMPLATE_APPLY_FAILED,
+    TEMPLATE_VALIDATE_FAILED,
+    TEMPLATE_FILL_UPLOAD_TOO_LARGE,
+    TEMPLATE_FILL_CONCURRENCY_LIMIT;
+
+    public String code() {
+        return name();
+    }
+}

@@ -141,9 +141,10 @@ class PptWorkflowServiceRevisionTests {
         Path projectPath = tempDir.resolve(mode.name().toLowerCase());
         InMemoryPptJobRepository repository = new InMemoryPptJobRepository();
         PptWorkflowAsyncRunner asyncRunner = mock(PptWorkflowAsyncRunner.class);
+        PptTemplateFillAsyncRunner templateFillAsyncRunner = mock(PptTemplateFillAsyncRunner.class);
         PptWorkflowService service = new PptWorkflowService(
-                new PptMasterProperties(tempDir, tempDir, "python3", Duration.ofMinutes(1), null, 1_048_576L), repository,
-                mock(PptWorkflowEvents.class), asyncRunner);
+                PptMasterProperties.forTest(tempDir, tempDir), repository,
+                mock(PptWorkflowEvents.class), asyncRunner, templateFillAsyncRunner);
         PptJob job = new PptJob(UUID.randomUUID(), "demo", "ppt169", "make a deck", mode, projectPath);
         job.prepareProject(projectPath);
         job.waitNodeConfirmation(PptJobNode.OUTLINE_DRAFTED);

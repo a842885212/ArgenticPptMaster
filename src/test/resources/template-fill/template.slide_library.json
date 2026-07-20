@@ -1,0 +1,22 @@
+{
+  "schema": "template_fill_pptx_library.v1",
+  "slide_count": 10,
+  "canvas_px": {
+    "width": 1920,
+    "height": 1080
+  },
+  "slides": [
+    {
+      "slide_index": 1,
+      "slots": [{"slot_id": "s01_sh1", "text": "Title"}],
+      "tables": [],
+      "charts": []
+    },
+    {
+      "slide_index": 2,
+      "slots": [{"slot_id": "s02_sh1", "text": "Body"}, {"slot_id": "s02_sh2", "text": "More"}],
+      "tables": [{"table_id": "s02_tbl1"}],
+      "charts": []
+    }
+  ]
+}

@@ -39,6 +39,19 @@ class TemplateFillFixturesTests {
     }
 
     @Test
+    void documentsSlideLibraryAndCheckReportContract() throws Exception {
+        String slideLibrary = readResource("/template-fill/template.slide_library.json");
+        assertThat(slideLibrary).contains("\"schema\": \"template_fill_pptx_library.v1\"");
+        assertThat(slideLibrary).contains("\"slide_count\": 10");
+        assertThat(slideLibrary).contains("\"canvas_px\"");
+
+        String checkReport = readResource("/template-fill/check_report.json");
+        assertThat(checkReport).contains("\"schema\": \"template_fill_pptx_check.v1\"");
+        assertThat(checkReport).contains("\"warn\": 2");
+        assertThat(checkReport).contains("\"error\": 0");
+    }
+
+    @Test
     void providesConfirmedDraftAndInvalidFillPlans() throws Exception {
         assertThat(readResource("/template-fill/fill-plan-confirmed.json")).contains("\"status\": \"confirmed\"");
         assertThat(readResource("/template-fill/fill-plan-draft.json")).contains("\"status\": \"draft\"");

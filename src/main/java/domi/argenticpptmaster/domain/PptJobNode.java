@@ -14,6 +14,7 @@ import java.util.List;
  * <ul>
  *   <li>{@link PptWorkflowMode#BASIC} 使用通用节点</li>
  *   <li>{@link PptWorkflowMode#IMAGE_ENHANCED} 在 SPEC_LOCK_WRITTEN 与 NOTES_TOTAL_WRITTEN 之间插入图片阶段节点</li>
+ *   <li>{@link PptWorkflowMode#TEMPLATE_FILL} 使用模板分析与填充专属节点</li>
  * </ul>
  *
  * @author zhangtianhao
@@ -27,7 +28,7 @@ public enum PptJobNode {
      * 证据：项目目录存在且 {@code sources/} 目录下已存在导入的文件。
      * </p>
      */
-    PROJECT_READY(PptWorkflowMode.BASIC, PptWorkflowMode.IMAGE_ENHANCED, false),
+    PROJECT_READY(PptWorkflowMode.BASIC, PptWorkflowMode.IMAGE_ENHANCED, PptWorkflowMode.TEMPLATE_FILL, false),
 
     /**
      * 逐页大纲已生成并进入人工确认，但尚未锁定。
@@ -127,12 +128,37 @@ public enum PptJobNode {
     SVG_FINALIZED(PptWorkflowMode.BASIC, PptWorkflowMode.IMAGE_ENHANCED, false),
 
     /**
+     * 模板 PPTX 已分析且 slide library 摘要已持久化（仅模板填充流程）。
+     */
+    TEMPLATE_ANALYZED(PptWorkflowMode.TEMPLATE_FILL, false),
+
+    /**
+     * 填充计划草稿已写入（仅模板填充流程，阶段二预留）。
+     */
+    FILL_PLAN_DRAFTED(PptWorkflowMode.TEMPLATE_FILL, false),
+
+    /**
+     * 已确认的填充计划已接受（仅模板填充流程）。
+     */
+    FILL_PLAN_CONFIRMED(PptWorkflowMode.TEMPLATE_FILL, true),
+
+    /**
+     * 填充计划已通过 check-plan 校验（仅模板填充流程）。
+     */
+    FILL_PLAN_VALIDATED(PptWorkflowMode.TEMPLATE_FILL, false),
+
+    /**
      * PPTX 成品已导出。
      * <p>
      * 证据：{@code export_project_pptx} 工具成功执行，且导出文件真实存在。
      * </p>
      */
-    PPT_EXPORTED(PptWorkflowMode.BASIC, PptWorkflowMode.IMAGE_ENHANCED, false);
+    PPT_EXPORTED(PptWorkflowMode.BASIC, PptWorkflowMode.IMAGE_ENHANCED, PptWorkflowMode.TEMPLATE_FILL, false),
+
+    /**
+     * 模板填充导出已通过 validate 且交付文件已复制（仅模板填充流程）。
+     */
+    OUTPUT_VALIDATED(PptWorkflowMode.TEMPLATE_FILL, false);
 
     private final List<PptWorkflowMode> applicableModes;
     private final boolean confirmation;
@@ -143,6 +169,10 @@ public enum PptJobNode {
 
     PptJobNode(PptWorkflowMode first, PptWorkflowMode second, boolean confirmation) {
         this(List.of(first, second), confirmation);
+    }
+
+    PptJobNode(PptWorkflowMode first, PptWorkflowMode second, PptWorkflowMode third, boolean confirmation) {
+        this(List.of(first, second, third), confirmation);
     }
 
     PptJobNode(List<PptWorkflowMode> applicableModes, boolean confirmation) {

@@ -1,0 +1,9 @@
+{
+  "schema": "template_fill_pptx_check.v1",
+  "summary": {
+    "ok": 8,
+    "warn": 2,
+    "error": 0
+  },
+  "results": []
+}

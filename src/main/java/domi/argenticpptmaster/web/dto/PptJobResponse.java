@@ -6,6 +6,7 @@ import domi.argenticpptmaster.domain.PptJobNode;
 import domi.argenticpptmaster.domain.PptJobNodeStatus;
 import domi.argenticpptmaster.domain.PptJobStatus;
 import domi.argenticpptmaster.domain.PptNodeExecution;
+import domi.argenticpptmaster.domain.PptWorkflowMode;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -71,6 +72,9 @@ public record PptJobResponse(
         int outlineSlideCount,
         Map<String, Object> outlineDiff,
         Map<String, Object> impactPreview,
+        boolean templateAnalysisReady,
+        String fillPlanStatus,
+        TemplateFillProgressResponse templateFillProgress,
         String errorMessage,
         List<PptJobEvent> events) {
 
@@ -82,6 +86,11 @@ public record PptJobResponse(
      */
     public static PptJobResponse from(PptJob job) {
         boolean downloadReady = job.status() == PptJobStatus.COMPLETED && job.exportPath().isPresent();
+        TemplateFillProgressResponse templateProgress = buildTemplateFillProgress(job);
+        boolean analysisReady = job.workflowMode() == PptWorkflowMode.TEMPLATE_FILL && job.templateAnalysisReady();
+        String planStatus = job.workflowMode() == PptWorkflowMode.TEMPLATE_FILL
+                ? job.fillPlanStatus().value()
+                : null;
         return new PptJobResponse(
                 job.id(),
                 job.projectName(),
@@ -108,8 +117,26 @@ public record PptJobResponse(
                 outlineSlideCount(job.confirmationPayload()),
                 outlineDiff(job.confirmationPayload()),
                 impactPreview(job.confirmationPayload()),
+                analysisReady,
+                planStatus,
+                templateProgress,
                 job.errorMessage().orElse(null),
                 job.events());
+    }
+
+    private static TemplateFillProgressResponse buildTemplateFillProgress(PptJob job) {
+        if (job.workflowMode() != PptWorkflowMode.TEMPLATE_FILL) {
+            return null;
+        }
+        Integer templateSlides = job.templateAnalysisSummary().map(s -> s.templateSlideCount()).orElse(null);
+        Integer planSlides = job.planSlideCount() > 0 ? job.planSlideCount() : null;
+        Integer warnings = job.validationWarningCount() > 0 ? job.validationWarningCount() : null;
+        Integer errors = job.validationErrorCount() > 0 ? job.validationErrorCount() : null;
+        String exportName = job.exportPath().map(path -> path.getFileName().toString()).orElse(null);
+        if (templateSlides == null && planSlides == null && warnings == null && errors == null && exportName == null) {
+            return null;
+        }
+        return new TemplateFillProgressResponse(templateSlides, planSlides, errors, warnings, exportName);
     }
 
     private static Integer outlineVersion(Map<String, Object> payload) {

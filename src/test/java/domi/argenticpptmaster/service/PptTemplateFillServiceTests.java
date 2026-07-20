@@ -33,7 +33,8 @@ class PptTemplateFillServiceTests {
         when(repository.findById(jobId)).thenReturn(Optional.of(job));
         when(planStore.storeConfirmedPlan(job, "{\"status\":\"confirmed\"}")).thenReturn(planPath);
         PptTemplateFillService service = new PptTemplateFillService(
-                new PptMasterProperties(Path.of("repo"), Path.of("workspace"), "python3", Duration.ofSeconds(1), "secret", 1024),
+                new PptMasterProperties(Path.of("repo"), Path.of("workspace"), "python3", Duration.ofSeconds(1),
+                        "secret", 1024, 0, 0, 0, 0, null),
                 repository, events, planStore, runner);
 
         PptJob result = service.submitPlan(jobId, "secret", "{\"status\":\"confirmed\"}");
@@ -47,7 +48,8 @@ class PptTemplateFillServiceTests {
     void rejectsMissingOrWrongTokenBeforeReadingJob() {
         PptJobRepository repository = mock(PptJobRepository.class);
         PptTemplateFillService service = new PptTemplateFillService(
-                new PptMasterProperties(Path.of("repo"), Path.of("workspace"), "python3", Duration.ofSeconds(1), "secret", 1024),
+                new PptMasterProperties(Path.of("repo"), Path.of("workspace"), "python3", Duration.ofSeconds(1),
+                        "secret", 1024, 0, 0, 0, 0, null),
                 repository, mock(PptWorkflowEvents.class), mock(PptTemplateFillPlanStore.class), mock(PptTemplateFillAsyncRunner.class));
 
         assertThatThrownBy(() -> service.submitPlan(UUID.randomUUID(), "wrong", "{}"))
@@ -62,7 +64,8 @@ class PptTemplateFillServiceTests {
         PptJobRepository repository = mock(PptJobRepository.class);
         when(repository.findById(jobId)).thenReturn(Optional.of(job));
         PptTemplateFillService service = new PptTemplateFillService(
-                new PptMasterProperties(Path.of("repo"), Path.of("workspace"), "python3", Duration.ofSeconds(1), "secret", 1024),
+                new PptMasterProperties(Path.of("repo"), Path.of("workspace"), "python3", Duration.ofSeconds(1),
+                        "secret", 1024, 0, 0, 0, 0, null),
                 repository, mock(PptWorkflowEvents.class), mock(PptTemplateFillPlanStore.class), mock(PptTemplateFillAsyncRunner.class));
 
         assertThatThrownBy(() -> service.submitPlan(jobId, "secret", "{\"status\":\"confirmed\"}"))

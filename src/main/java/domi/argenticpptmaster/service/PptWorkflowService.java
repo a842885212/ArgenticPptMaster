@@ -82,6 +82,7 @@ public class PptWorkflowService {
     private final PptJobRepository repository;
     private final PptWorkflowEvents events;
     private final PptWorkflowAsyncRunner asyncRunner;
+    private final PptTemplateFillAsyncRunner templateFillAsyncRunner;
     private final PptOutlineStore outlineStore = new PptOutlineStore();
     private final PptArtifactRegistry artifactRegistry = new PptArtifactRegistry();
     private final Map<String, PptRevisionImpactPreview> revisionImpactPreviews = new ConcurrentHashMap<>();
@@ -91,11 +92,13 @@ public class PptWorkflowService {
             PptMasterProperties properties,
             PptJobRepository repository,
             PptWorkflowEvents events,
-            PptWorkflowAsyncRunner asyncRunner) {
+            PptWorkflowAsyncRunner asyncRunner,
+            PptTemplateFillAsyncRunner templateFillAsyncRunner) {
         this.properties = properties;
         this.repository = repository;
         this.events = events;
         this.asyncRunner = asyncRunner;
+        this.templateFillAsyncRunner = templateFillAsyncRunner;
     }
 
     /**
@@ -144,6 +147,9 @@ public class PptWorkflowService {
             throw new PptJobStateException(ex.getMessage());
         }
         validateTemplateContract(mode, command.templateFile());
+        if (mode == PptWorkflowMode.TEMPLATE_FILL) {
+            validateTemplateFillUploadSizes(command.templateFile(), files);
+        }
         Path jobWorkspace = properties.workspacePath().resolve("jobs").resolve(jobId.toString()).toAbsolutePath().normalize();
         PptJob job = new PptJob(jobId, normalizedProjectName, normalizedFormat, command.instruction(), mode, jobWorkspace);
         log.info("ppt_job_create_started: jobId={}, projectName={}, format={}, workflowMode={}, fileCount={}",
@@ -682,7 +688,12 @@ public class PptWorkflowService {
                         "checkpoint", checkpoint.name(),
                         "resumeCount", job.resumeCount(),
                         "previousFailureNode", previousFailureNode)));
-        asyncRunner.resumeFromCheckpoint(job.id(), checkpoint);
+        repository.save(job);
+        if (job.workflowMode() == PptWorkflowMode.TEMPLATE_FILL) {
+            templateFillAsyncRunner.resumeFromCheckpoint(job.id(), checkpoint);
+        } else {
+            asyncRunner.resumeFromCheckpoint(job.id(), checkpoint);
+        }
         return job;
     }
 
@@ -699,6 +710,9 @@ public class PptWorkflowService {
     private PptJobNode resolveEffectiveCheckpoint(PptJob job) {
         PptJobNode checkpoint = job.lastCompletedNode().orElseThrow(() ->
                 new PptJobResumeException(job.id(), "job has no completed node to resume from"));
+        if (job.workflowMode() == PptWorkflowMode.TEMPLATE_FILL) {
+            return checkpoint;
+        }
         if (checkpoint.ordinal() > PptJobNode.OUTLINE_CONFIRMED.ordinal()) {
             job.projectPath().ifPresent(path -> {
                 if (artifactRegistry.hasAnyStale(path)) {
@@ -707,6 +721,32 @@ public class PptWorkflowService {
             });
         }
         return checkpoint;
+    }
+
+    private void validateTemplateFillUploadSizes(MultipartFile templateFile, List<MultipartFile> files) {
+        long templateSize = templateFile.getSize();
+        if (templateSize > properties.templateFillTemplateMaxBytes()) {
+            throw new PptJobStateException(
+                    domi.argenticpptmaster.domain.TemplateFillErrorCode.TEMPLATE_FILL_UPLOAD_TOO_LARGE.code()
+                            + ": template file exceeds size limit");
+        }
+        long total = templateSize;
+        for (MultipartFile file : files) {
+            if (file == null || file.isEmpty()) {
+                continue;
+            }
+            if (file.getSize() > properties.templateFillContentMaxBytes()) {
+                throw new PptJobStateException(
+                        domi.argenticpptmaster.domain.TemplateFillErrorCode.TEMPLATE_FILL_UPLOAD_TOO_LARGE.code()
+                                + ": content file exceeds size limit");
+            }
+            total += file.getSize();
+        }
+        if (total > properties.templateFillTotalUploadMaxBytes()) {
+            throw new PptJobStateException(
+                    domi.argenticpptmaster.domain.TemplateFillErrorCode.TEMPLATE_FILL_UPLOAD_TOO_LARGE.code()
+                            + ": total upload exceeds size limit");
+        }
     }
 
     /**

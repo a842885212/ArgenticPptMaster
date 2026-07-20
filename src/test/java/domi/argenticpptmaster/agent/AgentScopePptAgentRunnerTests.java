@@ -1024,7 +1024,8 @@ class AgentScopePptAgentRunnerTests {
                 "python3",
                 java.time.Duration.ofMinutes(10),
                 null,
-                1_048_576L);
+                1_048_576L,
+                0, 0, 0, 0, null);
     }
 
     private static AgentScopeProperties agentScopeProperties() {

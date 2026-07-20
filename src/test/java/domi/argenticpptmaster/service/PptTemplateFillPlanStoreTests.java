@@ -47,7 +47,7 @@ class PptTemplateFillPlanStoreTests {
 
     private PptTemplateFillPlanStore store(long maxBytes) {
         return new PptTemplateFillPlanStore(new PptMasterProperties(
-                tempDir, tempDir, "python3", Duration.ofSeconds(1), "token", maxBytes));
+                tempDir, tempDir, "python3", Duration.ofSeconds(1), "token", maxBytes, 0, 0, 0, 0, null));
     }
 
     private PptJob job() {

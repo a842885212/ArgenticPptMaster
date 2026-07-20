@@ -107,6 +107,15 @@ public class PptJobController {
         return ResponseEntity.status(HttpStatus.ACCEPTED).body(PptJobResponse.from(job));
     }
 
+    /** 异步运行工作区准备与模板分析至 {@code TEMPLATE_ANALYZED}。 */
+    @PostMapping("/{jobId}/template-fill/prepare")
+    public ResponseEntity<PptJobResponse> prepareTemplateFill(
+            @PathVariable UUID jobId,
+            @RequestHeader(value = "X-Template-Fill-Debug-Token", required = false) String accessToken) {
+        PptJob job = templateFillService.prepareWorkspace(jobId, accessToken);
+        return ResponseEntity.status(HttpStatus.ACCEPTED).body(PptJobResponse.from(job));
+    }
+
     /**
      * 订阅指定任务的 Server-Sent Events (SSE) 事件流。
      * <p>

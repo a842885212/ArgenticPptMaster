@@ -808,6 +808,10 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                 case SPEAKER_NOTES_SPLIT -> hasSplitSpeakerNotes(files.get("notes"));
                 case SVG_FINALIZED -> hasAnyFile(files.get("svgFinal"));
                 case PPT_EXPORTED -> hasAnyFile(files.get("exports"));
+                case TEMPLATE_ANALYZED -> Files.isRegularFile(projectPath.resolve("analysis/template.slide_library.json"));
+                case FILL_PLAN_DRAFTED, FILL_PLAN_CONFIRMED -> Files.isRegularFile(projectPath.resolve("analysis/fill_plan.json"));
+                case FILL_PLAN_VALIDATED -> Files.isRegularFile(projectPath.resolve("analysis/check_report.json"));
+                case OUTPUT_VALIDATED -> hasAnyFile(files.get("exports"));
             };
         }
 

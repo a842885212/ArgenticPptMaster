@@ -45,11 +45,15 @@ public class PptMasterCommandExecutor {
      * @return 命令执行结果
      */
     public CommandResult runPythonScript(String scriptRelativePath, List<String> arguments) {
+        return runPythonScript(scriptRelativePath, arguments, properties.commandTimeout());
+    }
+
+    public CommandResult runPythonScript(String scriptRelativePath, List<String> arguments, Duration timeout) {
         List<String> command = new ArrayList<>();
         command.add(properties.pythonCommand());
         command.add(properties.repoPath().resolve(scriptRelativePath).toString());
         command.addAll(arguments);
-        return run(command, properties.repoPath(), properties.commandTimeout());
+        return run(command, properties.repoPath(), timeout);
     }
 
     /**

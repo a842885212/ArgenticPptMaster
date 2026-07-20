@@ -83,4 +83,14 @@ public class PptTemplateFillPlanStore {
             throw new PptJobStateException("failed to store fill plan");
         }
     }
+
+    /** 查找任务工作区内已保存的 confirmed 计划路径。 */
+    public java.util.Optional<Path> findConfirmedPlan(PptJob job) {
+        Path workspace = job.workspacePath().toAbsolutePath().normalize();
+        Path planPath = workspace.resolve("analysis/fill_plan.json").normalize();
+        if (planPath.startsWith(workspace) && Files.isRegularFile(planPath)) {
+            return java.util.Optional.of(planPath);
+        }
+        return java.util.Optional.empty();
+    }
 }

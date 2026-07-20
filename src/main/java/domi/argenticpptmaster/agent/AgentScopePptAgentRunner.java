@@ -3,6 +3,7 @@ package domi.argenticpptmaster.agent;
 import domi.argenticpptmaster.config.AgentScopeProperties;
 import domi.argenticpptmaster.config.PptMasterProperties;
 import domi.argenticpptmaster.domain.PptConfirmation;
+import domi.argenticpptmaster.domain.PptConfirmationAction;
 import domi.argenticpptmaster.domain.PptJob;
 import domi.argenticpptmaster.domain.PptJobEvent;
 import domi.argenticpptmaster.domain.PptJobEventType;
@@ -69,11 +70,13 @@ import org.springframework.stereotype.Component;
 public class AgentScopePptAgentRunner implements PptAgentRunner {
 
     private static final Logger log = LoggerFactory.getLogger(AgentScopePptAgentRunner.class);
+    private static final int MAX_AUTO_ACKNOWLEDGEMENT_ROUNDS = 3;
 
     private final PptMasterProperties properties;
     private final AgentScopeProperties agentScopeProperties;
     private final AgentScopeWorkflowAgentFactory workflowAgentFactory;
     private final PptWorkflowEvents events;
+    private final PptConfirmationStagePolicy confirmationStagePolicy = new PptConfirmationStagePolicy();
 
     public AgentScopePptAgentRunner(
             PptMasterProperties properties,
@@ -257,31 +260,61 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
     private void runAgent(PptJob job, List<Msg> input, RuntimeContext runtimeContext) {
         log.info("ppt_agent_runner_stream_begin: jobId={}, sessionId={}",
                 job.id(), runtimeContext.getSessionId());
-        AgentScopeWorkflowAgent workflowAgent = workflowAgentFactory.create(job);
-        AgentRunState runState = new AgentRunState();
-        workflowAgent.streamEvents(input, runtimeContext)
-                .doOnNext(event -> handleEvent(job, runState, event))
-                .blockLast();
+        List<Msg> currentInput = input;
+        int autoAcknowledgementRounds = 0;
+        while (true) {
+            AgentScopeWorkflowAgent workflowAgent = workflowAgentFactory.create(job);
+            AgentRunState runState = new AgentRunState();
+            workflowAgent.streamEvents(currentInput, runtimeContext)
+                    .doOnNext(event -> handleEvent(job, runState, event))
+                    .blockLast();
 
-        if (!runState.waitingForExternalExecution) {
-            recoverWaitingConfirmationFromPersistedState(job, runState, runtimeContext.getSessionId());
+            if (!runState.waitingForExternalExecution) {
+                recoverWaitingConfirmationFromPersistedState(job, runState, runtimeContext.getSessionId());
+            }
+            log.info(
+                    "ppt_agent_runner_stream_end: jobId={}, waitingForExternalExecution={}, "
+                            + "autoAcknowledgedToolCalls={}, exportPathPresent={}, status={}",
+                    job.id(), runState.waitingForExternalExecution, runState.autoAcknowledgedResults.size(),
+                    job.exportPath().isPresent(), job.status());
+            if (runState.waitingForExternalExecution) {
+                log.info("ppt_agent_runner_waiting_confirmation: jobId={}, confirmationId={}",
+                        job.id(), job.currentConfirmationId().orElse("none"));
+                return;
+            }
+            if (!runState.autoAcknowledgedResults.isEmpty()) {
+                if (autoAcknowledgementRounds >= MAX_AUTO_ACKNOWLEDGEMENT_ROUNDS) {
+                    throw new IllegalStateException(
+                            "agent repeated already approved confirmation stages more than "
+                                    + MAX_AUTO_ACKNOWLEDGEMENT_ROUNDS + " times");
+                }
+                autoAcknowledgementRounds++;
+                for (AutoAcknowledgedStage acknowledged : runState.autoAcknowledgedStages.values()) {
+                    events.record(job, PptJobEvent.of(
+                            PptJobEventType.AGENT_MESSAGE,
+                            "confirmation stage already approved: " + acknowledged.stage(),
+                            Map.of(
+                                    "kind", "confirmation_auto_acknowledged",
+                                    "stage", acknowledged.stage(),
+                                    "toolCallId", acknowledged.toolCallId(),
+                                    "node", acknowledged.node())));
+                }
+                currentInput = List.of(new ToolResultMessage(
+                        List.copyOf(runState.autoAcknowledgedResults.values())));
+                log.info("ppt_agent_runner_auto_acknowledgement_resume: jobId={}, round={}, sessionId={}",
+                        job.id(), autoAcknowledgementRounds, runtimeContext.getSessionId());
+                continue;
+            }
+            if (job.exportPath().isPresent()) {
+                log.info("ppt_agent_runner_export_ready: jobId={}, fileName={}",
+                        job.id(), job.exportPath().get().getFileName());
+                return;
+            }
+            int finalTextLength = runState.finalResultText == null ? 0 : runState.finalResultText.length();
+            log.warn("ppt_agent_runner_no_artifact: jobId={}, finalTextLength={}, status={}",
+                    job.id(), finalTextLength, job.status());
+            throw new IllegalStateException("agent finished without export artifact");
         }
-        log.info("ppt_agent_runner_stream_end: jobId={}, waitingForExternalExecution={}, exportPathPresent={}, status={}",
-                job.id(), runState.waitingForExternalExecution, job.exportPath().isPresent(), job.status());
-        if (runState.waitingForExternalExecution) {
-            log.info("ppt_agent_runner_waiting_confirmation: jobId={}, confirmationId={}",
-                    job.id(), job.currentConfirmationId().orElse("none"));
-            return;
-        }
-        if (job.exportPath().isPresent()) {
-            log.info("ppt_agent_runner_export_ready: jobId={}, fileName={}",
-                    job.id(), job.exportPath().get().getFileName());
-            return;
-        }
-        int finalTextLength = runState.finalResultText == null ? 0 : runState.finalResultText.length();
-        log.warn("ppt_agent_runner_no_artifact: jobId={}, finalTextLength={}, status={}",
-                job.id(), finalTextLength, job.status());
-        throw new IllegalStateException("agent finished without export artifact");
     }
 
     /**
@@ -357,6 +390,7 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
                     job.id(), externalExecutionEvent.getReplyId(), externalExecutionEvent.getToolCalls().size());
             runState.waitingForExternalExecution = markWaitingForConfirmation(
                     job,
+                    runState,
                     externalExecutionEvent.getReplyId(),
                     externalExecutionEvent.getToolCalls());
             return;
@@ -373,6 +407,7 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
                 if (!suspendedToolCalls.isEmpty()) {
                     runState.waitingForExternalExecution = markWaitingForConfirmation(
                             job,
+                            runState,
                             resultEvent.getResult().getId(),
                             suspendedToolCalls);
                     return;
@@ -408,7 +443,8 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
         }
         loadPersistedPendingToolCalls(job, sessionId).ifPresent(toolCalls -> {
             if (!toolCalls.isEmpty()) {
-                runState.waitingForExternalExecution = markWaitingForConfirmation(job, sessionId, toolCalls);
+                runState.waitingForExternalExecution = markWaitingForConfirmation(
+                        job, runState, sessionId, toolCalls);
             }
         });
     }
@@ -503,20 +539,26 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
      * @param replyId   当前回复 ID
      * @param toolCalls 挂起的工具调用列表
      */
-    private boolean markWaitingForConfirmation(PptJob job, String replyId, List<ToolUseBlock> toolCalls) {
+    private boolean markWaitingForConfirmation(
+            PptJob job, AgentRunState runState, String replyId, List<ToolUseBlock> toolCalls) {
         if (job.exportPath().isPresent()) {
             log.warn("ppt_agent_runner_ignore_waiting_confirmation_after_export: jobId={}, status={}, toolCallCount={}",
                     job.id(), job.status(), toolCalls.size());
             return false;
         }
-        log.info("ppt_agent_runner_waiting_confirmation_marked: jobId={}, toolCallCount={}",
-                job.id(), toolCalls.size());
-        String confirmationId = UUID.randomUUID().toString();
+        List<ToolUseBlock> newToolCalls = toolCalls.stream()
+                .filter(toolCall -> !runState.processedToolCallIds.contains(toolCall.getId()))
+                .toList();
+        if (newToolCalls.isEmpty()) {
+            return runState.waitingForExternalExecution;
+        }
+        log.info("ppt_agent_runner_confirmation_stage_evaluating: jobId={}, toolCallCount={}",
+                job.id(), newToolCalls.size());
         Map<String, Object> payload = new LinkedHashMap<>();
         String stage = "agentscope_external_execution";
         String message = "Agent 需要人工确认当前 PPT 执行方案后继续";
-        if (!toolCalls.isEmpty()) {
-            ToolUseBlock firstCall = toolCalls.get(0);
+        if (!newToolCalls.isEmpty()) {
+            ToolUseBlock firstCall = newToolCalls.get(0);
             payload.put("recommended", firstCall.getInput());
             payload.put("toolName", firstCall.getName());
             Map<String, Object> input = extractStringKeyMap(firstCall.getInput());
@@ -537,7 +579,8 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
                 payload.put("choices", choices);
             }
             Object contextData = input.get("contextData");
-            if (!hasApprovedOutline(job) && !"outline_confirmation".equals(stage)
+            if (!hasApprovedOutline(job)
+                    && !"outline_confirmation".equals(stage)
                     && !"plan_confirmation".equals(stage)) {
                 throw new IllegalStateException(
                         "the first request_plan_confirmation must use stage=outline_confirmation with a structured outline");
@@ -558,14 +601,15 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
                     }
                     normalizedContext.put("version", version);
                     normalizedContext.put("locked", false);
-                    PptOutline outline = PptOutline.fromPayload(version, contextMap.get("slides"));
+                        PptOutline outline = PptOutline.fromPayload(version, contextMap.get("slides"));
                     job.projectPath().ifPresent(path -> {
                         PptOutlineStore outlineStore = new PptOutlineStore();
                         Path outlinePath = outlineStore.path(path);
                         PptOutline effectiveOutline = outline;
                         if (Files.isRegularFile(outlinePath)) {
                             PptOutline existing = outlineStore.read(path);
-                            if (existing.locked() || version < existing.version()) {
+                            if (version < existing.version()
+                                    || (existing.locked() && version > existing.version())) {
                                 throw new IllegalStateException("outline version is stale or already locked");
                             }
                             if (version == existing.version()) {
@@ -577,6 +621,7 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
                         }
                         PptOutline finalOutline = effectiveOutline;
                         normalizedContext.put("version", finalOutline.version());
+                        normalizedContext.put("locked", finalOutline.locked());
                         normalizedContext.put("slides", finalOutline.slides().stream().map(slide -> {
                             Map<String, Object> value = new LinkedHashMap<>();
                             value.put("slideNo", slide.slideNo());
@@ -608,15 +653,50 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
         payload.put("stage", stage);
         payload.put("message", message);
         payload.put("replyId", replyId);
-        payload.put("toolCalls", toolCalls.stream()
+        payload.put("toolCalls", newToolCalls.stream()
                 .map(this::toToolCallPayload)
                 .toList());
         payload.put("agent", Map.of(
                 "framework", "AgentScope Java",
                 "mode", "streamEvents + Human-in-the-Loop"));
+        Map<String, Object> context = payload.get("contextData") instanceof Map<?, ?> map
+                ? extractStringKeyMap(map)
+                : Map.of();
+        PptConfirmationStagePolicy.Decision decision = confirmationStagePolicy.evaluate(job, stage, context);
+        if (decision.disposition() == PptConfirmationStagePolicy.Disposition.REJECT) {
+            throw new IllegalStateException(decision.reason());
+        }
+        for (ToolUseBlock toolCall : newToolCalls.subList(1, newToolCalls.size())) {
+            ConfirmationStageRequest request = confirmationStageRequest(toolCall);
+            PptConfirmationStagePolicy.Decision toolCallDecision = confirmationStagePolicy.evaluate(
+                    job, request.stage(), request.contextData());
+            if (!stage.equals(request.stage())
+                    || decision.disposition() != toolCallDecision.disposition()
+                    || decision.confirmedNode() != toolCallDecision.confirmedNode()) {
+                throw new IllegalStateException(
+                        "mixed confirmation stages or dispositions in one external execution event are not supported");
+            }
+            if (toolCallDecision.disposition() == PptConfirmationStagePolicy.Disposition.REJECT) {
+                throw new IllegalStateException(toolCallDecision.reason());
+            }
+        }
+        runState.processedToolCallIds.addAll(newToolCalls.stream().map(ToolUseBlock::getId).toList());
+        if (decision.disposition() == PptConfirmationStagePolicy.Disposition.AUTO_ACKNOWLEDGE) {
+            for (ToolUseBlock toolCall : newToolCalls) {
+                runState.autoAcknowledgedResults.putIfAbsent(
+                        toolCall.getId(), buildAlreadyApprovedToolResult(toolCall, stage));
+                runState.autoAcknowledgedStages.putIfAbsent(
+                        toolCall.getId(), new AutoAcknowledgedStage(
+                                stage,
+                                toolCall.getId(),
+                                decision.confirmedNode() == null ? "none" : decision.confirmedNode().name()));
+            }
+            return false;
+        }
         if ("outline_confirmation".equals(stage)) {
             job.waitNodeConfirmation(PptJobNode.OUTLINE_DRAFTED);
         }
+        String confirmationId = UUID.randomUUID().toString();
         job.requireConfirmation(confirmationId, payload);
         events.record(job, PptJobEvent.of(
                 PptJobEventType.CONFIRMATION_REQUIRED,
@@ -625,8 +705,18 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
                         "confirmationId", confirmationId,
                         "confirmationPayload", payload,
                         "replyId", replyId,
-                        "toolCallCount", toolCalls.size())));
+                        "toolCallCount", newToolCalls.size())));
         return true;
+    }
+
+    private ConfirmationStageRequest confirmationStageRequest(ToolUseBlock toolCall) {
+        Map<String, Object> input = extractStringKeyMap(toolCall.getInput());
+        String stage = input.get("stage") instanceof String value && !value.isBlank()
+                ? value : "agentscope_external_execution";
+        Map<String, Object> contextData = input.get("contextData") instanceof Map<?, ?> map
+                ? extractStringKeyMap(map)
+                : Map.of();
+        return new ConfirmationStageRequest(stage, contextData);
     }
 
     private boolean hasApprovedOutline(PptJob job) {
@@ -684,14 +774,14 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
      * @param input 工具输入 Map
      * @return 仅包含 String 键的 Map
      */
-    private Map<String, Object> extractStringKeyMap(Map<String, Object> input) {
+    private Map<String, Object> extractStringKeyMap(Map<?, ?> input) {
         if (input == null) {
             return Map.of();
         }
         Map<String, Object> result = new LinkedHashMap<>();
-        for (Map.Entry<String, Object> entry : input.entrySet()) {
-            if (entry.getKey() != null) {
-                result.put(entry.getKey(), entry.getValue());
+        for (Map.Entry<?, ?> entry : input.entrySet()) {
+            if (entry.getKey() instanceof String key) {
+                result.put(key, entry.getValue());
             }
         }
         return result;
@@ -783,6 +873,20 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
                 .build();
     }
 
+    /** 构造已完成确认阶段的幂等成功结果，使 Agent 在原会话中继续执行。 */
+    private ToolResultBlock buildAlreadyApprovedToolResult(ToolUseBlock toolCall, String stage) {
+        String output = "confirmation_status=ALREADY_APPROVED\n"
+                + "confirmation_stage=" + stage + "\n"
+                + "The confirmation stage is already approved. Continue with the downstream workflow.\n"
+                + "original_input=" + toolCall.getInput();
+        return ToolResultBlock.builder()
+                .id(toolCall.getId())
+                .name(toolCall.getName())
+                .output(List.of(TextBlock.builder().text(output).build()))
+                .state(ToolResultState.SUCCESS)
+                .build();
+    }
+
     /**
      * 构建确认输出文本。
      * <p>
@@ -802,6 +906,24 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
         Object stage = input.get("stage");
         if (stage instanceof String stageStr && !stageStr.isBlank()) {
             builder.append("confirmation_stage=").append(stageStr).append('\n');
+            boolean approved = confirmation.action() == PptConfirmationAction.APPROVE
+                    || (confirmation.action() == null && confirmation.approved());
+            if (approved) {
+                if ("outline_confirmation".equals(stageStr)) {
+                    builder.append("outline_status=LOCKED\n")
+                            .append("The outline approval is persisted. Do not request outline_confirmation again; "
+                                    + "continue with the downstream workflow.\n");
+                } else if ("image_manifest_confirmation".equals(stageStr)) {
+                    builder.append("image_manifest_status=APPROVED\n")
+                            .append("The image manifest approval is persisted. Do not request "
+                                    + "image_manifest_confirmation again; call generate_project_images for Pending items, "
+                                    + "then inspect_image_manifest_status.\n");
+                } else if ("image_ready_continue_confirmation".equals(stageStr)) {
+                    builder.append("image_ready_continue_status=APPROVED\n")
+                            .append("The image-ready continuation approval is persisted. Do not request "
+                                    + "image_ready_continue_confirmation again; continue with notes, SVG, finalize, and export.\n");
+                }
+            }
         }
         Object title = input.get("title");
         if (title instanceof String titleStr && !titleStr.isBlank()) {
@@ -1016,5 +1138,14 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
     private static final class AgentRunState {
         private boolean waitingForExternalExecution;
         private String finalResultText;
+        private final Set<String> processedToolCallIds = new java.util.LinkedHashSet<>();
+        private final Map<String, ToolResultBlock> autoAcknowledgedResults = new LinkedHashMap<>();
+        private final Map<String, AutoAcknowledgedStage> autoAcknowledgedStages = new LinkedHashMap<>();
+    }
+
+    private record ConfirmationStageRequest(String stage, Map<String, Object> contextData) {
+    }
+
+    private record AutoAcknowledgedStage(String stage, String toolCallId, String node) {
     }
 }

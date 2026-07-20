@@ -41,4 +41,16 @@ class PptOutlineStoreTests {
         assertThat(Files.readString(store.historyPath(tempDir, 1))).contains("旧标题");
         assertThat(Files.readString(store.historyPath(tempDir, 2))).contains("新标题");
     }
+
+    @Test
+    void replacesMalformedExistingOutline() throws Exception {
+        PptOutlineStore store = new PptOutlineStore();
+        Files.writeString(store.path(tempDir), "{\"version\":");
+        PptOutline outline = new PptOutline(1, false,
+                List.of(new SlideOutline(1, "市场背景", "增长窗口", List.of("趋势"), "增长曲线", null)));
+
+        store.write(tempDir, outline);
+
+        assertThat(store.read(tempDir)).isEqualTo(outline);
+    }
 }

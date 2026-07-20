@@ -83,6 +83,61 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
                 .hasMessageContaining("not allowed");
     }
 
+    @Test
+    void writeProjectTextFileRejectsInvalidOutlineBeforePersistingIt() throws IOException {
+        TestContext context = createContext();
+        String invalidOutline = """
+                {"version": 1, "locked": false, "slides": [{
+                  "slideNo": 1, "title": "封面", "keyMessage": "欢迎", "visualSuggestion": "插图"
+                }]}
+                """;
+
+        assertThatThrownBy(() -> context.tools.writeProjectTextFile(
+                "outline.json", invalidOutline, context.runtime))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("outline.json is invalid");
+        assertThat(Files.exists(context.projectPath.resolve("outline.json"))).isFalse();
+    }
+
+    @Test
+    void writeProjectTextFileReplacesInvalidUnlockedOutlineDuringRecovery() throws IOException {
+        TestContext context = createContext();
+        Files.writeString(context.projectPath.resolve("outline.json"), "{\"slides\": [{\"slideNo\": 1}]}" );
+        String validOutline = """
+                {"version": 1, "locked": false, "slides": [{
+                  "slideNo": 1, "title": "封面", "keyMessage": "欢迎",
+                  "bullets": ["说明"], "visualSuggestion": "插图"
+                }]}
+                """;
+
+        context.tools.writeProjectTextFile("outline.json", validOutline, context.runtime);
+
+        assertThat(new PptOutlineStore().read(context.projectPath).slides())
+                .extracting(slide -> slide.title())
+                .containsExactly("封面");
+    }
+
+    @Test
+    void writeProjectTextFilePreservesExplicitlyLockedInvalidOutline() throws IOException {
+        TestContext context = createContext();
+        String lockedInvalidOutline = """
+                {"version": 1, "locked": true, "slides": [{"slideNo": 1}]}
+                """;
+        Files.writeString(context.projectPath.resolve("outline.json"), lockedInvalidOutline);
+        String validOutline = """
+                {"version": 1, "locked": false, "slides": [{
+                  "slideNo": 1, "title": "封面", "keyMessage": "欢迎",
+                  "bullets": ["说明"], "visualSuggestion": "插图"
+                }]}
+                """;
+
+        assertThatThrownBy(() -> context.tools.writeProjectTextFile(
+                "outline.json", validOutline, context.runtime))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("locked outline cannot be overwritten");
+        assertThat(Files.readString(context.projectPath.resolve("outline.json"))).isEqualTo(lockedInvalidOutline);
+    }
+
     /** 验证图片清单只能由锁定大纲派生工具写入，不能通过通用写入工具伪造。 */
     @Test
     void writeProjectTextFileRejectsImagePromptsManifest() throws IOException {
@@ -271,6 +326,11 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
         assertThat(prompt).contains("image_ready_continue_confirmation");
         assertThat(prompt).contains("image_manifest_confirmation");
         assertThat(prompt).contains("derive_image_manifest_from_locked_outline");
+        assertThat(prompt).contains("首次调用 request_plan_confirmation 只能使用 stage=outline_confirmation");
+        assertThat(prompt).contains("不得以任何图片阶段作为首次确认");
+        assertThat(prompt).contains("bullets 必须是至少包含一条非空字符串的数组");
+        assertThat(prompt).contains("outline.json 示例：{\"version\":1");
+        assertThat(prompt).contains("contextData 示例：{\"type\":\"ppt_outline\"");
         assertThat(prompt).contains("绝不要直接结束任务");
         assertThat(prompt).contains("不要输出 FINAL 总结");
         assertThat(prompt).contains("只有用户确认继续后，才进入步骤 9");

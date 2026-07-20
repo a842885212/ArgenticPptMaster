@@ -61,8 +61,10 @@ public final class PptOutlineStore {
             outline.validate();
             try {
             Files.createDirectories(projectPath);
-            PptOutline previous = Files.isRegularFile(path(projectPath))
-                    ? objectMapper.readValue(path(projectPath).toFile(), PptOutline.class) : null;
+            PptOutline previous = readValidExistingOutline(projectPath);
+            if (previous != null) {
+                previous.validate();
+            }
             PptOutlineVersionDiff diff = previous == null || previous.version() == outline.version()
                     ? null : PptOutlineVersionDiff.between(previous, outline);
             PptOutlineVersionSnapshot snapshot = new PptOutlineVersionSnapshot(
@@ -77,6 +79,19 @@ public final class PptOutlineStore {
             } catch (IOException ex) {
                 throw new IllegalStateException("failed to persist outline.json", ex);
             }
+        }
+    }
+
+    private PptOutline readValidExistingOutline(Path projectPath) {
+        if (!Files.isRegularFile(path(projectPath))) {
+            return null;
+        }
+        try {
+            PptOutline outline = objectMapper.readValue(path(projectPath).toFile(), PptOutline.class);
+            outline.validate();
+            return outline;
+        } catch (IOException | IllegalArgumentException ex) {
+            return null;
         }
     }
 

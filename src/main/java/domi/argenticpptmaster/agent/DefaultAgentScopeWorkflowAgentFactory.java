@@ -1,5 +1,6 @@
 package domi.argenticpptmaster.agent;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import domi.argenticpptmaster.config.AgentScopeProperties;
 import domi.argenticpptmaster.config.PptMasterProperties;
 import domi.argenticpptmaster.domain.PptJob;
@@ -8,6 +9,7 @@ import domi.argenticpptmaster.domain.PptJobEventType;
 import domi.argenticpptmaster.domain.PptJobNode;
 import domi.argenticpptmaster.domain.PptJobNodeStatus;
 import domi.argenticpptmaster.domain.PptNodeExecution;
+import domi.argenticpptmaster.domain.PptOutline;
 import domi.argenticpptmaster.domain.PptWorkflowMode;
 import domi.argenticpptmaster.infra.PptMasterCommandExecutor;
 import domi.argenticpptmaster.service.PptWorkflowEvents;
@@ -482,6 +484,10 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                 - 可用工具：describe_job, init_ppt_project, import_job_sources, inspect_project_info, validate_project, list_project_files, collect_source_markdown, read_project_text_file, write_project_text_file, split_speaker_notes, validate_svg_output, finalize_project_svg, export_project_pptx, derive_image_manifest_from_locked_outline, generate_project_images, inspect_image_manifest_status, inspect_checkpoint_status, request_plan_confirmation。
                 - 允许写入的路径：design_spec.md、spec_lock.md、notes/*、svg_output/*、analysis/*、images/*。
                 - 人工确认统一通过 request_plan_confirmation；只有该工具能暂停工作流等待用户回复。
+                - 首次调用 request_plan_confirmation 只能使用 stage=outline_confirmation，且 contextData 必须是完整的 {type:"ppt_outline", version, locked:false, slides:[...]}；不得以任何图片阶段作为首次确认。
+                - 逐页大纲的每页必须使用英文键名 slideNo、title、keyMessage、bullets、visualSuggestion；bullets 必须是至少包含一条非空字符串的数组。调用确认工具前逐页自检，禁止使用“核心信息”“要点”等中文键名替代。
+                - outline.json 与 contextData 必须表达同一份完整结构化大纲，但 outline.json 不包含 type。outline.json 示例：{"version":1,"locked":false,"slides":[{"slideNo":1,"title":"封面标题","keyMessage":"本页核心信息","bullets":["一条非空要点"],"visualSuggestion":"视觉方案","imageRequirement":null}]}；contextData 示例：{"type":"ppt_outline","version":1,"locked":false,"slides":[{"slideNo":1,"title":"封面标题","keyMessage":"本页核心信息","bullets":["一条非空要点"],"visualSuggestion":"视觉方案","imageRequirement":null}]}。
+                - 只有 outline_confirmation 获 APPROVE 且大纲已锁定后，才可请求图片清单确认。
                 - 不要假设本地文件内容；所有文件状态通过 list_project_files / read_project_text_file / inspect_image_manifest_status / inspect_checkpoint_status 确认。
                 - 不要走 template_fill_pptx 或 pptx 模板路线；当前服务只支持 markdown-first 路线。
                 """;
@@ -547,6 +553,8 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
      * </ul>
      */
     final class PptAgentTools {
+
+        private final ObjectMapper objectMapper = new ObjectMapper();
 
         /**
          * 描述当前 PPT 任务元数据和上传的源文件。
@@ -942,14 +950,8 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
             Path target = resolveWritableProjectFile(runtime, relativePath);
             Path projectPath = runtime.job().projectPath().orElseThrow();
             String normalized = projectPath.relativize(target).toString().replace('\\', '/');
-            if (normalized.equals("outline.json") && Files.isRegularFile(target)) {
-                try {
-                    if (new PptOutlineStore().read(projectPath).locked()) {
-                        throw new IllegalStateException("locked outline cannot be overwritten");
-                    }
-                } catch (IllegalStateException ex) {
-                    throw new IllegalStateException("outline.json cannot be overwritten after lock", ex);
-                }
+            if (normalized.equals("outline.json")) {
+                return writeOutline(content, projectPath, normalized, runtime);
             }
             if ((normalized.equals("design_spec.md") || normalized.equals("spec_lock.md"))
                     && Files.isRegularFile(new PptOutlineStore().path(projectPath))) {
@@ -976,6 +978,49 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                     "relativePath", normalized,
                     "charCount", content.length(),
                     "bytes", content.getBytes(StandardCharsets.UTF_8).length);
+        }
+
+        private Map<String, Object> writeOutline(
+                String content, Path projectPath, String normalized, PptAgentToolRuntime runtime) {
+            PptOutline outline;
+            try {
+                outline = objectMapper.readValue(content, PptOutline.class);
+                outline.validate();
+            } catch (IOException | RuntimeException ex) {
+                throw new IllegalStateException("outline.json is invalid", ex);
+            }
+            PptOutlineStore outlineStore = new PptOutlineStore();
+            if (Files.isRegularFile(outlineStore.path(projectPath))) {
+                try {
+                    if (outlineStore.read(projectPath).locked()) {
+                        throw new IllegalStateException("locked outline cannot be overwritten");
+                    }
+                } catch (IllegalStateException ex) {
+                    if ("locked outline cannot be overwritten".equals(ex.getMessage())) {
+                        throw ex;
+                    }
+                    if (isExplicitlyLockedOutlineDraft(projectPath)) {
+                        throw new IllegalStateException("locked outline cannot be overwritten", ex);
+                    }
+                    log.warn("ppt_agent_replace_invalid_outline_draft: projectPath={}", projectPath);
+                }
+            }
+            outlineStore.write(projectPath, outline);
+            advanceNodeForWrittenFile(runtime, normalized);
+            return Map.of(
+                    "relativePath", normalized,
+                    "charCount", content.length(),
+                    "bytes", content.getBytes(StandardCharsets.UTF_8).length);
+        }
+
+        private boolean isExplicitlyLockedOutlineDraft(Path projectPath) {
+            try {
+                return objectMapper.readTree(Files.readString(projectPath.resolve("outline.json"), StandardCharsets.UTF_8))
+                        .path("locked")
+                        .asBoolean(false);
+            } catch (IOException ex) {
+                return false;
+            }
         }
 
         /**
@@ -1562,12 +1607,12 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
      *   <li>sourceFindings — 源文件分析结果</li>
      *   <li>pendingSteps — 待执行步骤（必填）</li>
      *   <li>risks — 风险评估</li>
-     *   <li>stage — 确认阶段标识（可选），例如 {@code outline_confirmation}、{@code plan_confirmation}、
+     *   <li>stage — 确认阶段标识（必填），例如 {@code outline_confirmation}、{@code plan_confirmation}、
      *       {@code image_manifest_confirmation}、{@code image_retry_decision}、{@code image_ready_continue_confirmation}</li>
      *   <li>title — 展示给用户的标题（可选）</li>
      *   <li>message — 展示给用户的核心说明（可选）</li>
      *   <li>choices — 建议操作列表（可选），每个条目包含 {@code label} 与 {@code value}</li>
-     *   <li>contextData — 结构化上下文（可选），例如失败图片列表、lastError 摘要等</li>
+     *   <li>contextData — 结构化上下文（必填），例如逐页大纲、图片清单、失败图片列表或 lastError 摘要</li>
      * </ul>
      */
     static final class UserPlanApprovalTool extends ToolBase {
@@ -1576,6 +1621,8 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
             super(ToolBase.builder()
                     .name(APPROVAL_TOOL_NAME)
                     .description("Request operator confirmation for the proposed PPT execution plan. "
+                            + "The first confirmation in every job MUST use stage=outline_confirmation with "
+                            + "contextData.type=ppt_outline and complete structured slides; do not request any image stage first. "
                             + "For image-enhanced workflows, this tool confirms the image manifest before generation "
                             + "and pauses after image generation failures so the operator can choose to retry failed images or continue.")
                     .inputSchema(Map.of(
@@ -1585,7 +1632,9 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                                     "sourceFindings", Map.of("type", "string"),
                                     "pendingSteps", Map.of("type", "string"),
                                     "risks", Map.of("type", "string"),
-                                    "stage", Map.of("type", "string"),
+                                    "stage", Map.of("type", "string",
+                                            "description", "Required stage. First call must be outline_confirmation; "
+                                                    + "image stages are only valid after a locked outline approval."),
                                     "title", Map.of("type", "string"),
                                     "message", Map.of("type", "string"),
                                     "choices", Map.of(
@@ -1599,7 +1648,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                                     "contextData", Map.of(
                                             "type", "object",
                                             "description", "For outline_confirmation use {type: ppt_outline, version, locked:false, slides: [{slideNo, title, keyMessage, bullets, visualSuggestion, imageRequirement}]}; for image_manifest_confirmation use {type: ppt_image_manifest, outlineVersion, items}.")),
-                            "required", List.of("planSummary", "pendingSteps")))
+                            "required", List.of("planSummary", "pendingSteps", "stage", "contextData")))
                     .readOnly(false)
                     .concurrencySafe(true)
                     .externalTool(true));

@@ -3,17 +3,24 @@ package domi.argenticpptmaster.agent;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import domi.argenticpptmaster.config.AgentScopeProperties;
 import domi.argenticpptmaster.config.PptMasterProperties;
 import domi.argenticpptmaster.domain.PptConfirmation;
 import domi.argenticpptmaster.domain.PptConfirmationAction;
+import domi.argenticpptmaster.domain.PptOutline;
 import domi.argenticpptmaster.domain.PptSlideEdit;
 import domi.argenticpptmaster.domain.PptJob;
+import domi.argenticpptmaster.domain.PptJobEventType;
 import domi.argenticpptmaster.domain.PptJobNode;
 import domi.argenticpptmaster.domain.PptJobStatus;
 import domi.argenticpptmaster.domain.PptSourceFile;
 import domi.argenticpptmaster.domain.PptWorkflowMode;
+import domi.argenticpptmaster.domain.SlideOutline;
+import domi.argenticpptmaster.service.PptImageManifestStore;
 import domi.argenticpptmaster.service.PptJobEventPublisher;
+import domi.argenticpptmaster.service.PptOutlineStore;
 import domi.argenticpptmaster.service.PptWorkflowEvents;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
@@ -38,6 +45,7 @@ import java.util.Map;
 import java.util.Queue;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import reactor.core.publisher.Flux;
 
 /**
@@ -48,6 +56,9 @@ import reactor.core.publisher.Flux;
  * 的形式传递给 Agent 继续执行。
  */
 class AgentScopePptAgentRunnerTests {
+
+    @TempDir
+    Path tempDir;
 
     /**
      * 验证启动 Agent 后，当 Agent 发出 RequireExternalExecutionEvent 事件时，
@@ -186,6 +197,49 @@ class AgentScopePptAgentRunnerTests {
         assertThat(job.confirmationPayload()).containsEntry("replyId", suspendedMessage.getId());
     }
 
+    @Test
+    void deduplicatesSameApprovedToolCallAcrossExternalAndSuspendedEvents() {
+        PptJob job = sampleJob();
+        Path projectPath = tempDir.resolve(job.id().toString());
+        job.prepareProject(projectPath);
+        new PptOutlineStore().write(projectPath, new PptOutline(1, true, List.of(new SlideOutline(
+                1, "封面", "结论", List.of("要点"), "插图", null))));
+        job.confirmNode(PptJobNode.OUTLINE_CONFIRMED);
+        ToolUseBlock duplicateCall = new ToolUseBlock(
+                "call-duplicate",
+                "request_plan_confirmation",
+                outlineConfirmationInput("重复大纲", "等待确认"));
+        Msg suspendedMessage = AssistantMessage.builder()
+                .name("test-agent")
+                .content(List.of(duplicateCall, ToolResultBlock.suspended(duplicateCall)))
+                .generateReason(GenerateReason.TOOL_SUSPENDED)
+                .build();
+        RecordingAgentFactory factory = new RecordingAgentFactory();
+        factory.enqueue((messages, runtimeContext) -> Flux.just(
+                new AgentStartEvent("reply-1", runtimeContext.getSessionId(), "test-agent"),
+                new RequireExternalExecutionEvent("reply-1", List.of(duplicateCall)),
+                new AgentResultEvent(suspendedMessage)));
+        factory.enqueue((messages, runtimeContext) -> Flux.concat(
+                Flux.just(new AgentStartEvent("reply-2", runtimeContext.getSessionId(), "test-agent")),
+                Flux.defer(() -> {
+                    job.complete(Path.of("var/ppt-master/exports/deduplicated.pptx"));
+                    return Flux.just(new AgentResultEvent(new AssistantMessage("completed")));
+                })));
+        AgentScopePptAgentRunner runner = new AgentScopePptAgentRunner(
+                pptMasterProperties(), agentScopeProperties(), factory,
+                new PptWorkflowEvents(new PptJobEventPublisher()));
+
+        runner.start(job);
+
+        List<ToolResultBlock> results = factory.messages().get(1).get(0)
+                .getContentBlocks(ToolResultBlock.class);
+        assertThat(results).singleElement().extracting(ToolResultBlock::getId).isEqualTo("call-duplicate");
+        assertThat(job.events()).filteredOn(event ->
+                        "confirmation_auto_acknowledged".equals(event.data().get("kind")))
+                .hasSize(1);
+        assertThat(job.events()).filteredOn(event -> event.type() == PptJobEventType.CONFIRMATION_REQUIRED).isEmpty();
+    }
+
     /**
      * 验证当事件流未显式返回挂起信号，但 AgentScope 持久化状态中仍有 pending tool call 时，
      * 运行器能够从 agent_state.json 恢复等待确认状态。
@@ -249,6 +303,56 @@ class AgentScopePptAgentRunnerTests {
         assertThat(job.currentConfirmationId()).isPresent();
         assertThat(job.confirmationPayload()).containsEntry("toolName", "request_plan_confirmation");
         assertThat(job.confirmationPayload()).containsEntry("replyId", job.id().toString());
+    }
+
+    @Test
+    void autoAcknowledgesApprovedPersistedPendingToolCallAndContinues() throws Exception {
+        RecordingAgentFactory factory = new RecordingAgentFactory();
+        factory.enqueue((messages, runtimeContext) -> Flux.just(
+                new AgentStartEvent("reply-1", runtimeContext.getSessionId(), "test-agent"),
+                new AgentResultEvent(new AssistantMessage("pending confirmation persisted"))));
+        PptJob job = sampleJob();
+        Path projectPath = tempDir.resolve(job.id().toString());
+        job.prepareProject(projectPath);
+        new PptOutlineStore().write(projectPath, new PptOutline(1, true, List.of(new SlideOutline(
+                1, "封面", "结论", List.of("要点"), "插图", null))));
+        job.confirmNode(PptJobNode.OUTLINE_CONFIRMED);
+        factory.enqueue((messages, runtimeContext) -> Flux.concat(
+                Flux.just(new AgentStartEvent("reply-2", runtimeContext.getSessionId(), "test-agent")),
+                Flux.defer(() -> {
+                    job.complete(Path.of("var/ppt-master/exports/persisted.pptx"));
+                    return Flux.just(new AgentResultEvent(new AssistantMessage("completed")));
+                })));
+
+        Path sessionStorePath = tempDir.resolve("agent-state-" + job.id());
+        AgentScopeProperties properties = new AgentScopeProperties(
+                "openai", "dummy-model", null, null, 8, sessionStorePath,
+                "ppt-master-service", null, null, null);
+        ToolUseBlock pendingCall = new ToolUseBlock(
+                "call-persisted-approved",
+                "request_plan_confirmation",
+                outlineConfirmationInput("persisted outline", "confirm outline"));
+        AgentState persistedState = AgentState.builder()
+                .sessionId(job.id().toString())
+                .userId("ppt-master-service")
+                .context(List.of(AssistantMessage.builder()
+                        .name("test-agent")
+                        .content(List.of(pendingCall))
+                        .build()))
+                .build();
+        new JsonFileAgentStateStore(sessionStorePath)
+                .save("ppt-master-service", job.id().toString(), "agent_state", persistedState);
+        AgentScopePptAgentRunner runner = new AgentScopePptAgentRunner(
+                pptMasterProperties(), properties, factory,
+                new PptWorkflowEvents(new PptJobEventPublisher()));
+
+        runner.start(job);
+
+        assertThat(job.status()).isEqualTo(PptJobStatus.COMPLETED);
+        assertThat(job.currentConfirmationId()).isEmpty();
+        ToolResultBlock result = factory.messages().get(1).get(0).getContentBlocks(ToolResultBlock.class).get(0);
+        assertThat(result.getId()).isEqualTo("call-persisted-approved");
+        assertThat(((TextBlock) result.getOutput().get(0)).getText()).contains("ALREADY_APPROVED");
     }
 
     /**
@@ -359,7 +463,6 @@ class AgentScopePptAgentRunnerTests {
                 factory,
                 new PptWorkflowEvents(new PptJobEventPublisher()));
         PptJob job = newImageEnhancedJob();
-        job.confirmNode(PptJobNode.OUTLINE_CONFIRMED);
 
         runner.start(job);
 
@@ -374,7 +477,7 @@ class AgentScopePptAgentRunnerTests {
      * 验证图片失败重试确认场景下，confirmationPayload 能正确保存阶段信息。
      */
     @Test
-    void imageRetryConfirmationStageIsPreservedInPayload() {
+    void imageRetryConfirmationStageIsPreservedInPayload() throws Exception {
         RecordingAgentFactory factory = new RecordingAgentFactory();
         factory.enqueue((messages, runtimeContext) -> Flux.just(
                 new AgentStartEvent("reply-1", runtimeContext.getSessionId(), "test-agent"),
@@ -399,7 +502,8 @@ class AgentScopePptAgentRunnerTests {
                 factory,
                 new PptWorkflowEvents(new PptJobEventPublisher()));
         PptJob job = newImageEnhancedJob();
-        job.confirmNode(PptJobNode.OUTLINE_CONFIRMED);
+        prepareImageWorkflow(job, "Failed");
+        job.confirmNode(PptJobNode.IMAGE_MANIFEST_CONFIRMED);
 
         runner.start(job);
 
@@ -430,7 +534,7 @@ class AgentScopePptAgentRunnerTests {
                                 "call-1",
                                 "request_plan_confirmation",
                                 Map.of(
-                                        "stage", "plan_confirmation",
+                                        "stage", "outline_confirmation",
                                         "planSummary", "逐页大纲",
                                         "pendingSteps", "等待大纲确认",
                                         "contextData", outline))))));
@@ -444,8 +548,13 @@ class AgentScopePptAgentRunnerTests {
 
         runner.start(job);
 
-        assertThat(job.confirmationPayload()).containsEntry("stage", "plan_confirmation");
-        assertThat(job.confirmationPayload()).containsEntry("contextData", outline);
+        assertThat(job.confirmationPayload()).containsEntry("stage", "outline_confirmation");
+        assertThat(job.confirmationPayload().get("contextData"))
+                .isInstanceOf(Map.class)
+                .asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.map(String.class, Object.class))
+                .containsEntry("type", "ppt_outline")
+                .containsEntry("version", 1)
+                .containsEntry("locked", false);
     }
 
     @Test
@@ -474,8 +583,263 @@ class AgentScopePptAgentRunnerTests {
     }
 
     @Test
-    void planConfirmationWithoutStructuredOutlineIsRejectedBeforeWaitingForUser() {
+    void autoAcknowledgesRepeatedLockedOutlineAndContinuesWithoutNewConfirmation() {
         RecordingAgentFactory factory = new RecordingAgentFactory();
+        Map<String, Object> confirmationInput = outlineConfirmationInput("首次大纲", "等待确认");
+        factory.enqueue((messages, runtimeContext) -> Flux.just(
+                new AgentStartEvent("reply-1", runtimeContext.getSessionId(), "test-agent"),
+                new RequireExternalExecutionEvent("reply-1", List.of(new ToolUseBlock(
+                        "call-1", "request_plan_confirmation", confirmationInput)))));
+        AgentScopePptAgentRunner runner = new AgentScopePptAgentRunner(
+                pptMasterProperties(), agentScopeProperties(), factory,
+                new PptWorkflowEvents(new PptJobEventPublisher()));
+        PptJob job = sampleJob();
+
+        runner.start(job);
+        PptOutlineStore outlineStore = new PptOutlineStore();
+        PptOutline lockedOutline = outlineStore.read(job.projectPath().orElseThrow()).lock();
+        outlineStore.write(job.projectPath().orElseThrow(), lockedOutline);
+        job.confirmNode(PptJobNode.OUTLINE_CONFIRMED);
+        String originalConfirmationId = job.currentConfirmationId().orElseThrow();
+        PptConfirmation confirmation = new PptConfirmation(
+                originalConfirmationId, true, Map.of(), null, Instant.now(), PptConfirmationAction.APPROVE,
+                null, List.of(), 1, List.of());
+        job.receiveConfirmation(confirmation);
+        factory.enqueue((messages, runtimeContext) -> Flux.just(
+                new AgentStartEvent("reply-2", runtimeContext.getSessionId(), "test-agent"),
+                new RequireExternalExecutionEvent("reply-2", List.of(new ToolUseBlock(
+                        "call-2", "request_plan_confirmation", confirmationInput)))));
+        factory.enqueue((messages, runtimeContext) -> Flux.concat(
+                Flux.just(new AgentStartEvent("reply-3", runtimeContext.getSessionId(), "test-agent")),
+                Flux.defer(() -> {
+                    job.complete(Path.of("var/ppt-master/exports/demo.pptx"));
+                    return Flux.just(new AgentResultEvent(new AssistantMessage("completed")));
+                })));
+
+        runner.resume(job, confirmation);
+
+        assertThat(job.status()).isEqualTo(PptJobStatus.COMPLETED);
+        assertThat(job.currentConfirmationId()).isEmpty();
+        assertThat(job.nodeExecution(PptJobNode.OUTLINE_CONFIRMED).status().name()).isEqualTo("COMPLETED");
+        assertThat(factory.messages()).hasSize(3);
+        ToolResultBlock autoResult = factory.messages().get(2).get(0).getContentBlocks(ToolResultBlock.class).get(0);
+        assertThat(autoResult.getId()).isEqualTo("call-2");
+        assertThat(((TextBlock) autoResult.getOutput().get(0)).getText())
+                .contains("confirmation_status=ALREADY_APPROVED");
+        assertThat(job.events()).filteredOn(event -> "confirmation_auto_acknowledged".equals(event.data().get("kind")))
+                .hasSize(1);
+    }
+
+    @Test
+    void autoAcknowledgesRepeatedImageManifestAndContinuesInSameSession() {
+        PptJob job = newImageEnhancedJob();
+        prepareImageWorkflow(job, "Pending");
+        job.confirmNode(PptJobNode.IMAGE_MANIFEST_CONFIRMED);
+        RecordingAgentFactory factory = new RecordingAgentFactory();
+        Map<String, Object> input = Map.of(
+                "stage", "image_manifest_confirmation",
+                "contextData", Map.of(
+                        "type", "ppt_image_manifest",
+                        "outlineVersion", 1,
+                        "items", List.of()));
+        factory.enqueue((messages, runtimeContext) -> Flux.just(
+                new AgentStartEvent("reply-1", runtimeContext.getSessionId(), "test-agent"),
+                new RequireExternalExecutionEvent("reply-1", List.of(new ToolUseBlock(
+                        "image-call-1", "request_plan_confirmation", input)))));
+        factory.enqueue((messages, runtimeContext) -> Flux.concat(
+                Flux.just(new AgentStartEvent("reply-2", runtimeContext.getSessionId(), "test-agent")),
+                Flux.defer(() -> {
+                    job.complete(Path.of("var/ppt-master/exports/images.pptx"));
+                    return Flux.just(new AgentResultEvent(new AssistantMessage("completed")));
+                })));
+        AgentScopePptAgentRunner runner = new AgentScopePptAgentRunner(
+                pptMasterProperties(), agentScopeProperties(), factory,
+                new PptWorkflowEvents(new PptJobEventPublisher()));
+
+        runner.start(job);
+
+        assertThat(job.status()).isEqualTo(PptJobStatus.COMPLETED);
+        assertThat(job.currentConfirmationId()).isEmpty();
+        assertThat(job.events()).filteredOn(event -> event.type() == PptJobEventType.CONFIRMATION_REQUIRED).isEmpty();
+        assertThat(factory.contexts()).extracting(RuntimeContext::getSessionId).containsOnly(job.id().toString());
+        ToolResultBlock result = factory.messages().get(1).get(0).getContentBlocks(ToolResultBlock.class).get(0);
+        assertThat(result.getId()).isEqualTo("image-call-1");
+        assertThat(((TextBlock) result.getOutput().get(0)).getText()).contains("ALREADY_APPROVED");
+    }
+
+    @Test
+    void rejectsMoreThanThreeConsecutiveAutomaticConfirmationShortcuts() {
+        PptJob job = sampleJob();
+        Path projectPath = tempDir.resolve(job.id().toString());
+        job.prepareProject(projectPath);
+        new PptOutlineStore().write(projectPath, new PptOutline(1, true, List.of(new SlideOutline(
+                1, "封面", "结论", List.of("要点"), "插图", null))));
+        job.confirmNode(PptJobNode.OUTLINE_CONFIRMED);
+        RecordingAgentFactory factory = new RecordingAgentFactory();
+        for (int index = 1; index <= 4; index++) {
+            int callIndex = index;
+            factory.enqueue((messages, runtimeContext) -> Flux.just(
+                    new AgentStartEvent("reply-" + callIndex, runtimeContext.getSessionId(), "test-agent"),
+                    new RequireExternalExecutionEvent("reply-" + callIndex, List.of(new ToolUseBlock(
+                            "call-" + callIndex,
+                            "request_plan_confirmation",
+                            outlineConfirmationInput("重复大纲", "等待确认"))))));
+        }
+        AgentScopePptAgentRunner runner = new AgentScopePptAgentRunner(
+                pptMasterProperties(), agentScopeProperties(), factory,
+                new PptWorkflowEvents(new PptJobEventPublisher()));
+
+        assertThatThrownBy(() -> runner.start(job))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("more than 3 times");
+        assertThat(factory.messages()).hasSize(4);
+        assertThat(job.currentConfirmationId()).isEmpty();
+        assertThat(job.events()).filteredOn(event -> event.type() == PptJobEventType.CONFIRMATION_REQUIRED).isEmpty();
+        assertThat(job.events()).filteredOn(event ->
+                        "confirmation_auto_acknowledged".equals(event.data().get("kind")))
+                .hasSize(3);
+    }
+
+    @Test
+    void rejectsMixedBatchInsteadOfAutoAcknowledgingEveryToolCallFromFirstStage() throws Exception {
+        PptJob job = newImageEnhancedJob();
+        prepareImageWorkflow(job, "Failed");
+        job.confirmNode(PptJobNode.IMAGE_MANIFEST_CONFIRMED);
+        RecordingAgentFactory factory = new RecordingAgentFactory();
+        factory.enqueue((messages, runtimeContext) -> Flux.just(
+                new AgentStartEvent("reply-mixed", runtimeContext.getSessionId(), "test-agent"),
+                new RequireExternalExecutionEvent("reply-mixed", List.of(
+                        new ToolUseBlock(
+                                "call-outline", "request_plan_confirmation",
+                                outlineConfirmationInput("重复大纲", "等待确认")),
+                        new ToolUseBlock(
+                                "call-retry", "request_plan_confirmation",
+                                Map.of(
+                                        "stage", "image_retry_decision",
+                                        "contextData", Map.of("outlineVersion", 1)))))));
+        AgentScopePptAgentRunner runner = new AgentScopePptAgentRunner(
+                pptMasterProperties(), agentScopeProperties(), factory,
+                new PptWorkflowEvents(new PptJobEventPublisher()));
+
+        assertThatThrownBy(() -> runner.start(job))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("mixed confirmation stages");
+        assertThat(job.currentConfirmationId()).isEmpty();
+        assertThat(job.events()).filteredOn(event -> event.type() == PptJobEventType.CONFIRMATION_REQUIRED).isEmpty();
+    }
+
+    @Test
+    void approvedOutlineConfirmationTellsAgentToContinueWithoutAnotherOutlineRequest() {
+        RecordingAgentFactory factory = new RecordingAgentFactory();
+        factory.enqueue((messages, runtimeContext) -> Flux.just(
+                new AgentStartEvent("reply-1", runtimeContext.getSessionId(), "test-agent"),
+                new RequireExternalExecutionEvent("reply-1", List.of(new ToolUseBlock(
+                        "call-1", "request_plan_confirmation", outlineConfirmationInput("逐页大纲", "等待确认"))))));
+        factory.enqueue((messages, runtimeContext) -> Flux.just(
+                new AgentStartEvent("reply-2", runtimeContext.getSessionId(), "test-agent"),
+                new RequireExternalExecutionEvent("reply-2", List.of(new ToolUseBlock(
+                        "call-2", "request_plan_confirmation", outlineConfirmationInput("图片清单", "等待确认"))))));
+        AgentScopePptAgentRunner runner = new AgentScopePptAgentRunner(
+                pptMasterProperties(), agentScopeProperties(), factory,
+                new PptWorkflowEvents(new PptJobEventPublisher()));
+        PptJob job = sampleJob();
+        runner.start(job);
+        PptConfirmation confirmation = new PptConfirmation(
+                job.currentConfirmationId().orElseThrow(), true, Map.of(), null, Instant.now(), PptConfirmationAction.APPROVE,
+                null, List.of(), 1, List.of());
+        job.receiveConfirmation(confirmation);
+        runner.resume(job, confirmation);
+
+        Msg resumeMessage = factory.messages().get(1).get(0);
+        String output = ((TextBlock) resumeMessage.getContentBlocks(ToolResultBlock.class).get(0).getOutput().get(0)).getText();
+        assertThat(output)
+                .contains("outline_status=LOCKED")
+                .contains("Do not request outline_confirmation again");
+    }
+
+    @Test
+    void approvedImageManifestConfirmationTellsAgentToGenerateImagesWithoutRepeatingTheConfirmation() {
+        RecordingAgentFactory factory = new RecordingAgentFactory();
+        Map<String, Object> imageManifestConfirmation = Map.of(
+                "stage", "image_manifest_confirmation",
+                "planSummary", "图片清单已生成",
+                "pendingSteps", "等待图片清单确认",
+                "contextData", Map.of("type", "ppt_image_manifest", "outlineVersion", 1, "items", List.of()));
+        factory.enqueue((messages, runtimeContext) -> Flux.just(
+                new AgentStartEvent("reply-1", runtimeContext.getSessionId(), "test-agent"),
+                new RequireExternalExecutionEvent("reply-1", List.of(new ToolUseBlock(
+                        "call-1", "request_plan_confirmation", imageManifestConfirmation)))));
+        factory.enqueue((messages, runtimeContext) -> Flux.just(
+                new AgentStartEvent("reply-2", runtimeContext.getSessionId(), "test-agent"),
+                new AgentResultEvent(new AssistantMessage("continue image generation"))));
+        AgentScopePptAgentRunner runner = new AgentScopePptAgentRunner(
+                pptMasterProperties(), agentScopeProperties(), factory,
+                new PptWorkflowEvents(new PptJobEventPublisher()));
+        PptJob job = newImageEnhancedJob();
+        prepareImageWorkflow(job, "Pending");
+
+        runner.start(job);
+        PptConfirmation confirmation = new PptConfirmation(
+                job.currentConfirmationId().orElseThrow(), true, Map.of(), null, Instant.now(),
+                PptConfirmationAction.APPROVE, null, List.of(), null, List.of());
+        job.confirmNode(PptJobNode.IMAGE_MANIFEST_CONFIRMED);
+        job.receiveConfirmation(confirmation);
+        assertThatThrownBy(() -> runner.resume(job, confirmation))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("without export artifact");
+
+        Msg resumeMessage = factory.messages().get(1).get(0);
+        String output = ((TextBlock) resumeMessage.getContentBlocks(ToolResultBlock.class).get(0).getOutput().get(0)).getText();
+        assertThat(output)
+                .contains("image_manifest_status=APPROVED")
+                .contains("Do not request image_manifest_confirmation again")
+                .contains("generate_project_images");
+    }
+
+    @Test
+    void rejectedLegacyOutlineConfirmationDoesNotTellAgentItIsLocked() {
+        RecordingAgentFactory factory = new RecordingAgentFactory();
+        factory.enqueue((messages, runtimeContext) -> Flux.just(
+                new AgentStartEvent("reply-1", runtimeContext.getSessionId(), "test-agent"),
+                new RequireExternalExecutionEvent("reply-1", List.of(new ToolUseBlock(
+                        "call-1", "request_plan_confirmation", outlineConfirmationInput("逐页大纲", "等待确认"))))));
+        factory.enqueue((messages, runtimeContext) -> Flux.just(
+                new AgentStartEvent("reply-2", runtimeContext.getSessionId(), "test-agent"),
+                new RequireExternalExecutionEvent("reply-2", List.of(new ToolUseBlock(
+                        "call-2", "request_plan_confirmation", outlineConfirmationInput("修订大纲", "等待确认"))))));
+        AgentScopePptAgentRunner runner = new AgentScopePptAgentRunner(
+                pptMasterProperties(), agentScopeProperties(), factory,
+                new PptWorkflowEvents(new PptJobEventPublisher()));
+        PptJob job = sampleJob();
+        runner.start(job);
+        PptConfirmation confirmation = new PptConfirmation(
+                job.currentConfirmationId().orElseThrow(), false, Map.of(), null, Instant.now());
+        job.receiveConfirmation(confirmation);
+
+        runner.resume(job, confirmation);
+
+        Msg resumeMessage = factory.messages().get(1).get(0);
+        String output = ((TextBlock) resumeMessage.getContentBlocks(ToolResultBlock.class).get(0).getOutput().get(0)).getText();
+        assertThat(output)
+                .doesNotContain("outline_status=LOCKED")
+                .doesNotContain("Do not request outline_confirmation again");
+    }
+
+    @Test
+    void firstLegacyPlanConfirmationWaitsWithStructuredOutline() {
+        RecordingAgentFactory factory = new RecordingAgentFactory();
+        Map<String, Object> planConfirmationInput = Map.of(
+                "stage", "plan_confirmation",
+                "planSummary", "仅有整体计划",
+                "pendingSteps", "等待确认",
+                "contextData", Map.of(
+                        "type", "ppt_outline",
+                        "slides", List.of(Map.of(
+                                "slideNo", 1,
+                                "title", "测试页面",
+                                "keyMessage", "测试关键信息",
+                                "bullets", List.of("测试要点"),
+                                "visualSuggestion", "测试视觉方案"))));
         factory.enqueue((messages, runtimeContext) -> Flux.just(
                 new AgentStartEvent("reply-1", runtimeContext.getSessionId(), "test-agent"),
                 new RequireExternalExecutionEvent(
@@ -483,10 +847,7 @@ class AgentScopePptAgentRunnerTests {
                         List.of(new ToolUseBlock(
                                 "call-1",
                                 "request_plan_confirmation",
-                                Map.of(
-                                        "stage", "plan_confirmation",
-                                        "planSummary", "仅有整体计划",
-                                        "pendingSteps", "等待确认"))))));
+                                planConfirmationInput)))));
 
         AgentScopePptAgentRunner runner = new AgentScopePptAgentRunner(
                 pptMasterProperties(),
@@ -495,14 +856,53 @@ class AgentScopePptAgentRunnerTests {
                 new PptWorkflowEvents(new PptJobEventPublisher()));
         PptJob job = sampleJob();
 
-        assertThatThrownBy(() -> runner.start(job))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("ppt_outline");
-        assertThat(job.status()).isNotEqualTo(PptJobStatus.WAITING_CONFIRMATION);
+        runner.start(job);
+
+        assertThat(job.status()).isEqualTo(PptJobStatus.WAITING_CONFIRMATION);
+        assertThat(job.confirmationPayload()).containsEntry("stage", "plan_confirmation");
+        assertThat(job.currentConfirmationId()).isPresent();
     }
 
     @Test
-    void firstConfirmationWithMissingOrUnknownStageIsRejectedBeforeWaitingForUser() {
+    void autoAcknowledgesRepeatedCompletedLegacyPlanConfirmation() {
+        PptJob job = sampleJob();
+        job.confirmNode(PptJobNode.PLAN_CONFIRMED);
+        RecordingAgentFactory factory = new RecordingAgentFactory();
+        Map<String, Object> planInput = Map.of(
+                "stage", "plan_confirmation",
+                "contextData", Map.of(
+                        "type", "ppt_outline",
+                        "slides", List.of(Map.of(
+                                "slideNo", 1,
+                                "title", "历史计划",
+                                "keyMessage", "继续执行",
+                                "bullets", List.of("已批准"),
+                                "visualSuggestion", "流程图"))));
+        factory.enqueue((messages, runtimeContext) -> Flux.just(
+                new AgentStartEvent("reply-plan-1", runtimeContext.getSessionId(), "test-agent"),
+                new RequireExternalExecutionEvent("reply-plan-1", List.of(new ToolUseBlock(
+                        "call-plan-1", "request_plan_confirmation", planInput)))));
+        factory.enqueue((messages, runtimeContext) -> Flux.concat(
+                Flux.just(new AgentStartEvent("reply-plan-2", runtimeContext.getSessionId(), "test-agent")),
+                Flux.defer(() -> {
+                    job.complete(Path.of("var/ppt-master/exports/legacy-plan.pptx"));
+                    return Flux.just(new AgentResultEvent(new AssistantMessage("completed")));
+                })));
+        AgentScopePptAgentRunner runner = new AgentScopePptAgentRunner(
+                pptMasterProperties(), agentScopeProperties(), factory,
+                new PptWorkflowEvents(new PptJobEventPublisher()));
+
+        runner.start(job);
+
+        assertThat(job.status()).isEqualTo(PptJobStatus.COMPLETED);
+        assertThat(job.currentConfirmationId()).isEmpty();
+        ToolResultBlock result = factory.messages().get(1).get(0).getContentBlocks(ToolResultBlock.class).get(0);
+        assertThat(result.getId()).isEqualTo("call-plan-1");
+        assertThat(((TextBlock) result.getOutput().get(0)).getText()).contains("ALREADY_APPROVED");
+    }
+
+    @Test
+    void firstConfirmationWithoutOutlineStageIsRejectedBeforeWaitingForUser() {
         List<Map<String, Object>> invalidInputs = List.of(
                 Map.of("planSummary", "仅有整体计划", "pendingSteps", "等待确认"),
                 Map.of(
@@ -516,7 +916,15 @@ class AgentScopePptAgentRunnerTests {
                                         "title", "测试页面",
                                         "keyMessage", "测试关键信息",
                                         "bullets", List.of("测试要点"),
-                                        "visualSuggestion", "测试视觉方案")))));
+                                        "visualSuggestion", "测试视觉方案")))),
+                Map.of(
+                        "stage", "image_manifest_confirmation",
+                        "planSummary", "图片清单",
+                        "pendingSteps", "等待图片确认",
+                        "contextData", Map.of(
+                                "type", "ppt_image_manifest",
+                                "outlineVersion", 1,
+                                "items", List.of())));
 
         for (Map<String, Object> input : invalidInputs) {
             RecordingAgentFactory factory = new RecordingAgentFactory();
@@ -544,7 +952,10 @@ class AgentScopePptAgentRunnerTests {
      * 便于 Agent 识别当前应进入重试还是继续后续步骤。
      */
     @Test
-    void imageStageResumeCarriesStageAndOperatorAction() {
+    void imageStageResumeCarriesStageAndOperatorAction() throws Exception {
+        PptJob job = newImageEnhancedJob();
+        prepareImageWorkflow(job, "Failed");
+        job.confirmNode(PptJobNode.IMAGE_MANIFEST_CONFIRMED);
         RecordingAgentFactory factory = new RecordingAgentFactory();
         factory.enqueue((messages, runtimeContext) -> Flux.just(
                 new AgentStartEvent("reply-1", runtimeContext.getSessionId(), "test-agent"),
@@ -559,28 +970,30 @@ class AgentScopePptAgentRunnerTests {
                                         "stage", "image_retry_decision",
                                         "title", "图片生成失败",
                                         "message", "部分图片生成失败，请选择是否重试"))))));
-        factory.enqueue((messages, runtimeContext) -> Flux.just(
-                new AgentStartEvent("reply-2", runtimeContext.getSessionId(), "test-agent"),
-                new RequireExternalExecutionEvent(
-                        "reply-2",
-                        List.of(new ToolUseBlock(
-                                "call-2",
-                                "request_plan_confirmation",
-                                Map.of(
-                                        "planSummary", "images ready",
-                                        "pendingSteps", "continue to svg generation",
-                                        "stage", "image_ready_continue_confirmation",
-                                        "title", "图片已就绪",
-                                        "message", "图片已全部生成，是否继续后续 PPT 制作"))))));
+        factory.enqueue((messages, runtimeContext) -> {
+            updateManifestStatus(job, "Generated");
+            job.completeNode(PptJobNode.IMAGES_GENERATED, Map.of());
+            return Flux.just(
+                    new AgentStartEvent("reply-2", runtimeContext.getSessionId(), "test-agent"),
+                    new RequireExternalExecutionEvent(
+                            "reply-2",
+                            List.of(new ToolUseBlock(
+                                    "call-2",
+                                    "request_plan_confirmation",
+                                    Map.of(
+                                            "planSummary", "images ready",
+                                            "pendingSteps", "continue to svg generation",
+                                            "stage", "image_ready_continue_confirmation",
+                                            "title", "图片已就绪",
+                                            "message", "图片已全部生成，是否继续后续 PPT 制作",
+                                            "contextData", Map.of("outlineVersion", 1))))));
+        });
 
         AgentScopePptAgentRunner runner = new AgentScopePptAgentRunner(
                 pptMasterProperties(),
                 agentScopeProperties(),
                 factory,
                 new PptWorkflowEvents(new PptJobEventPublisher()));
-        PptJob job = newImageEnhancedJob();
-
-        job.confirmNode(PptJobNode.OUTLINE_CONFIRMED);
         runner.start(job);
         PptConfirmation retryConfirmation = new PptConfirmation(
                 job.currentConfirmationId().orElseThrow(),
@@ -841,6 +1254,44 @@ class AgentScopePptAgentRunnerTests {
                 Path.of("var/ppt-master/jobs/demo"));
         job.addSource(new PptSourceFile("source.md", "text/markdown", 12L, Path.of("var/ppt-master/jobs/demo/uploads/source.md")));
         return job;
+    }
+
+    private void prepareImageWorkflow(PptJob job, String imageStatus) {
+        Path projectPath = tempDir.resolve(job.id().toString());
+        job.prepareProject(projectPath);
+        PptOutline outline = new PptOutline(1, true, List.of(new SlideOutline(
+                1,
+                "封面",
+                "结论",
+                List.of("要点"),
+                "插图",
+                Map.of("purpose", "封面", "prompt", "blue abstract background"))));
+        new PptOutlineStore().write(projectPath, outline);
+        new PptImageManifestStore().writeFromLockedOutline(projectPath);
+        if (!"Pending".equals(imageStatus)) {
+            updateManifestStatus(job, imageStatus);
+        }
+        job.confirmNode(PptJobNode.OUTLINE_CONFIRMED);
+        job.completeNode(PptJobNode.IMAGES_MANIFEST_WRITTEN, Map.of());
+    }
+
+    private void updateManifestStatus(PptJob job, String status) {
+        try {
+            Path projectPath = job.projectPath().orElseThrow();
+            PptImageManifestStore store = new PptImageManifestStore();
+            ObjectMapper objectMapper = new ObjectMapper();
+            Map<String, Object> manifest = objectMapper.readValue(
+                    store.path(projectPath).toFile(), new TypeReference<>() {});
+            @SuppressWarnings("unchecked")
+            Map<String, Object> item = (Map<String, Object>) ((List<?>) manifest.get("items")).get(0);
+            item.put("status", status);
+            if ("Failed".equals(status)) {
+                item.put("last_error", "generation failed");
+            }
+            objectMapper.writerWithDefaultPrettyPrinter().writeValue(store.path(projectPath).toFile(), manifest);
+        } catch (Exception ex) {
+            throw new IllegalStateException("failed to prepare image manifest test fixture", ex);
+        }
     }
 
     /**

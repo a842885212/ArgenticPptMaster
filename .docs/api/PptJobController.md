@@ -20,6 +20,7 @@ language: java
 | GET | `/api/ppt-jobs/{jobId}/events` | 订阅任务 SSE 事件 |
 | POST | `/api/ppt-jobs/{jobId}/confirm` | 提交当前 agent 确认结果 |
 | POST | `/api/ppt-jobs/{jobId}/resume` | 从上一个成功业务节点恢复失败的任务 |
+| POST | `/api/ppt-jobs/{jobId}/template-fill/execute` | 提交 confirmed 模板填充计划并异步执行 |
 | GET | `/api/ppt-jobs/{jobId}/download` | 下载已完成任务的 PPTX 产物 |
 
 ## 请求
@@ -33,6 +34,7 @@ language: java
 | 字段 | 必填 | 说明 |
 |---|---|---|
 | `files` | 是 | 一个或多个源文件，支持 `md`、`pdf`、`ppt/pptx`、`doc/docx`、`xls/xlsx/xlsm`、`csv/tsv`、`html` |
+| `templateFile` | 模板填充模式必填 | 原始 `.pptx` 模板；保存于任务 `uploads/template/`，内容源保存于 `uploads/content/` |
 | `projectName` | 否 | 项目名，默认 `ppt_project` |
 | `format` | 否 | ppt-master 画布格式，默认 `ppt169` |
 | `instruction` | 否 | 用户对 agent 的额外生成要求 |
@@ -62,6 +64,12 @@ language: java
 请求体为空。仅当任务状态为 `FAILED` 且存在至少一个成功完成的业务节点时允许恢复；
 超过最大恢复次数或任务正在等待确认时返回 `409 Conflict`。
 
+### 执行模板填充
+
+`POST /api/ppt-jobs/{jobId}/template-fill/execute`
+
+请求头 `X-Template-Fill-Debug-Token` 必须与服务端配置一致（默认关闭）；请求体为 JSON，顶层 `status` 必须为 `confirmed`。门禁通过后同步返回 `202 Accepted`，命令阶段在后台执行。
+
 ## 响应
 
 成功创建任务返回 `202 Accepted`，响应体为 `PptJobResponse`：
@@ -72,6 +80,8 @@ language: java
 | `status` | `ACCEPTED`、`PREPARING`、`WAITING_CONFIRMATION`、`RUNNING_AGENT`、`EXPORTING`、`COMPLETED`、`FAILED`、`CANCELLED` |
 | `workflowMode` | 工作流模式：`BASIC` 或 `IMAGE_ENHANCED` |
 | `sources` | 已落盘源文件 |
+| `template` | 模板文件元数据（不含服务器路径） |
+| `contentSources` | 模板填充模式下的内容源元数据 |
 | `currentConfirmationId` | 当前待确认 ID，只有 `WAITING_CONFIRMATION` 状态存在 |
 | `confirmationPayload` | agent 给前端展示的确认信息；`WAITING_CONFIRMATION` 时也会通过 SSE 事件 `CONFIRMATION_REQUIRED.data.confirmationPayload` 下发 |
 | `events` | 任务事件历史 |
@@ -86,7 +96,7 @@ language: java
 
 ## 业务流程
 
-1. 接收上传文件，校验扩展名并保存到 `ppt-master.workspace-path/jobs/{jobId}/uploads`。
+1. 接收上传文件，校验扩展名并保存到 `ppt-master.workspace-path/jobs/{jobId}/uploads`；模板填充模式隔离写入 `template/` 与 `content/`。
 2. 创建内存任务记录并异步启动 agent 编排。
 3. `AgentScopePptAgentRunner` 基于 AgentScope Java v2 `ReActAgent.streamEvents()` 驱动真实事件流，使用 `JsonFileAgentStateStore` 持久化会话状态：初始 attempt 按 `(serviceUserId, jobId)` 存储；checkpoint 恢复后会启用新的 attempt session，按 `(serviceUserId, jobId-attempt-N)` 存储，避免旧失败上下文污染新执行。
 4. agent 通过本地工具完成 `init_ppt_project`、`import_job_sources`、`collect_source_markdown`、`inspect_project_info`、`read_project_text_file` 等步骤，先走 markdown-first 路线分析资料并生成包含 `slideNo`、`title`、`keyMessage`、`bullets`、`visualSuggestion` 的逐页大纲；随后以 `stage=plan_confirmation`、`contextData.type=ppt_outline` 调用 `request_plan_confirmation`。
@@ -94,6 +104,7 @@ language: java
 6. 用户提交 `APPROVE` 后，服务把确认结果封装为 `ToolResultMessage` 回喂给同一 AgentScope session，agent 从中断点继续执行；在批准前不得写入设计规格、备注、SVG 或图片产物。若再次触发人工确认，会生成新的 `confirmationId`。
 7. agent 在确认后可写入 `design_spec.md`、`spec_lock.md`、`notes/total.md`、`svg_output/*.svg`，再执行 `validate_svg_output`、`split_speaker_notes`、`finalize_project_svg` 和 `export_project_pptx`；任务完成时设置产物并通过下载接口获取 PPTX。若 agent 正常结束但未产出导出物，任务会失败并保留最终总结信息。
 8. 任务失败后，可调用 `POST /api/ppt-jobs/{jobId}/resume`。服务会校验任务状态、恢复次数上限和可恢复节点，通过后启动一次新的 attempt session，并指示 agent 从 `lastCompletedNode` 继续执行；agent 首先通过 `inspect_checkpoint_status` 确认项目当前状态，再推进后续节点。
+9. 模板填充模式只接受 `confirmed` 计划，按 `init/import-sources -> analyze -> check-plan -> apply -> validate` 顺序调用固定脚本；上游项目导出的唯一 `.pptx` 经验证后复制到任务根 `exports/`，才设置完成产物并开放下载。
 
 补充说明：`request_plan_confirmation` 作为外部工具时，AgentScope 可能先发出一条 `tool_result`，其 `state=RUNNING`。这不是“用户已确认”，而是“工具已挂起并等待人工确认”；服务端会立即把任务切换到 `WAITING_CONFIRMATION`，阻止 agent 在未确认时继续执行。
 
@@ -106,6 +117,8 @@ language: java
 | `PptWorkflowService` | `resumeJob` | 校验恢复条件并触发 checkpoint 恢复 |
 | `PptJobEventPublisher` | `subscribe` | 建立 SSE 订阅 |
 | `PptAgentRunner` | `start` / `resume` / `resumeFromCheckpoint` | AgentScope 驱动适配层 |
+| `PptTemplateFillService` | `submitPlan` | 校验调试令牌、计划门禁及一次性启动 |
+| `PptTemplateFillCommandExecutor` | `execute` | 编排固定 ppt-master 脚本并收敛阶段事件 |
 
 ## 业务规则
 
@@ -121,6 +134,8 @@ language: java
 - 只有 `FAILED` 状态且存在 `lastCompletedNode` 时允许恢复；`WAITING_CONFIRMATION` 任务应使用 `/confirm` 而非 `/resume`。
 - 恢复次数存在上限（默认 5 次），超过上限后返回 `409 Conflict`。
 - 恢复成功后会启动新的 attempt session，agent 从中断点继续而不是重写已完成的节点。
+- 模板填充执行默认关闭，令牌不写入响应、日志或事件 payload；重复执行返回 `409 Conflict`。
+- 模板填充命令的路径必须位于当前任务工作区，参数以 argv 传递，不使用 shell、`--force` 或 SVG/Agent 流程。
 
 ## 设计决策
 
@@ -128,4 +143,4 @@ language: java
 - Controller 不直接依赖 AgentScope 类型，AgentScope 细节收敛在 `PptAgentRunner` 适配层，降低框架版本升级影响。
 - 首版保留 ppt-master Python 脚本为确定性工具，AgentScope 负责目标驱动、人机确认和长链路恢复。
 - 当前版本优先实现 markdown-first 路线：先把上传资料归一化到 `sources/*.md`，再由 agent 生成 `design_spec.md`、`spec_lock.md`、`notes/total.md` 和 `svg_output/*.svg`，最后走 `quality-check -> split -> finalize -> export`。
-- `pptx` 模板填充路线暂不接入主流程，后续单独编排，避免与 markdown 路线共享不一致的生成契约。
+- `pptx` 模板填充路线作为独立 `TEMPLATE_FILL` 模式编排，保持 markdown-first 主流程不变；阶段一仅支持人工 confirmed plan，兼容上游附加时间戳的导出文件名。

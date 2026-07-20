@@ -4,6 +4,8 @@ import domi.argenticpptmaster.exception.PptJobNotFoundException;
 import domi.argenticpptmaster.exception.PptJobResumeException;
 import domi.argenticpptmaster.exception.PptJobStateException;
 import domi.argenticpptmaster.exception.PptStorageException;
+import domi.argenticpptmaster.exception.PptTemplateFillAccessException;
+import domi.argenticpptmaster.exception.PptTemplateFillConflictException;
 import domi.argenticpptmaster.web.dto.ApiErrorResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -56,6 +58,18 @@ public class GlobalExceptionHandler {
     ResponseEntity<ApiErrorResponse> handleBadRequest(PptJobStateException ex) {
         return ResponseEntity.badRequest()
                 .body(ApiErrorResponse.of(400, "Bad Request", ex.getMessage()));
+    }
+
+    @ExceptionHandler(PptTemplateFillAccessException.class)
+    ResponseEntity<ApiErrorResponse> handleTemplateFillAccess(PptTemplateFillAccessException ex) {
+        return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                .body(ApiErrorResponse.of(403, "Forbidden", ex.getMessage()));
+    }
+
+    @ExceptionHandler(PptTemplateFillConflictException.class)
+    ResponseEntity<ApiErrorResponse> handleTemplateFillConflict(PptTemplateFillConflictException ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(ApiErrorResponse.of(409, "Conflict", ex.getMessage()));
     }
 
     /**

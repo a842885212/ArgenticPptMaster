@@ -27,6 +27,7 @@ import java.util.List;
 import java.util.Map;
 import domi.argenticpptmaster.web.dto.PptSlideEditRequest;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -36,6 +37,8 @@ import org.springframework.http.MediaType;
 import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Primary;
+import org.springframework.core.task.TaskExecutor;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import reactor.core.publisher.Flux;
@@ -51,6 +54,8 @@ class PptWorkflowServiceTests {
 
     @TempDir
     static Path tempDir;
+
+    private static ThreadPoolTaskExecutor workflowTestExecutor;
 
     @Autowired
     private PptWorkflowService workflowService;
@@ -89,6 +94,13 @@ class PptWorkflowServiceTests {
                 for name in ("svg_output", "svg_final", "images", "icons", "notes", "templates", "sources", "analysis", "exports"):
                     (project / name).mkdir(parents=True, exist_ok=True)
                 """);
+    }
+
+    @AfterAll
+    static void stopWorkflowTestExecutor() {
+        if (workflowTestExecutor != null) {
+            workflowTestExecutor.shutdown();
+        }
     }
 
     /**
@@ -139,6 +151,91 @@ class PptWorkflowServiceTests {
         assertThat(job.workflowMode()).isEqualTo(PptWorkflowMode.IMAGE_ENHANCED);
     }
 
+    @Test
+    void createsTemplateFillJobWithRoleIsolatedUploadsWithoutStartingAgent() {
+        MockMultipartFile template = new MockMultipartFile(
+                "templateFile", "brand.PPTX", MediaType.APPLICATION_OCTET_STREAM_VALUE, "pptx".getBytes());
+        MockMultipartFile source = new MockMultipartFile(
+                "files", "source.md", MediaType.TEXT_MARKDOWN_VALUE, "# Title".getBytes());
+
+        PptJob job = workflowService.createJob(new PptJobCreateCommand(
+                List.of(source), template, "demo", "ppt169", "fill", "template-fill"));
+
+        assertThat(job.workflowMode()).isEqualTo(PptWorkflowMode.TEMPLATE_FILL);
+        assertThat(job.status()).isEqualTo(PptJobStatus.ACCEPTED);
+        assertThat(job.template()).isPresent();
+        assertThat(job.template().orElseThrow().storedPath().getParent().getFileName().toString())
+                .isEqualTo("template");
+        assertThat(job.sourceFiles().get(0).storedPath().getParent().getFileName().toString())
+                .isEqualTo("content");
+    }
+
+    @Test
+    void rejectsTemplateFillWithoutValidTemplate() {
+        MockMultipartFile source = new MockMultipartFile(
+                "files", "source.md", MediaType.TEXT_MARKDOWN_VALUE, "# Title".getBytes());
+        MockMultipartFile invalidTemplate = new MockMultipartFile(
+                "templateFile", "brand.pdf", MediaType.APPLICATION_PDF_VALUE, "pdf".getBytes());
+
+        assertThatThrownBy(() -> workflowService.createJob(new PptJobCreateCommand(
+                List.of(source), invalidTemplate, "demo", "ppt169", null, "template-fill")))
+                .isInstanceOf(PptJobStateException.class)
+                .hasMessageContaining("template");
+    }
+
+    @Test
+    void rejectsTemplateFileForExistingWorkflow() {
+        MockMultipartFile template = new MockMultipartFile(
+                "templateFile", "brand.pptx", MediaType.APPLICATION_OCTET_STREAM_VALUE, "pptx".getBytes());
+        MockMultipartFile source = new MockMultipartFile(
+                "files", "source.md", MediaType.TEXT_MARKDOWN_VALUE, "# Title".getBytes());
+
+        assertThatThrownBy(() -> workflowService.createJob(new PptJobCreateCommand(
+                List.of(source), template, "demo", "ppt169", null, "basic")))
+                .isInstanceOf(PptJobStateException.class)
+                .hasMessageContaining("templateFile");
+    }
+
+    @Test
+    void rejectsUnknownWorkflowMode() {
+        MockMultipartFile source = new MockMultipartFile(
+                "files", "source.md", MediaType.TEXT_MARKDOWN_VALUE, "# Title".getBytes());
+
+        assertThatThrownBy(() -> workflowService.createJob(
+                List.of(source), "demo", "ppt169", null, "unknown-mode"))
+                .isInstanceOf(PptJobStateException.class)
+                .hasMessageContaining("unsupported workflow mode");
+    }
+
+    @Test
+    void keepsContentPptxInContentRole() {
+        MockMultipartFile template = new MockMultipartFile(
+                "templateFile", "brand.pptx", MediaType.APPLICATION_OCTET_STREAM_VALUE, "pptx".getBytes());
+        MockMultipartFile contentPptx = new MockMultipartFile(
+                "files", "reference.pptx", MediaType.APPLICATION_OCTET_STREAM_VALUE, "pptx".getBytes());
+
+        PptJob job = workflowService.createJob(new PptJobCreateCommand(
+                List.of(contentPptx), template, "demo", "ppt169", null, "template-fill"));
+
+        assertThat(job.sourceFiles()).singleElement().satisfies(source -> {
+            assertThat(source.originalName()).isEqualTo("reference.pptx");
+            assertThat(source.storedPath().getParent().getFileName().toString()).isEqualTo("content");
+        });
+    }
+
+    @Test
+    void rejectsTraversalInUploadName() {
+        MockMultipartFile template = new MockMultipartFile(
+                "templateFile", "brand.pptx", MediaType.APPLICATION_OCTET_STREAM_VALUE, "pptx".getBytes());
+        MockMultipartFile source = new MockMultipartFile(
+                "files", "../outside.md", MediaType.TEXT_MARKDOWN_VALUE, "# Title".getBytes());
+
+        assertThatThrownBy(() -> workflowService.createJob(new PptJobCreateCommand(
+                List.of(source), template, "demo", "ppt169", null, "template-fill")))
+                .isInstanceOf(PptJobStateException.class)
+                .hasMessageContaining("invalid file name");
+    }
+
     /**
      * 验证上传不支持的文件扩展名（如 .exe）时，
      * 服务抛出 {@link PptJobStateException} 异常并提示不支持的文件类型。
@@ -171,6 +268,19 @@ class PptWorkflowServiceTests {
         assertThatThrownBy(() -> workflowService.createJob(java.util.List.of(source), "demo", "../bad", null, null))
                 .isInstanceOf(PptJobStateException.class)
                 .hasMessage("unsupported canvas format: ../bad");
+    }
+
+    @Test
+    void rejectsCompletedExportOutsideJobWorkspace() {
+        PptJob job = new PptJob(
+                java.util.UUID.randomUUID(), "demo", "ppt169", null, PptWorkflowMode.TEMPLATE_FILL,
+                tempDir.resolve("jobs/export-guard"));
+        job.complete(tempDir.resolve("outside.pptx"));
+        repository.save(job);
+
+        assertThatThrownBy(() -> workflowService.exportPath(job.id()))
+                .isInstanceOf(PptJobStateException.class)
+                .hasMessageContaining("export path");
     }
 
     /**
@@ -328,6 +438,21 @@ class PptWorkflowServiceTests {
      */
     @TestConfiguration
     static class TestAgentConfig {
+
+        /** 为工作流提供可在测试结束前确定性关闭的执行器。 */
+        @Bean(name = "taskExecutor")
+        TaskExecutor taskExecutor() {
+            ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+            executor.setCorePoolSize(1);
+            executor.setMaxPoolSize(1);
+            executor.setQueueCapacity(32);
+            executor.setThreadNamePrefix("ppt-workflow-test-");
+            executor.setWaitForTasksToCompleteOnShutdown(true);
+            executor.setAwaitTerminationSeconds(5);
+            executor.initialize();
+            workflowTestExecutor = executor;
+            return executor;
+        }
 
         @Bean
         @Primary

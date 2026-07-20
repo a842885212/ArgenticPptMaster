@@ -6,6 +6,8 @@ import domi.argenticpptmaster.domain.PptJob;
 import domi.argenticpptmaster.domain.PptJobNode;
 import domi.argenticpptmaster.domain.PptJobNodeStatus;
 import domi.argenticpptmaster.domain.PptWorkflowMode;
+import domi.argenticpptmaster.domain.PptSourceFile;
+import domi.argenticpptmaster.domain.PptTemplateFile;
 import java.nio.file.Path;
 import java.util.Map;
 import java.util.UUID;
@@ -138,5 +140,23 @@ class PptJobResponseTests {
         assertThat(response.outlineSlideCount()).isEqualTo(1);
         assertThat(response.outlineDiff()).containsEntry("toVersion", 2);
         assertThat(response.impactPreview()).containsEntry("revisionImpactToken", "impact-token");
+    }
+
+    @Test
+    void exposesTemplateAndContentSourcesWithoutStoredPaths() {
+        PptJob job = new PptJob(
+                UUID.randomUUID(), "demo", "ppt169", "fill", PptWorkflowMode.TEMPLATE_FILL,
+                Path.of("/private/workspace/job"));
+        job.setTemplate(new PptTemplateFile("brand.pptx", "application/octet-stream", 20L,
+                Path.of("/private/workspace/job/uploads/template/0-brand.pptx")));
+        job.addSource(new PptSourceFile("source.pptx", "application/octet-stream", 10L,
+                Path.of("/private/workspace/job/uploads/content/0-source.pptx")));
+
+        PptJobResponse response = PptJobResponse.from(job);
+
+        assertThat(response.template().originalName()).isEqualTo("brand.pptx");
+        assertThat(response.contentSources()).singleElement()
+                .extracting(SourceFileResponse::originalName).isEqualTo("source.pptx");
+        assertThat(response.toString()).doesNotContain("/private/workspace");
     }
 }

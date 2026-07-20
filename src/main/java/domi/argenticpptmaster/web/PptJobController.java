@@ -1,6 +1,8 @@
 package domi.argenticpptmaster.web;
 
 import domi.argenticpptmaster.service.PptJobEventPublisher;
+import domi.argenticpptmaster.service.PptJobCreateCommand;
+import domi.argenticpptmaster.service.PptTemplateFillService;
 import domi.argenticpptmaster.service.PptWorkflowService;
 import domi.argenticpptmaster.domain.PptJob;
 import domi.argenticpptmaster.domain.PptRevisionImpactPreview;
@@ -21,6 +23,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RequestPart;
 import org.springframework.web.bind.annotation.RestController;
@@ -46,10 +49,15 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 public class PptJobController {
 
     private final PptWorkflowService workflowService;
+    private final PptTemplateFillService templateFillService;
     private final PptJobEventPublisher eventPublisher;
 
-    public PptJobController(PptWorkflowService workflowService, PptJobEventPublisher eventPublisher) {
+    public PptJobController(
+            PptWorkflowService workflowService,
+            PptTemplateFillService templateFillService,
+            PptJobEventPublisher eventPublisher) {
         this.workflowService = workflowService;
+        this.templateFillService = templateFillService;
         this.eventPublisher = eventPublisher;
     }
 
@@ -66,12 +74,14 @@ public class PptJobController {
     @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ResponseEntity<PptJobResponse> create(
             @RequestPart("files") List<MultipartFile> files,
+            @RequestPart(value = "templateFile", required = false) MultipartFile templateFile,
             @RequestParam(required = false) String projectName,
             @RequestParam(defaultValue = "ppt169") String format,
             @RequestParam(required = false) String instruction,
             @RequestParam(defaultValue = "basic") String workflowMode) {
         return ResponseEntity.status(HttpStatus.ACCEPTED)
-                .body(PptJobResponse.from(workflowService.createJob(files, projectName, format, instruction, workflowMode)));
+                .body(PptJobResponse.from(workflowService.createJob(new PptJobCreateCommand(
+                        files, templateFile, projectName, format, instruction, workflowMode))));
     }
 
     /**
@@ -83,6 +93,18 @@ public class PptJobController {
     @GetMapping("/{jobId}")
     public PptJobResponse get(@PathVariable UUID jobId) {
         return PptJobResponse.from(workflowService.getJob(jobId));
+    }
+
+    /**
+     * 提交人工确认的原生 PPTX 模板填充计划并异步执行。
+     */
+    @PostMapping(path = "/{jobId}/template-fill/execute", consumes = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<PptJobResponse> executeTemplateFill(
+            @PathVariable UUID jobId,
+            @RequestHeader(value = "X-Template-Fill-Debug-Token", required = false) String accessToken,
+            @RequestBody String fillPlan) {
+        PptJob job = templateFillService.submitPlan(jobId, accessToken, fillPlan);
+        return ResponseEntity.status(HttpStatus.ACCEPTED).body(PptJobResponse.from(job));
     }
 
     /**

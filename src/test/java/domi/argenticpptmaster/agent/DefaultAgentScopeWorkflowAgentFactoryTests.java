@@ -411,7 +411,9 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
                 tempDir.resolve("repo"),
                 tempDir.resolve("workspace"),
                 "python3",
-                Duration.ofMinutes(1));
+                Duration.ofMinutes(1),
+                null,
+                1_048_576L);
         DefaultAgentScopeWorkflowAgentFactory factory = new DefaultAgentScopeWorkflowAgentFactory(
                 properties,
                 pptProperties,
@@ -434,7 +436,8 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
         Files.createDirectories(projectPath.resolve("svg_final"));
         Files.createDirectories(projectPath.resolve("exports"));
 
-        PptMasterProperties properties = new PptMasterProperties(repoPath, workspacePath, "python3", Duration.ofMinutes(1));
+        PptMasterProperties properties = new PptMasterProperties(
+                repoPath, workspacePath, "python3", Duration.ofMinutes(1), null, 1_048_576L);
         AgentScopeProperties agentProperties = new AgentScopeProperties(
                 "openai",
                 "dummy-model",

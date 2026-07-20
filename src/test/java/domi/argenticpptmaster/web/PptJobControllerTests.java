@@ -5,6 +5,8 @@ import static org.mockito.BDDMockito.given;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.argThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -14,11 +16,15 @@ import domi.argenticpptmaster.domain.PptJobNode;
 import domi.argenticpptmaster.domain.PptConfirmationAction;
 import domi.argenticpptmaster.domain.PptRevisionImpactPreview;
 import domi.argenticpptmaster.domain.PptWorkflowMode;
+import domi.argenticpptmaster.domain.PptTemplateFile;
+import domi.argenticpptmaster.domain.PptSourceFile;
 import domi.argenticpptmaster.exception.PptJobNotFoundException;
 import domi.argenticpptmaster.exception.PptJobResumeException;
 import domi.argenticpptmaster.exception.PptJobStateException;
 import domi.argenticpptmaster.service.PptJobEventPublisher;
 import domi.argenticpptmaster.service.PptWorkflowService;
+import domi.argenticpptmaster.service.PptJobCreateCommand;
+import domi.argenticpptmaster.service.PptTemplateFillService;
 import java.nio.file.Path;
 import java.util.UUID;
 import java.util.List;
@@ -31,6 +37,7 @@ import org.springframework.http.MediaType;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 
 /**
@@ -55,7 +62,63 @@ class PptJobControllerTests {
     private PptWorkflowService workflowService;
 
     @MockitoBean
+    private PptTemplateFillService templateFillService;
+
+    @MockitoBean
     private PptJobEventPublisher eventPublisher;
+
+    @Test
+    void acceptsConfirmedTemplateFillPlanThroughProtectedEndpoint() throws Exception {
+        PptJob job = new PptJob(
+                JOB_ID, "demo", "ppt169", "fill", PptWorkflowMode.TEMPLATE_FILL, Path.of("workspace"));
+        job.prepareProject(Path.of("workspace/project"));
+        given(templateFillService.submitPlan(eq(JOB_ID), eq("secret"), eq("{\"status\":\"confirmed\"}")))
+                .willReturn(job);
+
+        mockMvc.perform(post("/api/ppt-jobs/{jobId}/template-fill/execute", JOB_ID)
+                        .header("X-Template-Fill-Debug-Token", "secret")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\":\"confirmed\"}"))
+                .andExpect(status().isAccepted())
+                .andExpect(jsonPath("$.workflowMode").value("TEMPLATE_FILL"));
+    }
+
+    @Test
+    void rejectsUnauthorizedTemplateFillExecution() throws Exception {
+        given(templateFillService.submitPlan(eq(JOB_ID), eq("wrong"), any()))
+                .willThrow(new domi.argenticpptmaster.exception.PptTemplateFillAccessException());
+
+        mockMvc.perform(post("/api/ppt-jobs/{jobId}/template-fill/execute", JOB_ID)
+                        .header("X-Template-Fill-Debug-Token", "wrong")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\":\"confirmed\"}"))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void createsTemplateFillJobWithExplicitMultipartRoles() throws Exception {
+        PptJob job = new PptJob(
+                JOB_ID, "demo", "ppt169", "fill", PptWorkflowMode.TEMPLATE_FILL, Path.of("workspace"));
+        job.setTemplate(new PptTemplateFile("brand.pptx", "application/octet-stream", 4L, Path.of("private")));
+        job.addSource(new PptSourceFile("source.md", "text/markdown", 7L, Path.of("private-content")));
+        given(workflowService.createJob(any(PptJobCreateCommand.class))).willReturn(job);
+
+        MockMultipartFile source = new MockMultipartFile("files", "source.md", "text/markdown", "# title".getBytes());
+        MockMultipartFile template = new MockMultipartFile("templateFile", "brand.pptx", "application/octet-stream", "pptx".getBytes());
+
+        mockMvc.perform(multipart("/api/ppt-jobs")
+                        .file(source)
+                        .file(template)
+                        .param("workflowMode", "template-fill"))
+                .andExpect(status().isAccepted())
+                .andExpect(jsonPath("$.workflowMode").value("TEMPLATE_FILL"))
+                .andExpect(jsonPath("$.template.originalName").value("brand.pptx"))
+                .andExpect(jsonPath("$.contentSources[0].originalName").value("source.md"));
+
+        verify(workflowService).createJob(argThat(command -> command.templateFile() == template
+                && command.files().size() == 1
+                && "template-fill".equals(command.workflowMode())));
+    }
 
     /**
      * 验证恢复失败任务成功时返回 200 并暴露恢复后的任务状态。

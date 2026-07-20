@@ -36,6 +36,47 @@ class PptJobCheckpointTests {
         assertThat(job.nodeExecution(PptJobNode.IMAGES_MANIFEST_WRITTEN)).isNull();
     }
 
+    @Test
+    void templateFillJobHasNoSvgNodesAndStoresOnlyOneTemplate() {
+        PptJob job = new PptJob(
+                UUID.randomUUID(), "demo", "ppt169", "fill", PptWorkflowMode.TEMPLATE_FILL,
+                Path.of("var/ppt-master/jobs/demo"));
+        PptTemplateFile template = new PptTemplateFile(
+                "template.pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                12L, Path.of("var/ppt-master/jobs/demo/uploads/template/0-template.pptx"));
+
+        job.setTemplate(template);
+
+        assertThat(job.status()).isEqualTo(PptJobStatus.ACCEPTED);
+        assertThat(job.template()).contains(template);
+        assertThat(job.nodeExecutions()).isEmpty();
+    }
+
+    @Test
+    void templateCannotBeReplaced() {
+        PptJob job = new PptJob(
+                UUID.randomUUID(), "demo", "ppt169", "fill", PptWorkflowMode.TEMPLATE_FILL,
+                Path.of("var/ppt-master/jobs/demo"));
+        PptTemplateFile first = new PptTemplateFile("one.pptx", "application/octet-stream", 1L, Path.of("one"));
+        PptTemplateFile second = new PptTemplateFile("two.pptx", "application/octet-stream", 1L, Path.of("two"));
+
+        job.setTemplate(first);
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> job.setTemplate(second))
+                .isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
+    void templateFillCanBeStartedOnlyFromAcceptedState() {
+        PptJob job = new PptJob(
+                UUID.randomUUID(), "demo", "ppt169", "fill", PptWorkflowMode.TEMPLATE_FILL,
+                Path.of("var/ppt-master/jobs/demo"));
+
+        assertThat(job.tryStartTemplateFill()).isTrue();
+        assertThat(job.status()).isEqualTo(PptJobStatus.PREPARING);
+        assertThat(job.tryStartTemplateFill()).isFalse();
+    }
+
     /**
      * 验证节点完成后 lastCompletedNode 会更新，且当前节点会被清空。
      */

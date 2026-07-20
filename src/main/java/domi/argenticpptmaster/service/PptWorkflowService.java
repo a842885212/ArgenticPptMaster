@@ -12,6 +12,7 @@ import domi.argenticpptmaster.domain.PptOutline;
 import domi.argenticpptmaster.domain.PptOutlineEdit;
 import domi.argenticpptmaster.domain.PptRevisionImpactPreview;
 import domi.argenticpptmaster.domain.PptSourceFile;
+import domi.argenticpptmaster.domain.PptTemplateFile;
 import domi.argenticpptmaster.domain.PptSlideEdit;
 import domi.argenticpptmaster.domain.PptWorkflowMode;
 import domi.argenticpptmaster.util.PptConfirmationStageResolver;
@@ -119,22 +120,46 @@ public class PptWorkflowService {
      * @throws PptStorageException  如果文件存储失败
      */
     public PptJob createJob(List<MultipartFile> files, String projectName, String format, String instruction, String workflowMode) {
+        return createJob(new PptJobCreateCommand(files, null, projectName, format, instruction, workflowMode));
+    }
+
+    /**
+     * 根据显式模板/内容角色创建 PPT 任务。
+     *
+     * @param command 创建命令
+     * @return 已创建任务
+     */
+    public PptJob createJob(PptJobCreateCommand command) {
+        List<MultipartFile> files = command.files();
         if (files == null || files.isEmpty() || files.stream().allMatch(MultipartFile::isEmpty)) {
             throw new PptJobStateException("at least one source file is required");
         }
         UUID jobId = UUID.randomUUID();
-        String normalizedProjectName = normalizeProjectName(projectName);
-        String normalizedFormat = normalizeFormat(format);
-        PptWorkflowMode mode = PptWorkflowMode.from(workflowMode);
+        String normalizedProjectName = normalizeProjectName(command.projectName());
+        String normalizedFormat = normalizeFormat(command.format());
+        PptWorkflowMode mode;
+        try {
+            mode = PptWorkflowMode.from(command.workflowMode());
+        } catch (IllegalArgumentException ex) {
+            throw new PptJobStateException(ex.getMessage());
+        }
+        validateTemplateContract(mode, command.templateFile());
         Path jobWorkspace = properties.workspacePath().resolve("jobs").resolve(jobId.toString()).toAbsolutePath().normalize();
-        PptJob job = new PptJob(jobId, normalizedProjectName, normalizedFormat, instruction, mode, jobWorkspace);
+        PptJob job = new PptJob(jobId, normalizedProjectName, normalizedFormat, command.instruction(), mode, jobWorkspace);
         log.info("ppt_job_create_started: jobId={}, projectName={}, format={}, workflowMode={}, fileCount={}",
                 jobId, normalizedProjectName, normalizedFormat, mode, files.size());
-        storeSources(job, files);
+        if (mode == PptWorkflowMode.TEMPLATE_FILL) {
+            storeTemplate(job, command.templateFile());
+            storeSources(job, files, job.workspacePath().resolve("uploads/content"));
+        } else {
+            storeSources(job, files, job.workspacePath().resolve("uploads"));
+        }
         repository.save(job);
         events.record(job, PptJobEvent.of(PptJobEventType.JOB_ACCEPTED, "job accepted",
                 Map.of("jobId", job.id().toString())));
-        asyncRunner.startAgent(job.id());
+        if (mode != PptWorkflowMode.TEMPLATE_FILL) {
+            asyncRunner.startAgent(job.id());
+        }
         log.info("ppt_job_create_accepted: jobId={}, projectName={}, format={}, workflowMode={}, sourceCount={}",
                 jobId, normalizedProjectName, normalizedFormat, mode, job.sourceFiles().size());
         return job;
@@ -616,7 +641,14 @@ public class PptWorkflowService {
         if (job.status() != PptJobStatus.COMPLETED) {
             throw new PptJobStateException("job is not completed");
         }
-        return job.exportPath().orElseThrow(() -> new PptJobStateException("job has no export artifact"));
+        Path exportPath = job.exportPath()
+                .orElseThrow(() -> new PptJobStateException("job has no export artifact"))
+                .toAbsolutePath().normalize();
+        Path exportsDir = job.workspacePath().toAbsolutePath().normalize().resolve("exports").normalize();
+        if (!exportPath.startsWith(exportsDir)) {
+            throw new PptJobStateException("export path is outside job exports directory");
+        }
+        return exportPath;
     }
 
     /**
@@ -749,10 +781,9 @@ public class PptWorkflowService {
                 Map.of("node", node.name())));
     }
 
-    private void storeSources(PptJob job, List<MultipartFile> files) {
-        Path uploadDir = job.workspacePath().resolve("uploads");
+    private void storeSources(PptJob job, List<MultipartFile> files, Path uploadDir) {
         try {
-            Files.createDirectories(uploadDir);
+            Files.createDirectories(uploadDir.toAbsolutePath().normalize());
             for (MultipartFile file : files) {
                 if (file.isEmpty()) {
                     continue;
@@ -761,10 +792,8 @@ public class PptWorkflowService {
                         ? "source"
                         : file.getOriginalFilename());
                 validateExtension(originalName);
-                Path storedPath = uploadDir.resolve(job.sourceFiles().size() + "-" + originalName).normalize();
-                if (!storedPath.startsWith(uploadDir)) {
-                    throw new PptJobStateException("invalid file name: " + originalName);
-                }
+                Path safeUploadDir = uploadDir.toAbsolutePath().normalize();
+                Path storedPath = resolveStoredPath(safeUploadDir, job.sourceFiles().size(), originalName);
                 try (InputStream inputStream = file.getInputStream()) {
                     Files.copy(inputStream, storedPath, StandardCopyOption.REPLACE_EXISTING);
                 }
@@ -779,6 +808,59 @@ public class PptWorkflowService {
             }
         } catch (IOException ex) {
             throw new PptStorageException("failed to store source files", ex);
+        }
+    }
+
+    private void storeTemplate(PptJob job, MultipartFile templateFile) {
+        Path uploadDir = job.workspacePath().resolve("uploads/template").toAbsolutePath().normalize();
+        try {
+            Files.createDirectories(uploadDir);
+            String originalName = StringUtils.cleanPath(templateFile.getOriginalFilename() == null
+                    ? "template.pptx"
+                    : templateFile.getOriginalFilename());
+            validateTemplateExtension(originalName);
+            Path storedPath = resolveStoredPath(uploadDir, 0, originalName);
+            try (InputStream inputStream = templateFile.getInputStream()) {
+                Files.copy(inputStream, storedPath, StandardCopyOption.REPLACE_EXISTING);
+            }
+            job.setTemplate(new PptTemplateFile(
+                    originalName, templateFile.getContentType(), templateFile.getSize(), storedPath));
+            events.record(job, PptJobEvent.of(PptJobEventType.SOURCE_STORED, "template file stored",
+                    Map.of("fileName", originalName, "size", templateFile.getSize(), "role", "template")));
+        } catch (IOException ex) {
+            throw new PptStorageException("failed to store template file", ex);
+        }
+    }
+
+    private Path resolveStoredPath(Path uploadDir, int index, String originalName) {
+        Path namePath = Path.of(originalName);
+        if (namePath.isAbsolute() || !namePath.equals(namePath.getFileName()) || originalName.contains("..")) {
+            throw new PptJobStateException("invalid file name: " + originalName);
+        }
+        Path storedPath = uploadDir.resolve(index + "-" + originalName).normalize();
+        if (!storedPath.startsWith(uploadDir)) {
+            throw new PptJobStateException("invalid file name: " + originalName);
+        }
+        return storedPath;
+    }
+
+    private void validateTemplateContract(PptWorkflowMode mode, MultipartFile templateFile) {
+        if (mode == PptWorkflowMode.TEMPLATE_FILL) {
+            if (templateFile == null || templateFile.isEmpty()) {
+                throw new PptJobStateException("template file is required for template-fill workflow");
+            }
+            String originalName = StringUtils.cleanPath(templateFile.getOriginalFilename() == null
+                    ? ""
+                    : templateFile.getOriginalFilename());
+            validateTemplateExtension(originalName);
+        } else if (templateFile != null) {
+            throw new PptJobStateException("templateFile is only supported for template-fill workflow");
+        }
+    }
+
+    private void validateTemplateExtension(String fileName) {
+        if (!fileName.toLowerCase().endsWith(".pptx")) {
+            throw new PptJobStateException("template file must have .pptx extension");
         }
     }
 

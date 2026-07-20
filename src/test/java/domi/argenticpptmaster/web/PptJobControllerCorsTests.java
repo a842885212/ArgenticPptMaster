@@ -11,6 +11,7 @@ import domi.argenticpptmaster.config.WebConfig;
 import domi.argenticpptmaster.domain.PptJob;
 import domi.argenticpptmaster.service.PptJobEventPublisher;
 import domi.argenticpptmaster.service.PptWorkflowService;
+import domi.argenticpptmaster.service.PptTemplateFillService;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.UUID;
@@ -57,6 +58,9 @@ class PptJobControllerCorsTests {
 
     @MockitoBean
     private PptWorkflowService workflowService;
+
+    @MockitoBean
+    private PptTemplateFillService templateFillService;
 
     @MockitoBean
     private PptJobEventPublisher eventPublisher;

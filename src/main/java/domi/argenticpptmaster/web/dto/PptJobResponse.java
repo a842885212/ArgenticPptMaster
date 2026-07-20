@@ -34,6 +34,8 @@ import java.util.UUID;
  * @param createdAt             任务创建时间
  * @param updatedAt             任务最后更新时间
  * @param sources               上传的源文件列表
+ * @param template              模板填充任务的模板元数据
+ * @param contentSources        模板填充任务的内容来源元数据
  * @param artifactReady         生成产物是否已就绪
  * @param downloadUrl           下载链接（就绪时非空）
  * @param currentConfirmationId 当前待确认项的 ID
@@ -58,6 +60,8 @@ public record PptJobResponse(
         Instant createdAt,
         Instant updatedAt,
         List<SourceFileResponse> sources,
+        TemplateFileResponse template,
+        List<SourceFileResponse> contentSources,
         boolean artifactReady,
         String downloadUrl,
         String currentConfirmationId,
@@ -92,6 +96,8 @@ public record PptJobResponse(
                 buildNodeStates(job),
                 job.createdAt(),
                 job.updatedAt(),
+                job.sourceFiles().stream().map(SourceFileResponse::from).toList(),
+                job.template().map(TemplateFileResponse::from).orElse(null),
                 job.sourceFiles().stream().map(SourceFileResponse::from).toList(),
                 downloadReady,
                 downloadReady ? "/api/ppt-jobs/" + job.id() + "/download" : null,

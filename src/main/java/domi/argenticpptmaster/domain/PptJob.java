@@ -34,6 +34,7 @@ public class PptJob {
     private final Instant createdAt;
     private final List<PptSourceFile> sourceFiles = new ArrayList<>();
     private final List<PptJobEvent> events = new ArrayList<>();
+    private PptTemplateFile template;
     private PptJobStatus status;
     private Instant updatedAt;
     private Path projectPath;
@@ -127,6 +128,10 @@ public class PptJob {
         return List.copyOf(sourceFiles);
     }
 
+    public synchronized Optional<PptTemplateFile> template() {
+        return Optional.ofNullable(template);
+    }
+
     public synchronized List<PptJobEvent> events() {
         return List.copyOf(events);
     }
@@ -200,6 +205,23 @@ public class PptJob {
     }
 
     /**
+     * 设置模板填充任务的唯一模板。
+     *
+     * @param templateFile 模板文件
+     * @throws IllegalStateException 如果任务已有模板
+     */
+    public synchronized void setTemplate(PptTemplateFile templateFile) {
+        if (template != null) {
+            throw new IllegalStateException("template file is already set");
+        }
+        if (templateFile == null) {
+            throw new IllegalArgumentException("template file is required");
+        }
+        template = templateFile;
+        touch();
+    }
+
+    /**
      * 记录任务事件并更新时间戳。
      *
      * @param event 任务事件
@@ -218,6 +240,20 @@ public class PptJob {
         this.status = PptJobStatus.PREPARING;
         this.projectPath = preparedProjectPath;
         touch();
+    }
+
+    /**
+     * 原子地领取一次模板填充执行，避免同一任务被并发提交多次。
+     *
+     * @return 仅当任务仍处于 ACCEPTED 且为模板填充模式时返回 true
+     */
+    public synchronized boolean tryStartTemplateFill() {
+        if (workflowMode != PptWorkflowMode.TEMPLATE_FILL || status != PptJobStatus.ACCEPTED) {
+            return false;
+        }
+        status = PptJobStatus.PREPARING;
+        touch();
+        return true;
     }
 
     /**

@@ -1,6 +1,7 @@
 package domi.argenticpptmaster.domain;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import org.junit.jupiter.api.Test;
 
@@ -29,5 +30,18 @@ class PptWorkflowModeTests {
         assertThat(PptWorkflowMode.from("image_enhanced")).isEqualTo(PptWorkflowMode.IMAGE_ENHANCED);
         assertThat(PptWorkflowMode.from("IMAGE-ENHANCED")).isEqualTo(PptWorkflowMode.IMAGE_ENHANCED);
         assertThat(PptWorkflowMode.from("enhanced")).isEqualTo(PptWorkflowMode.IMAGE_ENHANCED);
+    }
+
+    @Test
+    void templateFillVariantsResolveToTemplateFill() {
+        assertThat(PptWorkflowMode.from("template-fill")).isEqualTo(PptWorkflowMode.TEMPLATE_FILL);
+        assertThat(PptWorkflowMode.from("TEMPLATE_FILL")).isEqualTo(PptWorkflowMode.TEMPLATE_FILL);
+    }
+
+    @Test
+    void unknownNonBlankModeIsRejected() {
+        assertThatThrownBy(() -> PptWorkflowMode.from("unsupported"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("unsupported");
     }
 }

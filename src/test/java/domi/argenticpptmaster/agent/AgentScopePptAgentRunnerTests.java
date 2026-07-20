@@ -1022,7 +1022,9 @@ class AgentScopePptAgentRunnerTests {
                 Path.of("/home/zhang/PycharmProjects/ppt-master"),
                 Path.of("var/ppt-master"),
                 "python3",
-                java.time.Duration.ofMinutes(10));
+                java.time.Duration.ofMinutes(10),
+                null,
+                1_048_576L);
     }
 
     private static AgentScopeProperties agentScopeProperties() {

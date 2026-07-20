@@ -39,17 +39,29 @@ public class PptTemplateFillService {
         this.asyncRunner = asyncRunner;
     }
 
+    /** 调试入口：仅执行已由服务端确认的计划，不接受请求体自声明 confirmed。 */
     public PptJob submitPlan(UUID jobId, String accessToken, String jsonPlan) {
         verifyAccess(accessToken);
         PptJob job = repository.findById(jobId).orElseThrow(() -> new PptJobNotFoundException(jobId));
         if (job.workflowMode() != PptWorkflowMode.TEMPLATE_FILL) {
             throw new PptTemplateFillConflictException("job is not a template-fill workflow");
         }
-        if (job.status() != domi.argenticpptmaster.domain.PptJobStatus.ACCEPTED) {
-            throw new PptTemplateFillConflictException("template-fill execution has already started");
+        if (!planStore.hasApprovedRecord(job)) {
+            throw new PptTemplateFillConflictException(
+                    "template-fill execution requires a server-approved fill plan");
         }
-        Path planPath = planStore.storeConfirmedPlan(job, jsonPlan);
-        if (!job.tryStartTemplateFill()) {
+        Path planPath = planStore.findConfirmedPlan(job)
+                .orElseThrow(() -> new PptTemplateFillConflictException("confirmed fill plan is missing"));
+        if (jsonPlan != null && !jsonPlan.isBlank()) {
+            throw new PptTemplateFillConflictException(
+                    "request body plan cannot establish approval; use /confirm to approve the current draft");
+        }
+        if (job.status() != domi.argenticpptmaster.domain.PptJobStatus.ACCEPTED
+                && job.status() != domi.argenticpptmaster.domain.PptJobStatus.PREPARING
+                && job.status() != domi.argenticpptmaster.domain.PptJobStatus.RUNNING_AGENT) {
+            throw new PptTemplateFillConflictException("template-fill execution cannot start in status: " + job.status());
+        }
+        if (!job.markTemplateFillExecutionStarted() && !job.tryStartTemplateFill()) {
             throw new PptTemplateFillConflictException("template-fill execution has already started");
         }
         repository.save(job);

@@ -44,6 +44,7 @@ public final class PptConfirmationStageResolver {
             case "image_retry_decision" -> null;
             case "outline_confirmation" -> PptJobNode.OUTLINE_CONFIRMED;
             case "plan_confirmation" -> PptJobNode.PLAN_CONFIRMED;
+            case "template_fill_plan" -> PptJobNode.FILL_PLAN_CONFIRMED;
             default -> PptJobNode.PLAN_CONFIRMED;
         };
     }

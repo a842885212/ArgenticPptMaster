@@ -5,6 +5,7 @@ import domi.argenticpptmaster.domain.PptJobNode;
 import domi.argenticpptmaster.domain.PptJobNodeStatus;
 import domi.argenticpptmaster.domain.PptNodeExecution;
 import domi.argenticpptmaster.domain.PptOutline;
+import domi.argenticpptmaster.domain.PptWorkflowMode;
 import domi.argenticpptmaster.service.PptImageManifestStore;
 import domi.argenticpptmaster.service.PptOutlineStore;
 import java.nio.file.Files;
@@ -51,6 +52,7 @@ final class PptConfirmationStagePolicy {
             case "image_manifest_confirmation" -> evaluateImageManifest(job, contextData);
             case "image_ready_continue_confirmation" -> evaluateImageReady(job, contextData);
             case "image_retry_decision" -> evaluateImageRetry(job, contextData);
+            case "template_fill_plan" -> evaluateTemplateFillPlan(job, contextData);
             default -> Decision.waitFor(null);
         };
     }
@@ -79,6 +81,28 @@ final class PptConfirmationStagePolicy {
             return Decision.reject(node, "locked outline cannot re-enter confirmation before explicit revision");
         }
         return Decision.waitFor(node);
+    }
+
+    private Decision evaluateTemplateFillPlan(PptJob job, Map<String, Object> contextData) {
+        PptJobNode node = PptJobNode.FILL_PLAN_CONFIRMED;
+        if (job.workflowMode() != PptWorkflowMode.TEMPLATE_FILL) {
+            return Decision.reject(node, "template_fill_plan is only valid for template-fill jobs");
+        }
+        if (!"template_fill_plan".equals(contextData.get("type"))) {
+            return Decision.reject(node, "contextData.type must be template_fill_plan");
+        }
+        if (positiveVersion(contextData.get("version")) == null) {
+            return Decision.reject(node, "template_fill_plan requires a positive version");
+        }
+        Object digest = contextData.get("digest");
+        if (!(digest instanceof String text) || text.isBlank()) {
+            return Decision.reject(node, "template_fill_plan requires digest");
+        }
+        PptNodeExecution drafted = job.nodeExecution(PptJobNode.FILL_PLAN_DRAFTED);
+        if (drafted == null || drafted.status() != PptJobNodeStatus.COMPLETED) {
+            return Decision.reject(node, "template_fill_plan requires completed FILL_PLAN_DRAFTED");
+        }
+        return isCompleted(job, node) ? Decision.autoAcknowledge(node) : Decision.waitFor(node);
     }
 
     private Decision evaluatePlan(PptJob job) {

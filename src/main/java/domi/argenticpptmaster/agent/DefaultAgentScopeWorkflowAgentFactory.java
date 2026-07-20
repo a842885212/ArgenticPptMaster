@@ -82,6 +82,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
     private static final String SVG_QUALITY_CHECKER_SCRIPT = "skills/ppt-master/scripts/svg_quality_checker.py";
     private static final String EXPORT_SCRIPT = "skills/ppt-master/scripts/svg_to_pptx.py";
     private static final String IMAGE_GEN_SCRIPT = "skills/ppt-master/scripts/image_gen.py";
+    private static final String TEMPLATE_FILL_SCRIPT = "skills/ppt-master/scripts/template_fill_pptx.py";
     private static final Logger log = LoggerFactory.getLogger(DefaultAgentScopeWorkflowAgentFactory.class);
 
     private static final String APPROVAL_TOOL_NAME = "request_plan_confirmation";
@@ -92,17 +93,20 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
     private final PptMasterProperties pptMasterProperties;
     private final PptMasterCommandExecutor commandExecutor;
     private final PptWorkflowEvents events;
+    private final TemplateFillAgentTools templateFillAgentTools;
     private final PptArtifactRegistry artifactRegistry = new PptArtifactRegistry();
 
     public DefaultAgentScopeWorkflowAgentFactory(
             AgentScopeProperties agentScopeProperties,
             PptMasterProperties pptMasterProperties,
             PptMasterCommandExecutor commandExecutor,
-            PptWorkflowEvents events) {
+            PptWorkflowEvents events,
+            TemplateFillAgentTools templateFillAgentTools) {
         this.agentScopeProperties = agentScopeProperties;
         this.pptMasterProperties = pptMasterProperties;
         this.commandExecutor = commandExecutor;
         this.events = events;
+        this.templateFillAgentTools = templateFillAgentTools;
     }
 
     /**
@@ -119,7 +123,10 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
      */
     @Override
     public AgentScopeWorkflowAgent create(PptJob job) {
-        ensureAgentPrerequisites();
+        if (job.workflowMode() == PptWorkflowMode.TEMPLATE_FILL) {
+            return createTemplateFillAgent(job);
+        }
+        ensureMarkdownAgentPrerequisites();
         Toolkit toolkit = new Toolkit();
         toolkit.registerTool(new PptAgentTools());
         toolkit.registerTool(new UserPlanApprovalTool());
@@ -143,6 +150,31 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
         };
     }
 
+    private AgentScopeWorkflowAgent createTemplateFillAgent(PptJob job) {
+        ensureTemplateFillAgentPrerequisites();
+        Toolkit toolkit = new Toolkit();
+        toolkit.registerTool(templateFillAgentTools);
+        toolkit.registerTool(new UserPlanApprovalTool());
+
+        ReActAgent agent = ReActAgent.builder()
+                .name("template_fill_planner")
+                .description("Drafts native PPTX template fill plans from analyzed slide libraries and uploaded content.")
+                .sysPrompt(buildSystemPrompt(PptWorkflowMode.TEMPLATE_FILL))
+                .model(buildModel())
+                .toolkit(toolkit)
+                .stateStore(new JsonFileAgentStateStore(agentScopeProperties.sessionStorePath()))
+                .defaultSessionId(job.id().toString())
+                .maxIters(agentScopeProperties.maxIters())
+                .build();
+
+        PptAgentToolRuntime toolRuntime = new PptAgentToolRuntime(job, pptMasterProperties, commandExecutor, events);
+        return (messages, runtimeContext) -> {
+            RuntimeContext effectiveContext = runtimeContext == null ? RuntimeContext.empty() : runtimeContext;
+            effectiveContext.put(PptAgentToolRuntime.class, toolRuntime);
+            return agent.streamEvents(messages, effectiveContext);
+        };
+    }
+
     /**
      * 确保代理运行的前置条件满足。
      * <p>
@@ -150,7 +182,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
      * 如果前置条件不满足，则抛出 {@link IllegalStateException}。
      * </p>
      */
-    private void ensureAgentPrerequisites() {
+    private void ensureMarkdownAgentPrerequisites() {
         if (!Files.exists(pptMasterProperties.repoPath().resolve(PROJECT_MANAGER_SCRIPT))) {
             throw new IllegalStateException("ppt-master project manager not found under " + pptMasterProperties.repoPath());
         }
@@ -166,6 +198,20 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
         if (!Files.exists(pptMasterProperties.repoPath().resolve(IMAGE_GEN_SCRIPT))) {
             throw new IllegalStateException("ppt-master image_gen not found under " + pptMasterProperties.repoPath());
         }
+        ensureModelGroupConfigured();
+    }
+
+    private void ensureTemplateFillAgentPrerequisites() {
+        if (!Files.exists(pptMasterProperties.repoPath().resolve(PROJECT_MANAGER_SCRIPT))) {
+            throw new IllegalStateException("ppt-master project manager not found under " + pptMasterProperties.repoPath());
+        }
+        if (!Files.exists(pptMasterProperties.repoPath().resolve(TEMPLATE_FILL_SCRIPT))) {
+            throw new IllegalStateException("ppt-master template_fill_pptx not found under " + pptMasterProperties.repoPath());
+        }
+        ensureModelGroupConfigured();
+    }
+
+    private void ensureModelGroupConfigured() {
         ModelGroup primary = agentScopeProperties.effectivePrimary();
         if (!primary.isValid()) {
             throw new IllegalStateException("agentscope primary model group must be configured");
@@ -345,12 +391,56 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
      * @return 系统提示词文本
      */
     String buildSystemPrompt(PptWorkflowMode workflowMode) {
+        if (workflowMode == PptWorkflowMode.TEMPLATE_FILL) {
+            return String.join("\n\n",
+                    buildTemplateFillCoreRulesPrompt(),
+                    buildTemplateFillWorkflowPatchPrompt(),
+                    buildTemplateFillToolingConstraintsPrompt());
+        }
         return String.join("\n\n",
                 buildUpstreamCoreRulesPrompt(),
                 workflowMode == PptWorkflowMode.IMAGE_ENHANCED
                         ? buildImageEnhancedWorkflowPatchPrompt()
                         : buildBasicWorkflowPatchPrompt(),
                 buildLocalToolingConstraintsPrompt());
+    }
+
+    private String buildTemplateFillCoreRulesPrompt() {
+        return """
+                你是 ArgenticPptMaster 的模板填充计划代理。
+
+                核心规则：
+                1. 模板分析已完成；你只能读取内容资料与 slide library，并草拟 fill plan。
+                2. 按内容逻辑匹配模板版式能力选择页面，不得机械按原模板页序替换。
+                3. 内容超出版式容量时，必须记录 capacityRisks、omittedContent 或 splitSuggestions；禁止默认缩小字体掩盖问题。
+                4. 没有合适版式时说明删减/拆页建议，不能强塞内容。
+                5. 只能写入 draft 计划；不得调用 apply/check-plan/validate，不得使用 --force。
+                6. 计划完成后必须通过 request_plan_confirmation（stage="template_fill_plan"）请求人工确认。
+                """;
+    }
+
+    private String buildTemplateFillWorkflowPatchPrompt() {
+        return """
+                当前任务模式：TEMPLATE_FILL（原生 PPTX 模板填充）。
+
+                执行顺序：
+                1. 调用 list_template_fill_content_sources 与 read_template_fill_content_source 了解内容资料。
+                2. 调用 read_template_slide_library_page 分页读取模板页、文本槽、表格/图表摘要。
+                3. 调用 inspect_template_fill_checkpoint_status 确认 TEMPLATE_ANALYZED 已完成。
+                4. 按内容逻辑选择 templateSlideIndex，形成 outputOrder、slotMappings、omittedContent、capacityRisks、splitSuggestions、tableChartHandling、acceptedWarnings。
+                5. 调用 write_template_fill_plan_draft 保存 status=draft 的计划；可选 write_template_fill_plan_rationale 写入说明。
+                6. 调用 request_plan_confirmation（stage="template_fill_plan"），在 contextData 中返回 {type:"template_fill_plan", version, digest, pages:[...]}。
+                7. 收到 REQUEST_REVISION 时读取 Operator 意见，修订计划并再次请求 template_fill_plan 确认；在 APPROVE 前不得假设计划已 confirmed。
+                """;
+    }
+
+    private String buildTemplateFillToolingConstraintsPrompt() {
+        return """
+                工具约束：
+                - 只能使用模板填充语义读写工具与 request_plan_confirmation。
+                - 不得调用 init/import/analyze/apply/check-plan/validate 或任何 SVG/图片/导出工具。
+                - write_template_fill_plan_draft 只接受 draft 状态；服务端会在人工 APPROVE 后才提升为 confirmed 并执行原生填充。
+                """;
     }
 
     /**
@@ -491,50 +581,6 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                 - 不要假设本地文件内容；所有文件状态通过 list_project_files / read_project_text_file / inspect_image_manifest_status / inspect_checkpoint_status 确认。
                 - 不要走 template_fill_pptx 或 pptx 模板路线；当前服务只支持 markdown-first 路线。
                 """;
-    }
-
-    /**
-     * PPT 代理工具运行时上下文记录。
-     * <p>
-     * 封装工具执行过程中所需的共享状态，包括 PPT 任务信息、项目配置、
-     * 命令执行器和事件记录器。
-     * </p>
-     *
-     * @param job       PPT 任务信息
-     * @param properties PPT 主配置属性
-     * @param executor   PPT Master 命令执行器
-     * @param events     工作流事件记录器
-     */
-    record PptAgentToolRuntime(
-            PptJob job,
-            PptMasterProperties properties,
-            PptMasterCommandExecutor executor,
-            PptWorkflowEvents events) {
-
-        /**
-         * 推进指定业务节点到已完成状态，并记录节点完成事件。
-         *
-         * @param node    业务节点
-         * @param summary 完成摘要
-         */
-        void completeNode(PptJobNode node, Map<String, Object> summary) {
-            if (!node.applicableTo(job.workflowMode())) {
-                return;
-            }
-            PptNodeExecution execution = job.nodeExecution(node);
-            if (execution == null || execution.status() == PptJobNodeStatus.PENDING) {
-                job.startNode(node);
-                events.record(job, PptJobEvent.of(
-                        PptJobEventType.NODE_STARTED,
-                        "node started: " + node.name(),
-                        Map.of("node", node.name())));
-            }
-            job.completeNode(node, summary);
-            events.record(job, PptJobEvent.of(
-                    PptJobEventType.NODE_COMPLETED,
-                    "node completed: " + node.name(),
-                    Map.of("node", node.name(), "summary", summary)));
-        }
     }
 
     /**

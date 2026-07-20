@@ -83,6 +83,8 @@ public class PptWorkflowService {
     private final PptWorkflowEvents events;
     private final PptWorkflowAsyncRunner asyncRunner;
     private final PptTemplateFillAsyncRunner templateFillAsyncRunner;
+    private final PptTemplateFillPlanningOrchestrator templateFillPlanningOrchestrator;
+    private final PptTemplateFillPlanStore templateFillPlanStore;
     private final PptOutlineStore outlineStore = new PptOutlineStore();
     private final PptArtifactRegistry artifactRegistry = new PptArtifactRegistry();
     private final Map<String, PptRevisionImpactPreview> revisionImpactPreviews = new ConcurrentHashMap<>();
@@ -93,12 +95,16 @@ public class PptWorkflowService {
             PptJobRepository repository,
             PptWorkflowEvents events,
             PptWorkflowAsyncRunner asyncRunner,
-            PptTemplateFillAsyncRunner templateFillAsyncRunner) {
+            PptTemplateFillAsyncRunner templateFillAsyncRunner,
+            PptTemplateFillPlanningOrchestrator templateFillPlanningOrchestrator,
+            PptTemplateFillPlanStore templateFillPlanStore) {
         this.properties = properties;
         this.repository = repository;
         this.events = events;
         this.asyncRunner = asyncRunner;
         this.templateFillAsyncRunner = templateFillAsyncRunner;
+        this.templateFillPlanningOrchestrator = templateFillPlanningOrchestrator;
+        this.templateFillPlanStore = templateFillPlanStore;
     }
 
     /**
@@ -165,6 +171,9 @@ public class PptWorkflowService {
                 Map.of("jobId", job.id().toString())));
         if (mode != PptWorkflowMode.TEMPLATE_FILL) {
             asyncRunner.startAgent(job.id());
+        } else {
+            templateFillPlanningOrchestrator.startAfterCreate(job.id());
+            templateFillAsyncRunner.prepareAndAnalyze(job.id());
         }
         log.info("ppt_job_create_accepted: jobId={}, projectName={}, format={}, workflowMode={}, sourceCount={}",
                 jobId, normalizedProjectName, normalizedFormat, mode, job.sourceFiles().size());
@@ -282,6 +291,10 @@ public class PptWorkflowService {
         }
         validateImageManifestConfirmation(job, effectiveAction);
         validateImageReadyContinuation(job, effectiveAction);
+        if (isTemplateFillPlanConfirmation(job)) {
+            return submitTemplateFillPlanConfirmation(
+                    job, confirmationId, effectiveAction, firstNonBlank(overallComment, comment));
+        }
         List<PptSlideEdit> validatedEdits = validateSlideEdits(job, effectiveAction, slideEdits);
         if (effectiveAction == PptConfirmationAction.REQUEST_REVISION && isLockedOutline(job)
                 && (revisionImpactToken == null || revisionImpactToken.isBlank())) {
@@ -561,6 +574,82 @@ public class PptWorkflowService {
         return "image_manifest_confirmation".equals(job.confirmationPayload().get("stage"));
     }
 
+    private boolean isTemplateFillPlanConfirmation(PptJob job) {
+        return "template_fill_plan".equals(job.confirmationPayload().get("stage"));
+    }
+
+    private PptJob submitTemplateFillPlanConfirmation(
+            PptJob job,
+            String confirmationId,
+            PptConfirmationAction action,
+            String revisionComment) {
+        synchronized (job) {
+            if (job.status() != PptJobStatus.WAITING_CONFIRMATION
+                    || !confirmationId.equals(job.currentConfirmationId().orElse(null))) {
+                throw new PptJobStateException("job is not waiting for confirmation");
+            }
+            if (action == PptConfirmationAction.REQUEST_REVISION) {
+                if (isBlank(revisionComment)) {
+                    throw new PptJobStateException("template fill plan revision requires feedback");
+                }
+                PptConfirmation confirmation = new PptConfirmation(
+                        confirmationId, true, Map.of(), revisionComment, Instant.now(),
+                        action, revisionComment, List.of(), null, List.of());
+                job.receiveConfirmation(confirmation);
+                repository.save(job);
+                events.record(job, PptJobEvent.of(PptJobEventType.CONFIRMATION_RECEIVED, "confirmation received",
+                        Map.of("confirmationId", confirmationId, "action", action.name())));
+                templateFillPlanningOrchestrator.restartPlanningAfterRevision(job.id(), revisionComment);
+                return job;
+            }
+            if (action != PptConfirmationAction.APPROVE) {
+                throw new PptJobStateException("unsupported confirmation action for template fill plan");
+            }
+            Object contextData = job.confirmationPayload().get("contextData");
+            if (!(contextData instanceof Map<?, ?> context)
+                    || !"template_fill_plan".equals(context.get("type"))) {
+                throw new PptJobStateException("template fill plan confirmation payload is invalid");
+            }
+            int expectedVersion = extractPositiveInt(context.get("version"), "version");
+            String expectedDigest = extractNonBlankString(context.get("digest"), "digest");
+            templateFillPlanStore.confirmCurrentDraft(job, confirmationId, expectedVersion, expectedDigest);
+            job.confirmNode(PptJobNode.FILL_PLAN_CONFIRMED);
+            PptConfirmation confirmation = new PptConfirmation(
+                    confirmationId, true, Map.of(), null, Instant.now(),
+                    action, null, List.of(), null, List.of());
+            job.receiveConfirmation(confirmation);
+            repository.save(job);
+            events.record(job, PptJobEvent.of(PptJobEventType.CONFIRMATION_RECEIVED, "confirmation received",
+                    Map.of("confirmationId", confirmationId, "confirmedNode", PptJobNode.FILL_PLAN_CONFIRMED.name(),
+                            "action", action.name())));
+            java.nio.file.Path planPath = templateFillPlanStore.findConfirmedPlan(job)
+                    .orElseThrow(() -> new PptJobStateException("confirmed fill plan is missing"));
+            if (!job.markTemplateFillExecutionStarted()) {
+                throw new domi.argenticpptmaster.exception.PptTemplateFillConflictException(
+                        "template-fill execution has already started");
+            }
+            repository.save(job);
+            events.record(job, PptJobEvent.of(PptJobEventType.TEMPLATE_FILL_PLAN_ACCEPTED,
+                    "template fill plan approved", Map.of("planVersion", expectedVersion)));
+            templateFillAsyncRunner.start(job.id(), planPath);
+            return job;
+        }
+    }
+
+    private static int extractPositiveInt(Object value, String field) {
+        if (!(value instanceof Number number) || number.intValue() <= 0) {
+            throw new PptJobStateException("template fill plan " + field + " is invalid");
+        }
+        return number.intValue();
+    }
+
+    private static String extractNonBlankString(Object value, String field) {
+        if (!(value instanceof String text) || text.isBlank()) {
+            throw new PptJobStateException("template fill plan " + field + " is invalid");
+        }
+        return text.trim();
+    }
+
     private void validateImageManifestConfirmation(PptJob job, PptConfirmationAction action) {
         if (!isImageManifestConfirmation(job)) {
             return;
@@ -711,7 +800,7 @@ public class PptWorkflowService {
         PptJobNode checkpoint = job.lastCompletedNode().orElseThrow(() ->
                 new PptJobResumeException(job.id(), "job has no completed node to resume from"));
         if (job.workflowMode() == PptWorkflowMode.TEMPLATE_FILL) {
-            return checkpoint;
+            return resolveTemplateFillCheckpoint(job, checkpoint);
         }
         if (checkpoint.ordinal() > PptJobNode.OUTLINE_CONFIRMED.ordinal()) {
             job.projectPath().ifPresent(path -> {
@@ -719,6 +808,29 @@ public class PptWorkflowService {
                     throw new PptJobResumeException(job.id(), "downstream artifacts are stale after outline revision");
                 }
             });
+        }
+        return checkpoint;
+    }
+
+    /**
+     * 模板填充恢复时校验分析产物；缺失时回退到可重新 analyze 的稳定节点，不静默复用失效产物。
+     */
+    private PptJobNode resolveTemplateFillCheckpoint(PptJob job, PptJobNode checkpoint) {
+        Path project = job.projectPath().orElse(null);
+        if (project == null || !Files.isDirectory(project)) {
+            throw new PptJobResumeException(job.id(),
+                    "template-fill project is missing; re-prepare and analyze required");
+        }
+        Path slideLibrary = project.resolve("analysis/template.slide_library.json").normalize();
+        boolean analysisReady = Files.isRegularFile(slideLibrary);
+        if (checkpoint.ordinal() >= PptJobNode.TEMPLATE_ANALYZED.ordinal() && !analysisReady) {
+            if (job.nodeExecution(PptJobNode.PROJECT_READY) != null
+                    && job.nodeExecution(PptJobNode.PROJECT_READY).status()
+                    == domi.argenticpptmaster.domain.PptJobNodeStatus.COMPLETED) {
+                return PptJobNode.PROJECT_READY;
+            }
+            throw new PptJobResumeException(job.id(),
+                    "template analysis artifacts are missing; re-prepare and analyze required");
         }
         return checkpoint;
     }

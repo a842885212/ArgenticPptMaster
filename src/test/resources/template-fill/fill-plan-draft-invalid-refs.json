@@ -1,0 +1,19 @@
+{
+  "status": "draft",
+  "slides": [
+    {
+      "outputOrder": 1,
+      "templateSlideIndex": 99,
+      "slotMappings": [
+        {
+          "slotId": "missing_slot",
+          "sourceRef": "content:content.md",
+          "preview": "invalid"
+        }
+      ]
+    }
+  ],
+  "omittedContent": [],
+  "capacityRisks": [],
+  "splitSuggestions": []
+}

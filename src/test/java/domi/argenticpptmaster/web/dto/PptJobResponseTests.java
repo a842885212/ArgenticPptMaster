@@ -181,6 +181,29 @@ class PptJobResponseTests {
     }
 
     @Test
+    void templateFillConfirmationPayloadKeepsSummariesWithoutAbsolutePaths() {
+        PptJob job = new PptJob(
+                UUID.randomUUID(), "demo", "ppt169", "fill", PptWorkflowMode.TEMPLATE_FILL,
+                Path.of("/private/workspace/job"));
+        job.requireConfirmation("tf-1", Map.of(
+                "stage", "template_fill_plan",
+                "contextData", Map.of(
+                        "type", "template_fill_plan",
+                        "version", 2,
+                        "digest", "abc",
+                        "pages", java.util.List.of(Map.of(
+                                "outputOrder", 1,
+                                "templateSlideIndex", 1,
+                                "preview", "bounded")))));
+
+        PptJobResponse response = PptJobResponse.from(job);
+
+        assertThat(response.confirmationPayload()).containsEntry("stage", "template_fill_plan");
+        assertThat(response.toString()).doesNotContain("/private/workspace");
+        assertThat(response.events()).isEmpty();
+    }
+
+    @Test
     void basicJobHasNullTemplateFillFields() {
         PptJob job = new PptJob(
                 UUID.randomUUID(), "demo", "ppt169", "make a deck", PptWorkflowMode.BASIC,

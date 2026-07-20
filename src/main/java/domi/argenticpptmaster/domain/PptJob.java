@@ -58,6 +58,8 @@ public class PptJob {
     private int planSlideCount;
     private int validationWarningCount;
     private int validationErrorCount;
+    private String templateFillRevisionFeedback;
+    private boolean templateFillExecutionClaimed;
 
     /**
      * 创建一个新的 PPT 任务实例。
@@ -213,6 +215,10 @@ public class PptJob {
         return validationErrorCount;
     }
 
+    public synchronized Optional<String> templateFillRevisionFeedback() {
+        return Optional.ofNullable(templateFillRevisionFeedback);
+    }
+
     public synchronized void updateTemplateAnalysis(TemplateFillAnalysisSummary summary) {
         this.templateAnalysisSummary = summary;
         touch();
@@ -300,11 +306,6 @@ public class PptJob {
         return true;
     }
 
-    /**
-     * 启动模板填充工作区准备（ACCEPTED 或 FAILED 状态）。
-     *
-     * @return 仅当任务为模板填充且处于可启动状态时返回 true
-     */
     public synchronized boolean tryStartPrepare() {
         if (workflowMode != PptWorkflowMode.TEMPLATE_FILL) {
             return false;
@@ -319,6 +320,74 @@ public class PptJob {
             return true;
         }
         return false;
+    }
+
+    /**
+     * 在模板分析完成后启动计划 Agent。
+     */
+    public synchronized boolean tryStartTemplateFillPlanning() {
+        if (workflowMode != PptWorkflowMode.TEMPLATE_FILL) {
+            return false;
+        }
+        if (status != PptJobStatus.PREPARING && status != PptJobStatus.ACCEPTED) {
+            return false;
+        }
+        PptNodeExecution analyzed = nodeExecutions.get(PptJobNode.TEMPLATE_ANALYZED);
+        if (analyzed == null || analyzed.status() != PptJobNodeStatus.COMPLETED) {
+            return false;
+        }
+        if (fillPlanStatus == FillPlanStatus.CONFIRMED || fillPlanStatus == FillPlanStatus.VALIDATED) {
+            return false;
+        }
+        status = PptJobStatus.RUNNING_AGENT;
+        currentNode = PptJobNode.FILL_PLAN_DRAFTED;
+        touch();
+        return true;
+    }
+
+    /** 人工批准 confirmed plan 后领取原生执行。 */
+    public synchronized boolean markTemplateFillExecutionStarted() {
+        if (workflowMode != PptWorkflowMode.TEMPLATE_FILL) {
+            return false;
+        }
+        if (fillPlanStatus != FillPlanStatus.CONFIRMED) {
+            return false;
+        }
+        if (templateFillExecutionClaimed
+                || status == PptJobStatus.EXPORTING
+                || status == PptJobStatus.COMPLETED) {
+            return false;
+        }
+        templateFillExecutionClaimed = true;
+        status = PptJobStatus.PREPARING;
+        touch();
+        return true;
+    }
+
+    /** 用户要求修订计划时重置草拟节点并保留有界反馈。 */
+    public synchronized void resetFillPlanDrafting(String feedback) {
+        if (workflowMode != PptWorkflowMode.TEMPLATE_FILL) {
+            return;
+        }
+        nodeExecutions.put(PptJobNode.FILL_PLAN_DRAFTED, PptNodeExecution.pending(PptJobNode.FILL_PLAN_DRAFTED));
+        nodeExecutions.put(PptJobNode.FILL_PLAN_CONFIRMED, PptNodeExecution.pending(PptJobNode.FILL_PLAN_CONFIRMED));
+        fillPlanStatus = FillPlanStatus.NONE;
+        planSlideCount = 0;
+        templateFillRevisionFeedback = boundedFeedback(feedback);
+        currentConfirmationId = null;
+        confirmationPayload = Map.of();
+        confirmation = null;
+        currentNode = PptJobNode.FILL_PLAN_DRAFTED;
+        status = PptJobStatus.PREPARING;
+        touch();
+    }
+
+    private static String boundedFeedback(String feedback) {
+        if (feedback == null || feedback.isBlank()) {
+            return null;
+        }
+        String trimmed = feedback.trim();
+        return trimmed.length() <= 2_000 ? trimmed : trimmed.substring(0, 2_000);
     }
 
     /**

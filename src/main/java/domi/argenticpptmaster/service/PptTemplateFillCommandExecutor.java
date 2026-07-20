@@ -1,5 +1,7 @@
 package domi.argenticpptmaster.service;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import domi.argenticpptmaster.config.PptMasterProperties;
 import domi.argenticpptmaster.domain.FillPlanStatus;
 import domi.argenticpptmaster.domain.PptJob;
@@ -14,6 +16,7 @@ import domi.argenticpptmaster.domain.TemplateFillErrorCode;
 import domi.argenticpptmaster.infra.PptMasterCommandExecutor;
 import domi.argenticpptmaster.repository.PptJobRepository;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -44,6 +47,7 @@ public class PptTemplateFillCommandExecutor {
     private final PptMasterCommandExecutor commands;
     private final PptTemplateFillAnalysisReader analysisReader;
     private final PptTemplateFillConcurrencyLimiter concurrencyLimiter;
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     public PptTemplateFillCommandExecutor(
             PptMasterProperties properties,
@@ -120,6 +124,7 @@ public class PptTemplateFillCommandExecutor {
             if (confirmedPlan == null || !Files.isRegularFile(confirmedPlan)) {
                 throw new PptTemplateFillExecutionException("LOAD", "confirmed fill plan is missing");
             }
+            requireConfirmedPlanContent(confirmedPlan);
         }
 
         try {
@@ -293,6 +298,7 @@ public class PptTemplateFillCommandExecutor {
     }
 
     private CommandResult run(PptJob job, String stage, String script, List<String> arguments, Duration timeout) {
+        rejectUnsafeCommand(stage, script, arguments);
         events.record(job, PptJobEvent.of(PptJobEventType.TEMPLATE_FILL_STAGE_STARTED,
                 "template-fill stage started", progressPayload(job, Map.of("stage", stage))));
         PptMasterCommandExecutor.CommandResult result = commands.runPythonScript(script, List.copyOf(arguments), timeout);
@@ -300,6 +306,35 @@ public class PptTemplateFillCommandExecutor {
             throw stageFailure(stage, result);
         }
         return new CommandResult(result.output());
+    }
+
+    private void requireConfirmedPlanContent(Path planPath) {
+        try {
+            byte[] bytes = Files.readAllBytes(planPath);
+            String text = new String(bytes, StandardCharsets.UTF_8);
+            if (text.contains("--force")) {
+                throw new PptTemplateFillExecutionException("LOAD", "force execution is not allowed");
+            }
+            JsonNode root = objectMapper.readTree(bytes);
+            if (!"confirmed".equalsIgnoreCase(root.path("status").asText(null))) {
+                throw new PptTemplateFillExecutionException("LOAD", "fill plan status must be confirmed");
+            }
+        } catch (PptTemplateFillExecutionException ex) {
+            throw ex;
+        } catch (IOException | RuntimeException ex) {
+            throw new PptTemplateFillExecutionException("LOAD", "confirmed fill plan is invalid");
+        }
+    }
+
+    private static void rejectUnsafeCommand(String stage, String script, List<String> arguments) {
+        if (script.contains("svg") || script.contains("image_gen") || script.contains("finalize_svg")) {
+            throw new PptTemplateFillExecutionException(stage, "svg/image tooling is not allowed in template-fill");
+        }
+        for (String argument : arguments) {
+            if (argument != null && argument.contains("--force")) {
+                throw new PptTemplateFillExecutionException(stage, "force execution is not allowed");
+            }
+        }
     }
 
     private PptTemplateFillExecutionException stageFailure(String stage, PptMasterCommandExecutor.CommandResult result) {

@@ -1,0 +1,45 @@
+{
+  "status": "draft",
+  "version": 1,
+  "slides": [
+    {
+      "outputOrder": 1,
+      "templateSlideIndex": 1,
+      "layoutNote": "封面页映射产品介绍标题",
+      "slotMappings": [
+        {
+          "slotId": "s01_sh1",
+          "sourceRef": "content:content.md",
+          "preview": "模板填充集成方案"
+        }
+      ]
+    },
+    {
+      "outputOrder": 2,
+      "templateSlideIndex": 2,
+      "layoutNote": "正文页承载核心能力列表",
+      "slotMappings": [
+        {
+          "slotId": "s02_sh1",
+          "sourceRef": "content:content.md",
+          "preview": "Agent 自动生成 fill plan"
+        },
+        {
+          "slotId": "s02_sh2",
+          "sourceRef": "content:content.md",
+          "preview": "人工确认后执行原生填充"
+        }
+      ]
+    }
+  ],
+  "omittedContent": ["附录中的历史版本对比"],
+  "capacityRisks": ["第二页正文槽位接近容量上限"],
+  "splitSuggestions": ["若附录必须保留，可追加一页正文模板页"],
+  "tableChartHandling": [
+    {
+      "targetId": "s02_tbl1",
+      "strategy": "保留模板表格结构，仅填充前两列摘要"
+    }
+  ],
+  "acceptedWarnings": ["warn:slot overflow on slide 2"]
+}

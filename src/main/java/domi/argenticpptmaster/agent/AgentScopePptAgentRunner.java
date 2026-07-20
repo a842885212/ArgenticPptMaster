@@ -696,6 +696,9 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
         if ("outline_confirmation".equals(stage)) {
             job.waitNodeConfirmation(PptJobNode.OUTLINE_DRAFTED);
         }
+        if ("template_fill_plan".equals(stage)) {
+            job.waitNodeConfirmation(PptJobNode.FILL_PLAN_DRAFTED);
+        }
         String confirmationId = UUID.randomUUID().toString();
         job.requireConfirmation(confirmationId, payload);
         events.record(job, PptJobEvent.of(
@@ -963,6 +966,9 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
      * @return 初始指令文本
      */
     private String buildInitialInstruction(PptJob job) {
+        if (job.workflowMode() == PptWorkflowMode.TEMPLATE_FILL) {
+            return buildTemplateFillInitialInstruction(job);
+        }
         String workflowSteps = job.workflowMode() == PptWorkflowMode.IMAGE_ENHANCED
                 ? """
                 3. 完成资料分析后，先生成逐页大纲并写入 outline.json（version 从 1 开始、locked=false），通过 request_plan_confirmation（stage="outline_confirmation"）在 contextData 中返回 {type:"ppt_outline", version, locked:false, slides:[...]}。
@@ -1003,6 +1009,54 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
                 job.instruction() == null ? "" : job.instruction());
     }
 
+    private String buildTemplateFillInitialInstruction(PptJob job) {
+        String revisionHint = job.templateFillRevisionFeedback()
+                .map(feedback -> "- operatorRevisionFeedback: " + feedback)
+                .orElse("");
+        return """
+                当前模板填充任务已完成 TEMPLATE_ANALYZED。请基于内容资料与 slide library 草拟 fill plan：
+                1. 读取内容来源与模板页库摘要，按内容逻辑匹配版式，不要机械按模板原页序替换。
+                2. 使用 write_template_fill_plan_draft 保存 status=draft 的计划，并记录 omittedContent、capacityRisks、splitSuggestions、tableChartHandling。
+                3. 通过 request_plan_confirmation（stage="template_fill_plan"）提交确认，contextData.type 必须为 template_fill_plan，并包含 version、digest、pages。
+                4. 在人工 APPROVE 前不得假设计划已 confirmed，不得调用 apply/check-plan/validate 或使用 --force。
+
+                任务上下文：
+                - jobId: %s
+                - projectName: %s
+                - format: %s
+                - sourceCount: %d
+                - instruction: %s
+                %s
+                """.formatted(
+                job.id(),
+                job.projectName(),
+                job.format(),
+                job.sourceFiles().size(),
+                job.instruction() == null ? "" : job.instruction(),
+                revisionHint);
+    }
+
+    private String buildTemplateFillResumeInstruction(PptJob job, PptJobNode checkpoint) {
+        String revisionHint = job.templateFillRevisionFeedback()
+                .map(feedback -> "- operatorRevisionFeedback: " + feedback)
+                .orElse("");
+        return """
+                当前模板填充任务正在修订 fill plan，请从 %s 继续：
+                1. 先调用 inspect_template_fill_checkpoint_status，确认 TEMPLATE_ANALYZED 仍然有效。
+                2. 读取 Operator 反馈并修订 draft 计划；不得覆盖原始模板或重复 analyze。
+                3. 保存新的 draft 后再次 request_plan_confirmation（stage="template_fill_plan"）。
+
+                任务上下文：
+                - jobId: %s
+                - checkpoint: %s
+                %s
+                """.formatted(
+                checkpoint.name(),
+                job.id(),
+                checkpoint.name(),
+                revisionHint);
+    }
+
     /**
      * 构建从 checkpoint 恢复时的用户指令文本。
      * <p>
@@ -1020,6 +1074,9 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
      * @return checkpoint 恢复指令文本
      */
     private String buildCheckpointResumeInstruction(PptJob job, PptJobNode checkpoint) {
+        if (job.workflowMode() == PptWorkflowMode.TEMPLATE_FILL) {
+            return buildTemplateFillResumeInstruction(job, checkpoint);
+        }
         List<PptJobNode> completedNodes = collectCompletedNodes(job, checkpoint);
         List<PptJobNode> allowedNextNodes = collectAllowedNextNodes(job, checkpoint);
         return """

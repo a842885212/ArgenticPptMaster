@@ -13,6 +13,9 @@ import domi.argenticpptmaster.domain.PptWorkflowMode;
 import domi.argenticpptmaster.infra.PptMasterCommandExecutor;
 import domi.argenticpptmaster.service.PptJobEventPublisher;
 import domi.argenticpptmaster.service.PptOutlineStore;
+import domi.argenticpptmaster.service.PptTemplateFillAnalysisReader;
+import domi.argenticpptmaster.service.PptTemplateFillPlanStore;
+import domi.argenticpptmaster.service.TemplateFillPlanValidator;
 import domi.argenticpptmaster.service.PptWorkflowEvents;
 import io.agentscope.core.model.Model;
 import java.io.IOException;
@@ -160,8 +163,8 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
                 UUID.randomUUID(), "pending", "ppt169", "make a deck", PptWorkflowMode.BASIC,
                 tempDir.resolve("workspace/jobs/pending"));
         pendingJob.prepareProject(context.projectPath);
-        DefaultAgentScopeWorkflowAgentFactory.PptAgentToolRuntime pendingRuntime =
-                new DefaultAgentScopeWorkflowAgentFactory.PptAgentToolRuntime(
+        PptAgentToolRuntime pendingRuntime =
+                new PptAgentToolRuntime(
                         pendingJob, context.properties, context.executor, context.events);
 
         assertThatThrownBy(() -> context.tools.writeProjectTextFile("design_spec.md", "draft", pendingRuntime))
@@ -349,6 +352,53 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
         assertThat(prompt).doesNotContain("绝不要直接结束任务");
     }
 
+    @Test
+    void templateFillSystemPromptUsesDedicatedRulesWithoutSvgOrImageTools() throws IOException {
+        TestContext context = createContext();
+        String prompt = context.factory.buildSystemPrompt(PptWorkflowMode.TEMPLATE_FILL);
+
+        assertThat(prompt).contains("template_fill_plan");
+        assertThat(prompt).contains("write_template_fill_plan_draft");
+        assertThat(prompt).contains("capacityRisks");
+        assertThat(prompt).contains("禁止默认缩小字体");
+        assertThat(prompt).doesNotContain("svg_output");
+        assertThat(prompt).doesNotContain("generate_project_images");
+        assertThat(prompt).doesNotContain("outline_confirmation");
+    }
+
+    @Test
+    void templateFillToolkitExposesOnlySemanticPlanAndConfirmationTools() throws Exception {
+        java.lang.reflect.Method[] methods = TemplateFillAgentTools.class.getDeclaredMethods();
+        java.util.Set<String> toolNames = new java.util.LinkedHashSet<>();
+        for (java.lang.reflect.Method method : methods) {
+            io.agentscope.core.tool.Tool annotation = method.getAnnotation(io.agentscope.core.tool.Tool.class);
+            if (annotation != null) {
+                toolNames.add(annotation.name());
+            }
+        }
+
+        assertThat(toolNames).containsExactlyInAnyOrder(
+                "list_template_fill_content_sources",
+                "read_template_fill_content_source",
+                "read_template_slide_library_page",
+                "inspect_template_fill_checkpoint_status",
+                "write_template_fill_plan_draft",
+                "write_template_fill_plan_rationale");
+        assertThat(toolNames).noneMatch(name -> name.contains("svg") || name.contains("image") || name.contains("export"));
+    }
+
+    @Test
+    void basicAndImageEnhancedPromptsRemainUnchangedRelativeToTemplateFillIsolation() throws IOException {
+        TestContext context = createContext();
+        String basic = context.factory.buildSystemPrompt(PptWorkflowMode.BASIC);
+        String image = context.factory.buildSystemPrompt(PptWorkflowMode.IMAGE_ENHANCED);
+
+        assertThat(basic).contains("outline_confirmation");
+        assertThat(basic).doesNotContain("template_fill_plan");
+        assertThat(image).contains("image_retry_decision");
+        assertThat(image).doesNotContain("write_template_fill_plan_draft");
+    }
+
     private TestContext createContextWithImageEnhancedMode() {
         try {
             TestContext base = createContext();
@@ -361,7 +411,7 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
                     base.job.workspacePath());
             job.prepareProject(base.projectPath);
             return new TestContext(base.projectPath, base.tools,
-                    new DefaultAgentScopeWorkflowAgentFactory.PptAgentToolRuntime(
+                    new PptAgentToolRuntime(
                             job, base.properties, base.executor, base.events),
                     base.executor, base.factory, job, base.properties, base.events, base.agentProperties);
         } catch (IOException ex) {
@@ -419,11 +469,18 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
                 properties,
                 pptProperties,
                 new RecordingCommandExecutor(pptProperties),
-                new PptWorkflowEvents(new PptJobEventPublisher()));
+                new PptWorkflowEvents(new PptJobEventPublisher()),
+                templateFillAgentTools(pptProperties));
 
         assertThatThrownBy(factory::buildModel)
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("primary model group must be configured");
+    }
+
+    private TemplateFillAgentTools templateFillAgentTools(PptMasterProperties properties) {
+        return new TemplateFillAgentTools(
+                new PptTemplateFillPlanStore(properties, new TemplateFillPlanValidator()),
+                new PptTemplateFillAnalysisReader());
     }
 
     private TestContext createContext() throws IOException {
@@ -456,7 +513,8 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
                 agentProperties,
                 properties,
                 executor,
-                events);
+                events,
+                templateFillAgentTools(properties));
         DefaultAgentScopeWorkflowAgentFactory.PptAgentTools tools = factory.new PptAgentTools();
 
         PptJob job = new PptJob(
@@ -467,8 +525,8 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
                 PptWorkflowMode.BASIC,
                 workspacePath.resolve("jobs/demo"));
         job.prepareProject(projectPath);
-        DefaultAgentScopeWorkflowAgentFactory.PptAgentToolRuntime runtime =
-                new DefaultAgentScopeWorkflowAgentFactory.PptAgentToolRuntime(job, properties, executor, events);
+        PptAgentToolRuntime runtime =
+                new PptAgentToolRuntime(job, properties, executor, events);
         return new TestContext(projectPath, tools, runtime, executor, factory, job, properties, events, agentProperties);
     }
 
@@ -490,9 +548,10 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
                     agentProperties,
                     base.properties,
                     new RecordingCommandExecutor(base.properties),
-                    base.events);
+                    base.events,
+                    templateFillAgentTools(base.properties));
             return new TestContext(base.projectPath, factory.new PptAgentTools(),
-                    new DefaultAgentScopeWorkflowAgentFactory.PptAgentToolRuntime(
+                    new PptAgentToolRuntime(
                             base.job, base.properties, base.executor, base.events),
                     base.executor, factory, base.job, base.properties, base.events, agentProperties);
         } catch (IOException ex) {
@@ -503,7 +562,7 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
     private record TestContext(
             Path projectPath,
             DefaultAgentScopeWorkflowAgentFactory.PptAgentTools tools,
-            DefaultAgentScopeWorkflowAgentFactory.PptAgentToolRuntime runtime,
+            PptAgentToolRuntime runtime,
             RecordingCommandExecutor executor,
             DefaultAgentScopeWorkflowAgentFactory factory,
             PptJob job,

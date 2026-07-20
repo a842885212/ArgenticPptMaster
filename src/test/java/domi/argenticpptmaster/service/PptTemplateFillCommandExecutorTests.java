@@ -184,4 +184,88 @@ class PptTemplateFillCommandExecutorTests {
                 .hasMessageContaining("escapes job workspace");
         verify(commands, never()).runPythonScript(org.mockito.ArgumentMatchers.anyString(), anyList(), any(Duration.class));
     }
+
+    @Test
+    void rejectsDraftOrForcedPlanBeforeRunningNativeCommands() throws Exception {
+        UUID jobId = UUID.randomUUID();
+        Path workspace = tempDir.resolve("draft-job");
+        Path templatePath = workspace.resolve("uploads/template/0-brand.pptx");
+        Files.createDirectories(templatePath.getParent());
+        Files.writeString(templatePath, "template");
+        Files.createDirectories(workspace.resolve("analysis"));
+        Files.writeString(workspace.resolve("analysis/fill_plan.json"), "{\"status\":\"draft\",\"slides\":[]}");
+        PptJob job = new PptJob(jobId, "demo", "ppt169", "fill", PptWorkflowMode.TEMPLATE_FILL, workspace);
+        job.setTemplate(new PptTemplateFile("brand.pptx", "application/octet-stream", 8L, templatePath));
+        when(repository.findById(jobId)).thenReturn(Optional.of(job));
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(
+                        () -> executor.execute(jobId, workspace.resolve("analysis/fill_plan.json")))
+                .isInstanceOf(PptTemplateFillExecutionException.class)
+                .hasMessageContaining("confirmed");
+        verify(commands, never()).runPythonScript(org.mockito.ArgumentMatchers.anyString(), anyList(), any(Duration.class));
+
+        Files.writeString(workspace.resolve("analysis/fill_plan.json"),
+                "{\"status\":\"confirmed\",\"slides\":[],\"note\":\"--force\"}");
+        org.assertj.core.api.Assertions.assertThatThrownBy(
+                        () -> executor.execute(jobId, workspace.resolve("analysis/fill_plan.json")))
+                .isInstanceOf(PptTemplateFillExecutionException.class)
+                .hasMessageContaining("force");
+        verify(commands, never()).runPythonScript(org.mockito.ArgumentMatchers.anyString(), anyList(), any(Duration.class));
+    }
+
+    @Test
+    void nativeCommandsNeverIncludeForceSvgOrImageTooling() throws Exception {
+        UUID jobId = UUID.randomUUID();
+        Path workspace = tempDir.resolve("args-job");
+        Path templatePath = workspace.resolve("uploads/template/0-brand.pptx");
+        Path sourcePath = workspace.resolve("uploads/content/0-source.md");
+        Files.createDirectories(templatePath.getParent());
+        Files.createDirectories(sourcePath.getParent());
+        Files.writeString(templatePath, "template");
+        Files.writeString(sourcePath, "# source");
+        Files.createDirectories(workspace.resolve("analysis"));
+        Files.writeString(workspace.resolve("analysis/fill_plan.json"), "{\"status\":\"confirmed\",\"slides\":[]}");
+        PptJob job = new PptJob(jobId, "demo", "ppt169", "fill", PptWorkflowMode.TEMPLATE_FILL, workspace);
+        job.setTemplate(new PptTemplateFile("brand.pptx", "application/octet-stream", 8L, templatePath));
+        job.addSource(new PptSourceFile("source.md", "text/markdown", 8L, sourcePath));
+        when(repository.findById(jobId)).thenReturn(Optional.of(job));
+        ArgumentCaptor<String> scriptCaptor = ArgumentCaptor.forClass(String.class);
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<String>> argsCaptor = ArgumentCaptor.forClass(List.class);
+        when(commands.runPythonScript(scriptCaptor.capture(), argsCaptor.capture(), any(Duration.class)))
+                .thenAnswer(invocation -> {
+                    String script = invocation.getArgument(0);
+                    @SuppressWarnings("unchecked") List<String> args = invocation.getArgument(1);
+                    if (script.endsWith("project_manager.py") && args.get(0).equals("init")) {
+                        Path project = workspace.resolve("projects/demo_ppt169_20260720");
+                        Files.createDirectories(project.resolve("analysis"));
+                        Files.createDirectories(project.resolve("exports"));
+                        Files.createDirectories(project.resolve("validation"));
+                        return new PptMasterCommandExecutor.CommandResult(0,
+                                "[OK] Project initialized: " + project, false);
+                    }
+                    if (script.endsWith("template_fill_pptx.py") && args.get(0).equals("analyze")) {
+                        Files.copy(getClass().getResourceAsStream("/template-fill/template.slide_library.json"),
+                                Path.of(args.get(args.indexOf("-o") + 1)));
+                    }
+                    if (script.endsWith("template_fill_pptx.py") && args.get(0).equals("check-plan")) {
+                        Files.copy(getClass().getResourceAsStream("/template-fill/check_report.json"),
+                                Path.of(args.get(args.indexOf("-o") + 1)));
+                    }
+                    if (script.endsWith("template_fill_pptx.py") && args.get(0).equals("apply")) {
+                        Path requestedOutput = Path.of(args.get(args.indexOf("-o") + 1));
+                        Files.writeString(requestedOutput.resolveSibling("template-fill_20260720_000000.pptx"), "pptx");
+                    }
+                    return new PptMasterCommandExecutor.CommandResult(0, "ok", false);
+                });
+
+        executor.execute(jobId, workspace.resolve("analysis/fill_plan.json"));
+
+        assertThat(scriptCaptor.getAllValues())
+                .allSatisfy(script -> assertThat(script).doesNotContain("svg").doesNotContain("image_gen"));
+        assertThat(argsCaptor.getAllValues())
+                .allSatisfy(args -> assertThat(args).noneMatch(arg -> arg.contains("--force")));
+        assertThat(argsCaptor.getAllValues().stream().map(args -> args.get(0)).toList())
+                .contains("init", "import-sources", "analyze", "check-plan", "apply", "validate");
+    }
 }

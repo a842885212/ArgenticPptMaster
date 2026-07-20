@@ -152,7 +152,7 @@ class PptWorkflowServiceTests {
     }
 
     @Test
-    void createsTemplateFillJobWithRoleIsolatedUploadsWithoutStartingAgent() {
+    void createsTemplateFillJobWithRoleIsolatedUploadsAndStartsPrepareFlow() {
         MockMultipartFile template = new MockMultipartFile(
                 "templateFile", "brand.PPTX", MediaType.APPLICATION_OCTET_STREAM_VALUE, "pptx".getBytes());
         MockMultipartFile source = new MockMultipartFile(
@@ -162,7 +162,7 @@ class PptWorkflowServiceTests {
                 List.of(source), template, "demo", "ppt169", "fill", "template-fill"));
 
         assertThat(job.workflowMode()).isEqualTo(PptWorkflowMode.TEMPLATE_FILL);
-        assertThat(job.status()).isEqualTo(PptJobStatus.ACCEPTED);
+        assertThat(job.status()).isEqualTo(PptJobStatus.PREPARING);
         assertThat(job.template()).isPresent();
         assertThat(job.template().orElseThrow().storedPath().getParent().getFileName().toString())
                 .isEqualTo("template");

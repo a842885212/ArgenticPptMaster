@@ -133,10 +133,24 @@ public record PptJobResponse(
         Integer warnings = job.validationWarningCount() > 0 ? job.validationWarningCount() : null;
         Integer errors = job.validationErrorCount() > 0 ? job.validationErrorCount() : null;
         String exportName = job.exportPath().map(path -> path.getFileName().toString()).orElse(null);
-        if (templateSlides == null && planSlides == null && warnings == null && errors == null && exportName == null) {
+        Integer notes = job.notesMappingCount() > 0 ? job.notesMappingCount() : null;
+        Integer tables = job.tableMappingCount() > 0 ? job.tableMappingCount() : null;
+        Integer charts = job.chartMappingCount() > 0 ? job.chartMappingCount() : null;
+        Integer capacity = job.capacityRiskCount() > 0 ? job.capacityRiskCount() : null;
+        Integer fonts = job.fontAdjustmentCount() > 0 ? job.fontAdjustmentCount() : null;
+        String constraintStatus = job.constraintValidationStatus();
+        String readbackStatus = job.readbackValidationStatus();
+        Integer readbackWarnings = job.readbackWarningCount() > 0 ? job.readbackWarningCount() : null;
+        Integer readbackErrors = job.readbackErrorCount() > 0 ? job.readbackErrorCount() : null;
+        if (templateSlides == null && planSlides == null && warnings == null && errors == null && exportName == null
+                && notes == null && tables == null && charts == null && capacity == null && fonts == null
+                && constraintStatus == null && readbackStatus == null) {
             return null;
         }
-        return new TemplateFillProgressResponse(templateSlides, planSlides, errors, warnings, exportName);
+        return new TemplateFillProgressResponse(
+                templateSlides, planSlides, errors, warnings, exportName,
+                notes, tables, charts, capacity, fonts, constraintStatus, readbackStatus,
+                readbackWarnings, readbackErrors);
     }
 
     private static Integer outlineVersion(Map<String, Object> payload) {

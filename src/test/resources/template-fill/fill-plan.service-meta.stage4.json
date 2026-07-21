@@ -1,0 +1,32 @@
+{
+  "schema": "template_fill_service_meta.v1",
+  "version": 1,
+  "constraints": {
+    "allowedTemplateSlides": [1, 2, 3, 4],
+    "excludedTemplateSlides": [],
+    "preserveCover": true,
+    "preserveEnding": true,
+    "maxSlides": 4
+  },
+  "capacityDecisions": [
+    {
+      "sourceSlide": 2,
+      "slotId": "s02_sh2",
+      "evaluated": ["rewrite", "split-or-larger-layout"],
+      "selected": "rewrite",
+      "note": "rewrote body bullets to fit capacity"
+    }
+  ],
+  "sourceRefs": {
+    "s01_sh1": "content:content.md",
+    "s02_sh1": "content:content.md",
+    "s02_sh2": "content:content.md",
+    "s02_tbl1": "content:content.md",
+    "s03_ch1": "content:content.md",
+    "s04_sh1": "content:content.md"
+  },
+  "omittedContent": ["附录中的历史版本对比"],
+  "splitSuggestions": [],
+  "fontAdjustments": [],
+  "unsupportedContent": []
+}

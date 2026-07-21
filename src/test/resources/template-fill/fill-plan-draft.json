@@ -1,4 +1,20 @@
 {
+  "schema": "template_fill_pptx_plan.v1",
   "status": "draft",
-  "slides": []
+  "accepted_warnings": [],
+  "slides": [
+    {
+      "source_slide": 1,
+      "purpose": "cover",
+      "replacements": [
+        {
+          "slot_id": "s01_sh1",
+          "text": "模板填充集成方案"
+        }
+      ],
+      "table_edits": [],
+      "chart_edits": [],
+      "transition": "fade"
+    }
+  ]
 }

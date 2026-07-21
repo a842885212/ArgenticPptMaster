@@ -22,6 +22,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -47,6 +48,12 @@ public class PptTemplateFillCommandExecutor {
     private final PptMasterCommandExecutor commands;
     private final PptTemplateFillAnalysisReader analysisReader;
     private final PptTemplateFillConcurrencyLimiter concurrencyLimiter;
+    private final TemplateFillCapabilityIndexLoader capabilityIndexLoader;
+    private final TemplateFillConstraintResolver constraintResolver;
+    private final PptTemplateFillPlanStore planStore;
+    private final TemplateFillOutputVerifier outputVerifier;
+    private final TemplateFillLifecycleStore lifecycleStore;
+    private final TemplateFillTelemetry telemetry;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     public PptTemplateFillCommandExecutor(
@@ -55,13 +62,42 @@ public class PptTemplateFillCommandExecutor {
             PptWorkflowEvents events,
             PptMasterCommandExecutor commands,
             PptTemplateFillAnalysisReader analysisReader,
-            PptTemplateFillConcurrencyLimiter concurrencyLimiter) {
+            PptTemplateFillConcurrencyLimiter concurrencyLimiter,
+            TemplateFillCapabilityIndexLoader capabilityIndexLoader,
+            TemplateFillConstraintResolver constraintResolver,
+            PptTemplateFillPlanStore planStore,
+            TemplateFillOutputVerifier outputVerifier,
+            TemplateFillLifecycleStore lifecycleStore) {
+        this(properties, repository, events, commands, analysisReader, concurrencyLimiter,
+                capabilityIndexLoader, constraintResolver, planStore, outputVerifier, lifecycleStore, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public PptTemplateFillCommandExecutor(
+            PptMasterProperties properties,
+            PptJobRepository repository,
+            PptWorkflowEvents events,
+            PptMasterCommandExecutor commands,
+            PptTemplateFillAnalysisReader analysisReader,
+            PptTemplateFillConcurrencyLimiter concurrencyLimiter,
+            TemplateFillCapabilityIndexLoader capabilityIndexLoader,
+            TemplateFillConstraintResolver constraintResolver,
+            PptTemplateFillPlanStore planStore,
+            TemplateFillOutputVerifier outputVerifier,
+            TemplateFillLifecycleStore lifecycleStore,
+            TemplateFillTelemetry telemetry) {
         this.properties = properties;
         this.repository = repository;
         this.events = events;
         this.commands = commands;
         this.analysisReader = analysisReader;
         this.concurrencyLimiter = concurrencyLimiter;
+        this.capabilityIndexLoader = capabilityIndexLoader;
+        this.constraintResolver = constraintResolver;
+        this.planStore = planStore;
+        this.outputVerifier = outputVerifier;
+        this.lifecycleStore = lifecycleStore == null ? new TemplateFillLifecycleStore(properties) : lifecycleStore;
+        this.telemetry = telemetry;
     }
 
     /** 执行 confirmed plan 全流程（支持 checkpoint 跳过）。 */
@@ -143,8 +179,11 @@ public class PptTemplateFillCommandExecutor {
             if (shouldRunAnalyze(mode)) {
                 analyzeTemplate(job, templatePath, slideLibrary);
                 TemplateFillAnalysisSummary summary = analysisReader.readSummary(slideLibrary);
+                var capabilityIndex = capabilityIndexLoader.load(slideLibrary);
+                constraintResolver.validateAgainstLibrary(job.templateConstraints(), capabilityIndex);
                 job.updateTemplateAnalysis(summary);
                 job.updateFillPlanStatus(FillPlanStatus.NONE, 0, 0, 0);
+                job.updateNativePlanAggregates(0, 0, 0, 0, 0, "VALID");
                 repository.save(job);
                 recordCheckpoint(job, PptJobNode.TEMPLATE_ANALYZED, summaryPayload(summary));
             }
@@ -154,6 +193,7 @@ public class PptTemplateFillCommandExecutor {
             }
 
             if (shouldRunValidatePlan(mode)) {
+                planStore.assertPlanIntegrity(job);
                 Files.copy(confirmedPlan, projectPlan, StandardCopyOption.REPLACE_EXISTING);
                 recordCheckpoint(job, PptJobNode.FILL_PLAN_CONFIRMED, Map.of("plan", "confirmed"));
                 validatePlan(job, slideLibrary, projectPlan, checkReport);
@@ -165,6 +205,7 @@ public class PptTemplateFillCommandExecutor {
             }
 
             if (shouldRunApply(mode)) {
+                planStore.assertPlanIntegrity(job);
                 Path exportsDir = requireInside(workspace, project.resolve("exports"), "exports");
                 Files.createDirectories(exportsDir);
                 if (!findPptxExports(exportsDir).isEmpty()) {
@@ -187,13 +228,33 @@ public class PptTemplateFillCommandExecutor {
                 Path generatedExport = requireUniqueExport(exportsDir);
                 validateOutput(job, project);
                 requireFile(generatedExport, "VALIDATE");
+                Path validationDir = requireInside(workspace, project.resolve("validation"), "validation");
+                var metadata = planStore.readMetadata(job).orElse(null);
+                TemplateFillOutputVerifier.ReadbackResult readback = outputVerifier.verify(
+                        job,
+                        generatedExport,
+                        projectPlan,
+                        validationDir,
+                        metadata == null ? "" : metadata.digest(),
+                        metadata == null ? 0 : metadata.version());
+                repository.save(job);
+                if (!readback.passed()) {
+                    recordStageTelemetry("READBACK", TemplateFillTelemetry.Outcome.FAILURE, Duration.ZERO);
+                    throw new PptTemplateFillExecutionException(
+                            "READBACK",
+                            "template-fill readback failed",
+                            TemplateFillErrorCode.TEMPLATE_READBACK_FAILED);
+                }
+                recordStageTelemetry("READBACK", TemplateFillTelemetry.Outcome.SUCCESS, Duration.ZERO);
                 Path deliveryDir = requireInside(workspace, workspace.resolve("exports"), "delivery exports");
                 Path deliveryExport = deliveryDir.resolve(generatedExport.getFileName()).normalize();
                 requireInside(workspace, deliveryExport, "delivery export");
                 Files.copy(generatedExport, deliveryExport, StandardCopyOption.REPLACE_EXISTING);
                 recordCheckpoint(job, PptJobNode.OUTPUT_VALIDATED, Map.of(
-                        "exportFileName", deliveryExport.getFileName().toString()));
+                        "exportFileName", deliveryExport.getFileName().toString(),
+                        "readbackStatus", readback.status()));
                 job.complete(deliveryExport);
+                markTerminalLifecycle(job);
                 repository.save(job);
                 events.record(job, PptJobEvent.of(PptJobEventType.EXPORT_READY, "template-fill export ready",
                         progressPayload(job, Map.of("fileName", deliveryExport.getFileName().toString()))));
@@ -301,10 +362,14 @@ public class PptTemplateFillCommandExecutor {
         rejectUnsafeCommand(stage, script, arguments);
         events.record(job, PptJobEvent.of(PptJobEventType.TEMPLATE_FILL_STAGE_STARTED,
                 "template-fill stage started", progressPayload(job, Map.of("stage", stage))));
+        Instant started = Instant.now();
         PptMasterCommandExecutor.CommandResult result = commands.runPythonScript(script, List.copyOf(arguments), timeout);
+        Duration elapsed = Duration.between(started, Instant.now());
         if (!result.successful()) {
+            recordStageTelemetry(stage, TemplateFillTelemetry.Outcome.FAILURE, elapsed);
             throw stageFailure(stage, result);
         }
+        recordStageTelemetry(stage, TemplateFillTelemetry.Outcome.SUCCESS, elapsed);
         return new CommandResult(result.output());
     }
 
@@ -345,6 +410,7 @@ public class PptTemplateFillCommandExecutor {
             case "CHECK_PLAN" -> TemplateFillErrorCode.FILL_PLAN_INVALID;
             case "APPLY" -> TemplateFillErrorCode.TEMPLATE_APPLY_FAILED;
             case "VALIDATE" -> TemplateFillErrorCode.TEMPLATE_VALIDATE_FAILED;
+            case "READBACK" -> TemplateFillErrorCode.TEMPLATE_READBACK_FAILED;
             default -> null;
         };
         return new PptTemplateFillExecutionException(stage, message, code);
@@ -382,6 +448,29 @@ public class PptTemplateFillCommandExecutor {
         if (job.validationErrorCount() > 0) {
             payload.put("validationErrorCount", job.validationErrorCount());
         }
+        if (job.notesMappingCount() > 0) {
+            payload.put("notesMappingCount", job.notesMappingCount());
+        }
+        if (job.tableMappingCount() > 0) {
+            payload.put("tableMappingCount", job.tableMappingCount());
+        }
+        if (job.chartMappingCount() > 0) {
+            payload.put("chartMappingCount", job.chartMappingCount());
+        }
+        if (job.capacityRiskCount() > 0) {
+            payload.put("capacityRiskCount", job.capacityRiskCount());
+        }
+        if (job.fontAdjustmentCount() > 0) {
+            payload.put("fontAdjustmentCount", job.fontAdjustmentCount());
+        }
+        if (job.constraintValidationStatus() != null) {
+            payload.put("constraintValidationStatus", job.constraintValidationStatus());
+        }
+        if (job.readbackValidationStatus() != null) {
+            payload.put("readbackValidationStatus", job.readbackValidationStatus());
+            payload.put("readbackWarningCount", job.readbackWarningCount());
+            payload.put("readbackErrorCount", job.readbackErrorCount());
+        }
         job.exportPath().ifPresent(path -> payload.put("exportFileName", path.getFileName().toString()));
         payload.putAll(extra);
         return payload;
@@ -408,7 +497,11 @@ public class PptTemplateFillCommandExecutor {
         } else if (job.status() != PptJobStatus.FAILED && job.status() != PptJobStatus.COMPLETED) {
             job.fail(ex.getMessage());
         }
+        markTerminalLifecycle(job);
         repository.save(job);
+        if (ex.errorCode() != null && telemetry != null) {
+            telemetry.recordError(ex.errorCode());
+        }
         Map<String, Object> payload = progressPayload(job, Map.of(
                 "stage", ex.stage(),
                 "error", safeMessage(ex.getMessage())));
@@ -416,6 +509,31 @@ public class PptTemplateFillCommandExecutor {
             payload.put("errorCode", ex.errorCode().code());
         }
         events.record(job, PptJobEvent.of(PptJobEventType.JOB_FAILED, "template-fill failed", payload));
+    }
+
+    private void recordStageTelemetry(String stage, TemplateFillTelemetry.Outcome outcome, Duration duration) {
+        if (telemetry == null) {
+            return;
+        }
+        TemplateFillTelemetry.Stage mapped = switch (stage) {
+            case "ANALYZE" -> TemplateFillTelemetry.Stage.ANALYZE;
+            case "CHECK_PLAN" -> TemplateFillTelemetry.Stage.CHECK;
+            case "APPLY" -> TemplateFillTelemetry.Stage.APPLY;
+            case "READBACK" -> TemplateFillTelemetry.Stage.READBACK;
+            case "VALIDATE" -> TemplateFillTelemetry.Stage.APPLY; // validate is post-apply integrity; reuse APPLY bucket
+            default -> TemplateFillTelemetry.Stage.UNKNOWN;
+        };
+        telemetry.recordStage(mapped, outcome, duration);
+    }
+
+    private void markTerminalLifecycle(PptJob job) {
+        if (job.workflowMode() != PptWorkflowMode.TEMPLATE_FILL || job.terminalAt().isEmpty()) {
+            return;
+        }
+        if (lifecycleStore.read(job).isEmpty()) {
+            return;
+        }
+        lifecycleStore.markTerminal(job, lifecycleStore.retentionForTerminalStatus(job.status()));
     }
 
     private static PptTemplateFillExecutionException applyFailed(String message) {

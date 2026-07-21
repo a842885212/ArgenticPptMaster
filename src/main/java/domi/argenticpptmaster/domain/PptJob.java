@@ -60,6 +60,19 @@ public class PptJob {
     private int validationErrorCount;
     private String templateFillRevisionFeedback;
     private boolean templateFillExecutionClaimed;
+    private TemplateFillConstraints templateConstraints = TemplateFillConstraints.empty();
+    private int notesMappingCount;
+    private int tableMappingCount;
+    private int chartMappingCount;
+    private int capacityRiskCount;
+    private int fontAdjustmentCount;
+    private String constraintValidationStatus;
+    private String readbackValidationStatus;
+    private int readbackWarningCount;
+    private int readbackErrorCount;
+    private String ownerSubjectId;
+    private String ownerTenantId;
+    private Instant terminalAt;
 
     /**
      * 创建一个新的 PPT 任务实例。
@@ -229,6 +242,105 @@ public class PptJob {
         this.planSlideCount = planSlides;
         this.validationWarningCount = warnings;
         this.validationErrorCount = errors;
+        touch();
+    }
+
+    public synchronized TemplateFillConstraints templateConstraints() {
+        return templateConstraints == null ? TemplateFillConstraints.empty() : templateConstraints;
+    }
+
+    public synchronized void assignTemplateConstraints(TemplateFillConstraints constraints) {
+        this.templateConstraints = constraints == null ? TemplateFillConstraints.empty() : constraints;
+        touch();
+    }
+
+    /**
+     * 绑定不可变的任务归属。仅允许设置一次。
+     */
+    public synchronized void assignOwnership(String subjectId, String tenantId) {
+        if (ownerSubjectId != null || ownerTenantId != null) {
+            throw new IllegalStateException("ownership already assigned");
+        }
+        if (subjectId == null || subjectId.isBlank() || tenantId == null || tenantId.isBlank()) {
+            throw new IllegalArgumentException("subjectId and tenantId are required");
+        }
+        this.ownerSubjectId = subjectId.trim();
+        this.ownerTenantId = tenantId.trim();
+        touch();
+    }
+
+    public synchronized Optional<String> ownerSubjectId() {
+        return Optional.ofNullable(ownerSubjectId);
+    }
+
+    public synchronized Optional<String> ownerTenantId() {
+        return Optional.ofNullable(ownerTenantId);
+    }
+
+    public synchronized Optional<Instant> terminalAt() {
+        return Optional.ofNullable(terminalAt);
+    }
+
+    public synchronized boolean hasOwnership() {
+        return ownerSubjectId != null && ownerTenantId != null;
+    }
+
+    public synchronized int notesMappingCount() {
+        return notesMappingCount;
+    }
+
+    public synchronized int tableMappingCount() {
+        return tableMappingCount;
+    }
+
+    public synchronized int chartMappingCount() {
+        return chartMappingCount;
+    }
+
+    public synchronized int capacityRiskCount() {
+        return capacityRiskCount;
+    }
+
+    public synchronized int fontAdjustmentCount() {
+        return fontAdjustmentCount;
+    }
+
+    public synchronized String constraintValidationStatus() {
+        return constraintValidationStatus;
+    }
+
+    public synchronized String readbackValidationStatus() {
+        return readbackValidationStatus;
+    }
+
+    public synchronized int readbackWarningCount() {
+        return readbackWarningCount;
+    }
+
+    public synchronized int readbackErrorCount() {
+        return readbackErrorCount;
+    }
+
+    public synchronized void updateNativePlanAggregates(
+            int notesMappings,
+            int tableMappings,
+            int chartMappings,
+            int capacityRisks,
+            int fontAdjustments,
+            String constraintStatus) {
+        this.notesMappingCount = Math.max(0, notesMappings);
+        this.tableMappingCount = Math.max(0, tableMappings);
+        this.chartMappingCount = Math.max(0, chartMappings);
+        this.capacityRiskCount = Math.max(0, capacityRisks);
+        this.fontAdjustmentCount = Math.max(0, fontAdjustments);
+        this.constraintValidationStatus = constraintStatus;
+        touch();
+    }
+
+    public synchronized void updateReadbackValidation(String status, int warnings, int errors) {
+        this.readbackValidationStatus = status;
+        this.readbackWarningCount = Math.max(0, warnings);
+        this.readbackErrorCount = Math.max(0, errors);
         touch();
     }
 
@@ -446,6 +558,7 @@ public class PptJob {
     public synchronized void complete(Path completedExportPath) {
         this.status = PptJobStatus.COMPLETED;
         this.exportPath = completedExportPath;
+        markTerminal();
         touch();
     }
 
@@ -466,6 +579,7 @@ public class PptJob {
             this.lastFailureNode = this.currentNode;
             this.currentNode = null;
         }
+        markTerminal();
         touch();
     }
 
@@ -509,6 +623,7 @@ public class PptJob {
         if (this.currentNode == node) {
             this.currentNode = null;
         }
+        markTerminal();
         touch();
     }
 
@@ -615,6 +730,12 @@ public class PptJob {
 
     private void updateNode(PptJobNode node, PptNodeExecution execution) {
         nodeExecutions.put(node, execution);
+    }
+
+    private void markTerminal() {
+        if (this.terminalAt == null) {
+            this.terminalAt = Instant.now();
+        }
     }
 
     private void touch() {

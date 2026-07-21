@@ -1,0 +1,129 @@
+{
+  "schema": "template_fill_pptx_library.v1",
+  "source_pptx": "template.pptx",
+  "slide_count": 4,
+  "canvas_px": {
+    "width": 1920,
+    "height": 1080
+  },
+  "slides": [
+    {
+      "slide_index": 1,
+      "page_type": "cover_candidate",
+      "text_summary": "Cover Title",
+      "slots": [
+        {
+          "slot_id": "s01_sh1",
+          "role": "title_candidate",
+          "text": "Cover Title",
+          "paragraph_count": 1,
+          "geometry": { "x": 100, "y": 80, "width": 1600, "height": 120 },
+          "text_metrics": { "font_size_px": 36.0, "paragraph_count": 1 }
+        }
+      ],
+      "tables": [],
+      "charts": []
+    },
+    {
+      "slide_index": 2,
+      "page_type": "content_candidate",
+      "text_summary": "Body",
+      "slots": [
+        {
+          "slot_id": "s02_sh1",
+          "role": "title_candidate",
+          "text": "Body",
+          "paragraph_count": 1,
+          "geometry": { "x": 100, "y": 60, "width": 1400, "height": 80 },
+          "text_metrics": { "font_size_px": 28.0, "paragraph_count": 1 }
+        },
+        {
+          "slot_id": "s02_sh2",
+          "role": "body_candidate",
+          "text": "More",
+          "paragraph_count": 1,
+          "geometry": { "x": 100, "y": 200, "width": 1400, "height": 400 },
+          "text_metrics": { "font_size_px": 16.0, "paragraph_count": 1 }
+        }
+      ],
+      "tables": [
+        {
+          "table_id": "s02_tbl1",
+          "row_count": 2,
+          "column_count": 2,
+          "rows": [
+            {
+              "row": 0,
+              "cells": [
+                { "row": 0, "col": 0, "text": "A" },
+                { "row": 0, "col": 1, "text": "B" }
+              ]
+            },
+            {
+              "row": 1,
+              "cells": [
+                { "row": 1, "col": 0, "text": "1" },
+                { "row": 1, "col": 1, "text": "2" }
+              ]
+            }
+          ]
+        }
+      ],
+      "charts": [],
+      "fill_risk": {
+        "has_non_text_content": true,
+        "reason": "has non-text content (table) that text-fill cannot replace; provide table_edits/chart_edits or pick another source slide"
+      }
+    },
+    {
+      "slide_index": 3,
+      "page_type": "content_candidate",
+      "text_summary": "Chart Title",
+      "slots": [
+        {
+          "slot_id": "s03_sh1",
+          "role": "title_candidate",
+          "text": "Chart Title",
+          "paragraph_count": 1,
+          "geometry": { "x": 100, "y": 60, "width": 1400, "height": 80 },
+          "text_metrics": { "font_size_px": 28.0, "paragraph_count": 1 }
+        }
+      ],
+      "tables": [],
+      "charts": [
+        {
+          "chart_id": "s03_ch1",
+          "chart_type": "bar",
+          "category_count": 2,
+          "series_count": 1,
+          "categories": ["Q1", "Q2"],
+          "series": [{ "name": "Revenue", "values": [10, 20] }]
+        }
+      ],
+      "fill_risk": {
+        "has_non_text_content": true,
+        "reason": "has non-text content (chart) that text-fill cannot replace; provide table_edits/chart_edits or pick another source slide"
+      }
+    },
+    {
+      "slide_index": 4,
+      "page_type": "ending_candidate",
+      "text_summary": "Thanks",
+      "slots": [
+        {
+          "slot_id": "s04_sh1",
+          "role": "title_candidate",
+          "text": "Thanks",
+          "paragraph_count": 1,
+          "geometry": { "x": 200, "y": 400, "width": 1400, "height": 120 },
+          "text_metrics": { "font_size_px": 40.0, "paragraph_count": 1 }
+        }
+      ],
+      "tables": [],
+      "charts": []
+    }
+  ],
+  "plan_contract": {
+    "schema": "template_fill_pptx_plan.v1"
+  }
+}

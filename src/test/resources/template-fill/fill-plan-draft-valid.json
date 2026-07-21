@@ -1,45 +1,60 @@
 {
+  "schema": "template_fill_pptx_plan.v1",
   "status": "draft",
-  "version": 1,
+  "accepted_warnings": ["warn:slot overflow on slide 2"],
   "slides": [
     {
-      "outputOrder": 1,
-      "templateSlideIndex": 1,
-      "layoutNote": "封面页映射产品介绍标题",
-      "slotMappings": [
+      "source_slide": 1,
+      "purpose": "cover",
+      "layout_rationale": {
+        "layout_pattern": "title",
+        "why_fit": "封面页映射产品介绍标题",
+        "risk": ""
+      },
+      "replacements": [
         {
-          "slotId": "s01_sh1",
-          "sourceRef": "content:content.md",
-          "preview": "模板填充集成方案"
+          "slot_id": "s01_sh1",
+          "old_text": "Title",
+          "text": "模板填充集成方案"
         }
-      ]
+      ],
+      "table_edits": [],
+      "chart_edits": [],
+      "notes": "",
+      "transition": "fade"
     },
     {
-      "outputOrder": 2,
-      "templateSlideIndex": 2,
-      "layoutNote": "正文页承载核心能力列表",
-      "slotMappings": [
+      "source_slide": 2,
+      "purpose": "content",
+      "layout_rationale": {
+        "layout_pattern": "title_body",
+        "why_fit": "正文页承载核心能力列表",
+        "risk": "第二页正文槽位接近容量上限"
+      },
+      "replacements": [
         {
-          "slotId": "s02_sh1",
-          "sourceRef": "content:content.md",
-          "preview": "Agent 自动生成 fill plan"
+          "slot_id": "s02_sh1",
+          "old_text": "Body",
+          "text": "Agent 自动生成 fill plan"
         },
         {
-          "slotId": "s02_sh2",
-          "sourceRef": "content:content.md",
-          "preview": "人工确认后执行原生填充"
+          "slot_id": "s02_sh2",
+          "old_text": "More",
+          "text": "人工确认后执行原生填充"
         }
-      ]
+      ],
+      "table_edits": [
+        {
+          "table_id": "s02_tbl1",
+          "cells": [
+            { "row": 0, "col": 0, "text": "摘要" },
+            { "row": 0, "col": 1, "text": "说明" }
+          ]
+        }
+      ],
+      "chart_edits": [],
+      "notes": "讲解能力清单",
+      "transition": "fade"
     }
-  ],
-  "omittedContent": ["附录中的历史版本对比"],
-  "capacityRisks": ["第二页正文槽位接近容量上限"],
-  "splitSuggestions": ["若附录必须保留，可追加一页正文模板页"],
-  "tableChartHandling": [
-    {
-      "targetId": "s02_tbl1",
-      "strategy": "保留模板表格结构，仅填充前两列摘要"
-    }
-  ],
-  "acceptedWarnings": ["warn:slot overflow on slide 2"]
+  ]
 }

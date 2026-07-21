@@ -1025,7 +1025,7 @@ class AgentScopePptAgentRunnerTests {
                 java.time.Duration.ofMinutes(10),
                 null,
                 1_048_576L,
-                0, 0, 0, 0, null);
+                0, 0, 0, 0, null, null, null, null, null);
     }
 
     private static AgentScopeProperties agentScopeProperties() {

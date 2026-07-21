@@ -15,7 +15,7 @@ class PptTemplateFillConcurrencyLimiterTests {
     void rejectsWhenConcurrencySaturated() {
         PptTemplateFillConcurrencyLimiter limiter = new PptTemplateFillConcurrencyLimiter(
                 new PptMasterProperties(Path.of("repo"), Path.of("workspace"), "python3",
-                        java.time.Duration.ofMinutes(1), null, 1024, 0, 0, 0, 1, null));
+                        java.time.Duration.ofMinutes(1), null, 1024, 0, 0, 0, 1, null, null, null, null, null));
 
         limiter.acquire();
 

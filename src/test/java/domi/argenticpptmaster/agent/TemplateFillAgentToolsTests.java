@@ -54,7 +54,7 @@ class TemplateFillAgentToolsTests {
         Files.writeString(exe, "binary");
 
         PptMasterProperties properties = new PptMasterProperties(
-                tempDir, tempDir, "python3", Duration.ofSeconds(1), null, 1_048_576L, 0, 0, 0, 0, null);
+                tempDir, tempDir, "python3", Duration.ofSeconds(1), null, 1_048_576L, 0, 0, 0, 0, null, null, null, null, null);
         tools = new TemplateFillAgentTools(
                 new PptTemplateFillPlanStore(properties, new TemplateFillPlanValidator()),
                 new PptTemplateFillAnalysisReader());
@@ -182,17 +182,17 @@ class TemplateFillAgentToolsTests {
 
     @Test
     void writePlanRequiresRiskOmissionAndStructuredFieldsAgainstCurrentAnalysis() {
-        String missingFields = """
+        String legacy = """
                 {"status":"draft","slides":[{"outputOrder":1,"templateSlideIndex":1,
                 "slotMappings":[{"slotId":"s01_sh1","sourceRef":"content:content.md","preview":"x"}]}]}
                 """;
-        // missing optional risk arrays are allowed; invalid slot refs are not
-        Map<String, Object> ok = tools.writePlanDraft(runtime, missingFields);
-        assertThat(ok.get("status")).isEqualTo("draft");
+        assertThatThrownBy(() -> tools.writePlanDraft(runtime, legacy))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessageContaining("legacy fill plan fields");
 
         assertThatThrownBy(() -> tools.writePlanDraft(runtime, """
-                {"status":"draft","slides":[{"outputOrder":1,"templateSlideIndex":1,
-                "slotMappings":[{"slotId":"missing","sourceRef":"content:content.md","preview":"x"}]}]}
+                {"schema":"template_fill_pptx_plan.v1","status":"draft","slides":[{"source_slide":1,
+                "replacements":[{"slot_id":"missing","text":"x"}],"table_edits":[],"chart_edits":[]}]}
                 """))
                 .isInstanceOf(RuntimeException.class)
                 .hasMessageContaining("unknown slot");

@@ -1,19 +1,19 @@
 {
+  "schema": "template_fill_pptx_plan.v1",
   "status": "draft",
+  "accepted_warnings": [],
   "slides": [
     {
-      "outputOrder": 1,
-      "templateSlideIndex": 99,
-      "slotMappings": [
+      "source_slide": 99,
+      "purpose": "content",
+      "replacements": [
         {
-          "slotId": "missing_slot",
-          "sourceRef": "content:content.md",
-          "preview": "invalid"
+          "slot_id": "missing",
+          "text": "x"
         }
-      ]
+      ],
+      "table_edits": [],
+      "chart_edits": []
     }
-  ],
-  "omittedContent": [],
-  "capacityRisks": [],
-  "splitSuggestions": []
+  ]
 }

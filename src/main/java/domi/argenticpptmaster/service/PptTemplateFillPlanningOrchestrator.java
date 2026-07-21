@@ -20,12 +20,22 @@ public class PptTemplateFillPlanningOrchestrator {
 
     private final PptJobRepository repository;
     private final PptWorkflowAsyncRunner workflowAsyncRunner;
+    private final TemplateFillTelemetry telemetry;
 
     public PptTemplateFillPlanningOrchestrator(
             PptJobRepository repository,
             PptWorkflowAsyncRunner workflowAsyncRunner) {
+        this(repository, workflowAsyncRunner, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public PptTemplateFillPlanningOrchestrator(
+            PptJobRepository repository,
+            PptWorkflowAsyncRunner workflowAsyncRunner,
+            TemplateFillTelemetry telemetry) {
         this.repository = repository;
         this.workflowAsyncRunner = workflowAsyncRunner;
+        this.telemetry = telemetry;
     }
 
     public void startAfterCreate(UUID jobId) {
@@ -60,9 +70,11 @@ public class PptTemplateFillPlanningOrchestrator {
         }
         if (!job.tryStartTemplateFillPlanning()) {
             log.warn("template_fill_planning_skipped: jobId={}, status={}", jobId, job.status());
+            recordPlanStage(TemplateFillTelemetry.Outcome.REJECTED);
             return;
         }
         repository.save(job);
+        recordPlanStage(TemplateFillTelemetry.Outcome.SUCCESS);
         workflowAsyncRunner.startAgent(jobId);
     }
 
@@ -74,6 +86,7 @@ public class PptTemplateFillPlanningOrchestrator {
             return;
         }
         if (job.resumeCount() >= MAX_TEMPLATE_FILL_REVISION_ATTEMPTS) {
+            recordPlanStage(TemplateFillTelemetry.Outcome.FAILURE);
             throw new domi.argenticpptmaster.exception.PptJobStateException(
                     "maximum template-fill revision attempts reached: " + MAX_TEMPLATE_FILL_REVISION_ATTEMPTS);
         }
@@ -81,11 +94,19 @@ public class PptTemplateFillPlanningOrchestrator {
         job.startNewResumeAttempt();
         repository.save(job);
         if (!job.tryStartTemplateFillPlanning()) {
+            recordPlanStage(TemplateFillTelemetry.Outcome.FAILURE);
             throw new domi.argenticpptmaster.exception.PptJobStateException(
                     "template-fill planning cannot restart");
         }
         repository.save(job);
+        recordPlanStage(TemplateFillTelemetry.Outcome.SUCCESS);
         workflowAsyncRunner.startAgent(jobId);
+    }
+
+    private void recordPlanStage(TemplateFillTelemetry.Outcome outcome) {
+        if (telemetry != null) {
+            telemetry.recordStage(TemplateFillTelemetry.Stage.PLAN, outcome, java.time.Duration.ZERO);
+        }
     }
 
     private static boolean isTemplateAnalyzed(PptJob job) {

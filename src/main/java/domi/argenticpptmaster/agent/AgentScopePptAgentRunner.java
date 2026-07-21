@@ -14,6 +14,7 @@ import domi.argenticpptmaster.domain.PptOutline;
 import domi.argenticpptmaster.domain.PptWorkflowMode;
 import domi.argenticpptmaster.service.PptWorkflowEvents;
 import domi.argenticpptmaster.service.PptOutlineStore;
+import domi.argenticpptmaster.service.TemplateFillConfirmationSummary;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
 import io.agentscope.core.event.AgentResultEvent;
@@ -579,7 +580,8 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
                 payload.put("choices", choices);
             }
             Object contextData = input.get("contextData");
-            if (!hasApprovedOutline(job)
+            if (job.workflowMode() != PptWorkflowMode.TEMPLATE_FILL
+                    && !hasApprovedOutline(job)
                     && !"outline_confirmation".equals(stage)
                     && !"plan_confirmation".equals(stage)) {
                 throw new IllegalStateException(
@@ -643,6 +645,11 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
                     });
                 }
                 payload.put("contextData", normalizedContext);
+            } else if ("template_fill_plan".equals(stage)) {
+                Map<String, Object> agentContext = contextData instanceof Map<?, ?> contextMap
+                        ? extractStringKeyMap(contextMap)
+                        : Map.of();
+                payload.put("contextData", TemplateFillConfirmationSummary.fromWorkspace(job, agentContext));
             } else if (contextData instanceof Map<?, ?> contextMap) {
                 if (contextMap.get("slides") != null) {
                     validateOutlineContextData(contextMap);

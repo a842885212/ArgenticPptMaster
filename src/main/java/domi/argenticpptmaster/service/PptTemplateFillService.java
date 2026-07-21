@@ -9,6 +9,7 @@ import domi.argenticpptmaster.exception.PptJobNotFoundException;
 import domi.argenticpptmaster.exception.PptTemplateFillAccessException;
 import domi.argenticpptmaster.exception.PptTemplateFillConflictException;
 import domi.argenticpptmaster.repository.PptJobRepository;
+import domi.argenticpptmaster.security.PptJobAccessAuthorizer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.security.MessageDigest;
@@ -25,24 +26,28 @@ public class PptTemplateFillService {
     private final PptWorkflowEvents events;
     private final PptTemplateFillPlanStore planStore;
     private final PptTemplateFillAsyncRunner asyncRunner;
+    private final PptJobAccessAuthorizer jobAccessAuthorizer;
 
     public PptTemplateFillService(
             PptMasterProperties properties,
             PptJobRepository repository,
             PptWorkflowEvents events,
             PptTemplateFillPlanStore planStore,
-            PptTemplateFillAsyncRunner asyncRunner) {
+            PptTemplateFillAsyncRunner asyncRunner,
+            PptJobAccessAuthorizer jobAccessAuthorizer) {
         this.properties = properties;
         this.repository = repository;
         this.events = events;
         this.planStore = planStore;
         this.asyncRunner = asyncRunner;
+        this.jobAccessAuthorizer = jobAccessAuthorizer;
     }
 
     /** 调试入口：仅执行已由服务端确认的计划，不接受请求体自声明 confirmed。 */
     public PptJob submitPlan(UUID jobId, String accessToken, String jsonPlan) {
-        verifyAccess(accessToken);
+        verifyDebugToken(accessToken);
         PptJob job = repository.findById(jobId).orElseThrow(() -> new PptJobNotFoundException(jobId));
+        jobAccessAuthorizer.assertCanAccess(job);
         if (job.workflowMode() != PptWorkflowMode.TEMPLATE_FILL) {
             throw new PptTemplateFillConflictException("job is not a template-fill workflow");
         }
@@ -73,8 +78,9 @@ public class PptTemplateFillService {
 
     /** 异步运行工作区准备与分析至 {@code TEMPLATE_ANALYZED}。 */
     public PptJob prepareWorkspace(UUID jobId, String accessToken) {
-        verifyAccess(accessToken);
+        verifyDebugToken(accessToken);
         PptJob job = repository.findById(jobId).orElseThrow(() -> new PptJobNotFoundException(jobId));
+        jobAccessAuthorizer.assertCanAccess(job);
         if (job.workflowMode() != PptWorkflowMode.TEMPLATE_FILL) {
             throw new PptTemplateFillConflictException("job is not a template-fill workflow");
         }
@@ -88,7 +94,7 @@ public class PptTemplateFillService {
         return job;
     }
 
-    private void verifyAccess(String accessToken) {
+    private void verifyDebugToken(String accessToken) {
         String configured = properties.templateFillDebugToken();
         if (configured == null || configured.isBlank() || accessToken == null) {
             throw new PptTemplateFillAccessException();

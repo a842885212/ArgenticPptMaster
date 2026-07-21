@@ -12,6 +12,7 @@ import domi.argenticpptmaster.domain.PptJob;
 import domi.argenticpptmaster.service.PptJobEventPublisher;
 import domi.argenticpptmaster.service.PptWorkflowService;
 import domi.argenticpptmaster.service.PptTemplateFillService;
+import domi.argenticpptmaster.service.TemplateFillDiagnosticService;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.UUID;
@@ -63,6 +64,9 @@ class PptJobControllerCorsTests {
     private PptTemplateFillService templateFillService;
 
     @MockitoBean
+    private TemplateFillDiagnosticService diagnosticService;
+
+    @MockitoBean
     private PptJobEventPublisher eventPublisher;
 
     @TempDir
@@ -112,7 +116,7 @@ class PptJobControllerCorsTests {
         PptJob job = new PptJob(JOB_ID, "demo", "ppt169", "", domi.argenticpptmaster.domain.PptWorkflowMode.BASIC, tempDir.resolve("workspace"));
         SseEmitter emitter = new SseEmitter(0L);
         emitter.complete();
-        given(workflowService.getJob(JOB_ID)).willReturn(job);
+        given(workflowService.getAccessibleJob(JOB_ID)).willReturn(job);
         given(eventPublisher.subscribe(job)).willReturn(emitter);
 
         mockMvc.perform(get("/api/ppt-jobs/{jobId}/events", JOB_ID)

@@ -6,6 +6,7 @@ import domi.argenticpptmaster.exception.PptJobStateException;
 import domi.argenticpptmaster.exception.PptStorageException;
 import domi.argenticpptmaster.exception.PptTemplateFillAccessException;
 import domi.argenticpptmaster.exception.PptTemplateFillConflictException;
+import domi.argenticpptmaster.exception.PptTemplateFillUnavailableException;
 import domi.argenticpptmaster.web.dto.ApiErrorResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -64,6 +65,12 @@ public class GlobalExceptionHandler {
     ResponseEntity<ApiErrorResponse> handleTemplateFillAccess(PptTemplateFillAccessException ex) {
         return ResponseEntity.status(HttpStatus.FORBIDDEN)
                 .body(ApiErrorResponse.of(403, "Forbidden", ex.getMessage()));
+    }
+
+    @ExceptionHandler(PptTemplateFillUnavailableException.class)
+    ResponseEntity<ApiErrorResponse> handleTemplateFillUnavailable(PptTemplateFillUnavailableException ex) {
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .body(ApiErrorResponse.of(503, "Service Unavailable", ex.getMessage()));
     }
 
     @ExceptionHandler(PptTemplateFillConflictException.class)

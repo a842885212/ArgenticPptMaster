@@ -25,6 +25,7 @@ import domi.argenticpptmaster.service.PptJobEventPublisher;
 import domi.argenticpptmaster.service.PptWorkflowService;
 import domi.argenticpptmaster.service.PptJobCreateCommand;
 import domi.argenticpptmaster.service.PptTemplateFillService;
+import domi.argenticpptmaster.service.TemplateFillDiagnosticService;
 import java.nio.file.Path;
 import java.util.UUID;
 import java.util.List;
@@ -65,6 +66,9 @@ class PptJobControllerTests {
     private PptTemplateFillService templateFillService;
 
     @MockitoBean
+    private TemplateFillDiagnosticService diagnosticService;
+
+    @MockitoBean
     private PptJobEventPublisher eventPublisher;
 
     @Test
@@ -93,6 +97,29 @@ class PptJobControllerTests {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"status\":\"confirmed\"}"))
                 .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void createsTemplateFillJobWithTemplateConstraints() throws Exception {
+        PptJob job = new PptJob(
+                JOB_ID, "demo", "ppt169", "fill", PptWorkflowMode.TEMPLATE_FILL, Path.of("workspace"));
+        given(workflowService.createJob(any(PptJobCreateCommand.class))).willReturn(job);
+
+        MockMultipartFile source = new MockMultipartFile("files", "source.md", "text/markdown", "# title".getBytes());
+        MockMultipartFile template = new MockMultipartFile(
+                "templateFile", "brand.pptx", "application/octet-stream", "pptx".getBytes());
+        String constraints = "{\"allowedTemplateSlides\":[1,2],\"maxSlides\":5,\"preserveCover\":true}";
+
+        mockMvc.perform(multipart("/api/ppt-jobs")
+                        .file(source)
+                        .file(template)
+                        .param("workflowMode", "template-fill")
+                        .param("templateConstraints", constraints))
+                .andExpect(status().isAccepted());
+
+        verify(workflowService).createJob(argThat(command ->
+                constraints.equals(command.templateConstraintsJson())
+                        && "template-fill".equals(command.workflowMode())));
     }
 
     @Test

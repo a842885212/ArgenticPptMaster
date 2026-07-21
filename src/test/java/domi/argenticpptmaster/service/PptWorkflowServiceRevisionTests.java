@@ -145,7 +145,8 @@ class PptWorkflowServiceRevisionTests {
         PptWorkflowService service = new PptWorkflowService(
                 PptMasterProperties.forTest(tempDir, tempDir), repository,
                 mock(PptWorkflowEvents.class), asyncRunner, templateFillAsyncRunner,
-                mock(PptTemplateFillPlanningOrchestrator.class), mock(PptTemplateFillPlanStore.class));
+                mock(PptTemplateFillPlanningOrchestrator.class), mock(PptTemplateFillPlanStore.class),
+                new TemplateFillConstraintsParser());
         PptJob job = new PptJob(UUID.randomUUID(), "demo", "ppt169", "make a deck", mode, projectPath);
         job.prepareProject(projectPath);
         job.waitNodeConfirmation(PptJobNode.OUTLINE_DRAFTED);

@@ -16,15 +16,19 @@ import domi.argenticpptmaster.domain.PptJobNode;
 import domi.argenticpptmaster.domain.PptJobStatus;
 import domi.argenticpptmaster.domain.PptTemplateFile;
 import domi.argenticpptmaster.domain.PptWorkflowMode;
+import domi.argenticpptmaster.domain.TemplateFillConstraints;
 import domi.argenticpptmaster.domain.TemplateFillPlanMetadata;
 import domi.argenticpptmaster.exception.PptJobResumeException;
 import domi.argenticpptmaster.exception.PptJobStateException;
 import domi.argenticpptmaster.exception.PptTemplateFillConflictException;
 import domi.argenticpptmaster.repository.InMemoryPptJobRepository;
+import domi.argenticpptmaster.security.FixedPptAccessContextResolver;
+import domi.argenticpptmaster.security.PptAccessContext;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -71,10 +75,16 @@ class PptWorkflowServiceTemplateFillTests {
         InMemoryPptJobRepository repository = new InMemoryPptJobRepository();
         PptWorkflowAsyncRunner agentRunner = mock(PptWorkflowAsyncRunner.class);
         PptTemplateFillAsyncRunner templateFillRunner = mock(PptTemplateFillAsyncRunner.class);
+        PptMasterProperties properties = PptMasterProperties.forTemplateFillTest(tempDir, tempDir, "test-tenant");
+        FixedPptAccessContextResolver access = new FixedPptAccessContextResolver(
+                PptAccessContext.user("user-1", "test-tenant", Set.of()));
         PptWorkflowService service = new PptWorkflowService(
-                PptMasterProperties.forTest(tempDir, tempDir),
+                properties,
                 repository, mock(PptWorkflowEvents.class), agentRunner, templateFillRunner,
-                mock(PptTemplateFillPlanningOrchestrator.class), mock(PptTemplateFillPlanStore.class));
+                mock(PptTemplateFillPlanningOrchestrator.class), mock(PptTemplateFillPlanStore.class),
+                new TemplateFillConstraintsParser(),
+                new TemplateFillRolloutPolicy(properties),
+                access);
         Path workspace = tempDir.resolve("resume-route");
         Path project = workspace.resolve("projects/demo");
         Files.createDirectories(project.resolve("analysis"));
@@ -82,6 +92,7 @@ class PptWorkflowServiceTemplateFillTests {
                 project.resolve("analysis/template.slide_library.json"));
         PptJob job = new PptJob(UUID.randomUUID(), "demo", "ppt169", "fill",
                 PptWorkflowMode.TEMPLATE_FILL, workspace);
+        job.assignOwnership("user-1", "test-tenant");
         job.prepareProject(project);
         job.completeNode(PptJobNode.TEMPLATE_ANALYZED, Map.of());
         job.failNode(PptJobNode.FILL_PLAN_VALIDATED, "check failed");
@@ -219,6 +230,36 @@ class PptWorkflowServiceTemplateFillTests {
     }
 
     @Test
+    void revisionKeepsStructuredConstraintsAndInvalidatesOldDigest() throws Exception {
+        TestContext context = waitingTemplateFillContext();
+        context.job.assignTemplateConstraints(new TemplateFillConstraints(
+                List.of(1, 2), List.of(), true, false, 4));
+        TemplateFillPlanMetadata draft = context.planStore.storeDraftPlan(
+                context.job, context.validDraft, context.slideLibrary);
+        context.job.requireConfirmation("tf-1", confirmationPayload(draft));
+
+        context.service.submitConfirmation(
+                context.job.id(), "tf-1", true, Map.of(), "please revise",
+                PptConfirmationAction.REQUEST_REVISION, "please revise", List.of(), null, List.of(), null);
+
+        assertThat(context.job.templateConstraints().maxSlides()).isEqualTo(4);
+        assertThat(context.job.templateConstraints().allowedTemplateSlides()).containsExactly(1, 2);
+        assertThat(context.job.templateConstraints().preserveCover()).isTrue();
+
+        TemplateFillPlanMetadata revised = context.planStore.storeDraftPlan(
+                context.job, context.validDraft, context.slideLibrary);
+        assertThat(revised.version()).isGreaterThan(draft.version());
+        assertThat(revised.digest()).isNotEqualTo(draft.digest());
+
+        context.job.requireConfirmation("tf-2", confirmationPayload(revised));
+        PptJob approved = context.service.submitConfirmation(
+                context.job.id(), "tf-2", true, Map.of(), null,
+                PptConfirmationAction.APPROVE, null, List.of(), null, List.of(), null);
+        assertThat(approved.fillPlanStatus()).isEqualTo(FillPlanStatus.CONFIRMED);
+        assertThat(approved.templateConstraints().maxSlides()).isEqualTo(4);
+    }
+
+    @Test
     void cancelRejectsWithoutRestartingOrConfirmingPlan() throws Exception {
         TestContext context = waitingTemplateFillContext();
         TemplateFillPlanMetadata draft = context.planStore.storeDraftPlan(
@@ -245,16 +286,23 @@ class PptWorkflowServiceTemplateFillTests {
     void resumeFallsBackWhenAnalysisArtifactsMissing() throws Exception {
         InMemoryPptJobRepository repository = new InMemoryPptJobRepository();
         PptTemplateFillAsyncRunner templateFillRunner = mock(PptTemplateFillAsyncRunner.class);
+        PptMasterProperties properties = PptMasterProperties.forTemplateFillTest(tempDir, tempDir, "test-tenant");
+        FixedPptAccessContextResolver access = new FixedPptAccessContextResolver(
+                PptAccessContext.user("user-1", "test-tenant", Set.of()));
         PptWorkflowService service = new PptWorkflowService(
-                PptMasterProperties.forTest(tempDir, tempDir),
+                properties,
                 repository, mock(PptWorkflowEvents.class), mock(PptWorkflowAsyncRunner.class),
                 templateFillRunner, mock(PptTemplateFillPlanningOrchestrator.class),
-                mock(PptTemplateFillPlanStore.class));
+                mock(PptTemplateFillPlanStore.class),
+                new TemplateFillConstraintsParser(),
+                new TemplateFillRolloutPolicy(properties),
+                access);
         Path workspace = tempDir.resolve("resume-job");
         Path project = workspace.resolve("projects/demo");
         Files.createDirectories(project.resolve("analysis"));
         PptJob job = new PptJob(UUID.randomUUID(), "demo", "ppt169", "fill",
                 PptWorkflowMode.TEMPLATE_FILL, workspace);
+        job.assignOwnership("user-1", "test-tenant");
         job.prepareProject(project);
         job.completeNode(PptJobNode.PROJECT_READY, Map.of());
         job.completeNode(PptJobNode.TEMPLATE_ANALYZED, Map.of());
@@ -269,13 +317,20 @@ class PptWorkflowServiceTemplateFillTests {
     @Test
     void resumeRejectsWhenProjectMissingEntirely() {
         InMemoryPptJobRepository repository = new InMemoryPptJobRepository();
+        PptMasterProperties properties = PptMasterProperties.forTemplateFillTest(tempDir, tempDir, "test-tenant");
+        FixedPptAccessContextResolver access = new FixedPptAccessContextResolver(
+                PptAccessContext.user("user-1", "test-tenant", Set.of()));
         PptWorkflowService service = new PptWorkflowService(
-                PptMasterProperties.forTest(tempDir, tempDir),
+                properties,
                 repository, mock(PptWorkflowEvents.class), mock(PptWorkflowAsyncRunner.class),
                 mock(PptTemplateFillAsyncRunner.class), mock(PptTemplateFillPlanningOrchestrator.class),
-                mock(PptTemplateFillPlanStore.class));
+                mock(PptTemplateFillPlanStore.class),
+                new TemplateFillConstraintsParser(),
+                new TemplateFillRolloutPolicy(properties),
+                access);
         PptJob job = new PptJob(UUID.randomUUID(), "demo", "ppt169", "fill",
                 PptWorkflowMode.TEMPLATE_FILL, tempDir.resolve("missing"));
+        job.assignOwnership("user-1", "test-tenant");
         job.completeNode(PptJobNode.TEMPLATE_ANALYZED, Map.of());
         job.failNode(PptJobNode.FILL_PLAN_VALIDATED, "later failure");
         repository.save(job);
@@ -297,14 +352,21 @@ class PptWorkflowServiceTemplateFillTests {
         InMemoryPptJobRepository repository = new InMemoryPptJobRepository();
         PptTemplateFillAsyncRunner templateFillRunner = mock(PptTemplateFillAsyncRunner.class);
         PptTemplateFillPlanningOrchestrator planningOrchestrator = mock(PptTemplateFillPlanningOrchestrator.class);
+        PptMasterProperties properties = PptMasterProperties.forTemplateFillTest(tempDir, tempDir, "test-tenant");
+        FixedPptAccessContextResolver access = new FixedPptAccessContextResolver(
+                PptAccessContext.user("user-1", "test-tenant", Set.of()));
         PptTemplateFillPlanStore planStore = new PptTemplateFillPlanStore(
-                PptMasterProperties.forTest(tempDir, tempDir), new TemplateFillPlanValidator());
+                properties, new TemplateFillPlanValidator());
         PptWorkflowService service = new PptWorkflowService(
-                PptMasterProperties.forTest(tempDir, tempDir),
+                properties,
                 repository, mock(PptWorkflowEvents.class), mock(PptWorkflowAsyncRunner.class),
-                templateFillRunner, planningOrchestrator, planStore);
+                templateFillRunner, planningOrchestrator, planStore,
+                new TemplateFillConstraintsParser(),
+                new TemplateFillRolloutPolicy(properties),
+                access);
         PptJob job = new PptJob(UUID.randomUUID(), "demo", "ppt169", "fill",
                 PptWorkflowMode.TEMPLATE_FILL, workspace);
+        job.assignOwnership("user-1", "test-tenant");
         job.prepareProject(project);
         job.setTemplate(new PptTemplateFile("brand.pptx", "application/octet-stream", 8L,
                 workspace.resolve("uploads/template/0-brand.pptx")));
@@ -323,23 +385,21 @@ class PptWorkflowServiceTemplateFillTests {
                         "version", draft.version(),
                         "digest", draft.digest(),
                         "pages", List.of(Map.of(
-                                "outputOrder", 1,
-                                "templateSlideIndex", 1,
-                                "layoutNote", "cover",
-                                "slotMappings", List.of(Map.of(
-                                        "slotId", "s01_sh1",
-                                        "sourceRef", "content:content.md",
-                                        "preview", "模板填充")),
-                                "omittedContent", List.of("附录"),
-                                "capacityRisks", List.of("接近上限"),
-                                "tableChartHandling", List.of(Map.of("targetId", "s02_tbl1", "strategy", "摘要")),
+                                "sourceSlide", 1,
+                                "purpose", "cover",
+                                "notesMappingCount", 0,
+                                "tableMappingCount", 0,
+                                "chartMappingCount", 0,
+                                "transition", "fade",
                                 "acceptedWarnings", List.of("warn:overflow")))));
     }
 
     private static PptWorkflowService serviceWithLimits(long templateMax, long contentMax, long totalMax) {
         PptMasterProperties properties = new PptMasterProperties(
                 Path.of("repo"), Path.of("workspace"), "python3", java.time.Duration.ofMinutes(1), null, 1024,
-                templateMax, contentMax, totalMax, 2, null);
+                templateMax, contentMax, totalMax, 2, null, true, List.of("test-tenant"), null, null);
+        FixedPptAccessContextResolver access = new FixedPptAccessContextResolver(
+                PptAccessContext.user("user-1", "test-tenant", Set.of()));
         return new PptWorkflowService(
                 properties,
                 new InMemoryPptJobRepository(),
@@ -347,7 +407,10 @@ class PptWorkflowServiceTemplateFillTests {
                 mock(PptWorkflowAsyncRunner.class),
                 mock(PptTemplateFillAsyncRunner.class),
                 mock(PptTemplateFillPlanningOrchestrator.class),
-                mock(PptTemplateFillPlanStore.class));
+                mock(PptTemplateFillPlanStore.class),
+                new TemplateFillConstraintsParser(),
+                new TemplateFillRolloutPolicy(properties),
+                access);
     }
 
     private record TestContext(

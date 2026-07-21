@@ -25,7 +25,7 @@ class PptTemplateFillAnalysisReaderTests {
 
         TemplateFillAnalysisSummary summary = reader.readSummary(slideLibrary);
 
-        assertThat(summary.templateSlideCount()).isEqualTo(10);
+        assertThat(summary.templateSlideCount()).isEqualTo(2);
         assertThat(summary.analysisVersion()).isEqualTo("template_fill_pptx_library.v1");
         assertThat(summary.textSlotCount()).isEqualTo(3);
         assertThat(summary.tableCount()).isEqualTo(1);

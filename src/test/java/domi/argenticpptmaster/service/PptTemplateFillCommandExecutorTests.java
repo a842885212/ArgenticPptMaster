@@ -52,7 +52,12 @@ class PptTemplateFillCommandExecutorTests {
                 PptMasterProperties.forTest(tempDir, tempDir));
         executor = new PptTemplateFillCommandExecutor(
                 PptMasterProperties.forTest(tempDir, tempDir),
-                repository, events, commands, analysisReader, concurrencyLimiter);
+                repository, events, commands, analysisReader, concurrencyLimiter,
+                new TemplateFillCapabilityIndexLoader(),
+                new TemplateFillConstraintResolver(),
+                new PptTemplateFillPlanStore(PptMasterProperties.forTest(tempDir, tempDir), new TemplateFillPlanValidator()),
+                new TemplateFillOutputVerifier(),
+                new TemplateFillLifecycleStore(PptMasterProperties.forTest(tempDir, tempDir)));
     }
 
     @Test
@@ -65,11 +70,18 @@ class PptTemplateFillCommandExecutorTests {
         Files.createDirectories(sourcePath.getParent());
         Files.writeString(templatePath, "template");
         Files.writeString(sourcePath, "# source");
-        Files.createDirectories(workspace.resolve("analysis"));
-        Files.writeString(workspace.resolve("analysis/fill_plan.json"), "{\"status\":\"confirmed\",\"slides\":[]}");
+        Path slideLibrary = workspace.resolve("analysis/template.slide_library.json");
+        Files.createDirectories(slideLibrary.getParent());
+        Files.copy(getClass().getResourceAsStream("/template-fill/template.slide_library.json"), slideLibrary);
+        String draft = Files.readString(Path.of(
+                getClass().getResource("/template-fill/fill-plan-draft.json").toURI()));
         PptJob job = new PptJob(jobId, "demo", "ppt169", "fill", PptWorkflowMode.TEMPLATE_FILL, workspace);
         job.setTemplate(new PptTemplateFile("brand.pptx", "application/octet-stream", 8L, templatePath));
         job.addSource(new PptSourceFile("source.md", "text/markdown", 8L, sourcePath));
+        PptTemplateFillPlanStore planStore = new PptTemplateFillPlanStore(
+                PptMasterProperties.forTest(tempDir, tempDir), new TemplateFillPlanValidator());
+        var metadata = planStore.storeDraftPlan(job, draft, slideLibrary);
+        planStore.confirmCurrentDraft(job, "confirm-1", metadata.version(), metadata.digest());
         when(repository.findById(jobId)).thenReturn(Optional.of(job));
         when(commands.runPythonScript(org.mockito.ArgumentMatchers.anyString(), anyList(), any(Duration.class)))
                 .thenAnswer(invocation -> {
@@ -85,7 +97,8 @@ class PptTemplateFillCommandExecutorTests {
                     }
                     if (script.endsWith("template_fill_pptx.py") && args.get(0).equals("analyze")) {
                         Files.copy(getClass().getResourceAsStream("/template-fill/template.slide_library.json"),
-                                Path.of(args.get(args.indexOf("-o") + 1)));
+                                Path.of(args.get(args.indexOf("-o") + 1)),
+                                java.nio.file.StandardCopyOption.REPLACE_EXISTING);
                     }
                     if (script.endsWith("template_fill_pptx.py") && args.get(0).equals("check-plan")) {
                         Files.copy(getClass().getResourceAsStream("/template-fill/check_report.json"),
@@ -93,7 +106,8 @@ class PptTemplateFillCommandExecutorTests {
                     }
                     if (script.endsWith("template_fill_pptx.py") && args.get(0).equals("apply")) {
                         Path requestedOutput = Path.of(args.get(args.indexOf("-o") + 1));
-                        Files.writeString(requestedOutput.resolveSibling("template-fill_20260720_000000.pptx"), "pptx");
+                        Files.copy(getClass().getResourceAsStream("/template-fill/minimal-valid-export.pptx"),
+                                requestedOutput.resolveSibling("template-fill_20260720_000000.pptx"));
                     }
                     return new PptMasterCommandExecutor.CommandResult(0, "ok", false);
                 });
@@ -104,6 +118,7 @@ class PptTemplateFillCommandExecutorTests {
         assertThat(job.exportPath()).isPresent();
         assertThat(job.lastCompletedNode()).contains(PptJobNode.OUTPUT_VALIDATED);
         assertThat(job.templateAnalysisReady()).isTrue();
+        assertThat(job.readbackValidationStatus()).isIn("PASSED", "PASSED_WITH_WARNINGS");
         assertThat(job.nodeExecution(PptJobNode.TEMPLATE_ANALYZED).status()).isEqualTo(PptJobNodeStatus.COMPLETED);
         assertThat(job.nodeExecution(PptJobNode.FILL_PLAN_VALIDATED).status()).isEqualTo(PptJobNodeStatus.COMPLETED);
         verify(commands, org.mockito.Mockito.times(6))
@@ -119,18 +134,25 @@ class PptTemplateFillCommandExecutorTests {
     @Test
     void stopsBeforeApplyWhenCheckPlanFails() throws Exception {
         UUID jobId = UUID.randomUUID();
-        Path workspace = tempDir.resolve("job");
+        Path workspace = tempDir.resolve("job-fail");
         Path templatePath = workspace.resolve("uploads/template/0-brand.pptx");
         Files.createDirectories(templatePath.getParent());
         Files.writeString(templatePath, "template");
-        Files.createDirectories(workspace.resolve("analysis"));
-        Files.writeString(workspace.resolve("analysis/fill_plan.json"), "{\"status\":\"confirmed\",\"slides\":[]}");
+        Path slideLibrary = workspace.resolve("analysis/template.slide_library.json");
+        Files.createDirectories(slideLibrary.getParent());
+        Files.copy(getClass().getResourceAsStream("/template-fill/template.slide_library.json"), slideLibrary);
+        String draft = Files.readString(Path.of(
+                getClass().getResource("/template-fill/fill-plan-draft.json").toURI()));
         PptJob job = new PptJob(jobId, "demo", "ppt169", "fill", PptWorkflowMode.TEMPLATE_FILL, workspace);
         job.setTemplate(new PptTemplateFile("brand.pptx", "application/octet-stream", 8L, templatePath));
         job.addSource(new PptSourceFile("source.md", "text/markdown", 8L,
                 workspace.resolve("uploads/content/0-source.md")));
         Files.createDirectories(job.sourceFiles().get(0).storedPath().getParent());
         Files.writeString(job.sourceFiles().get(0).storedPath(), "# source");
+        PptTemplateFillPlanStore planStore = new PptTemplateFillPlanStore(
+                PptMasterProperties.forTest(tempDir, tempDir), new TemplateFillPlanValidator());
+        var metadata = planStore.storeDraftPlan(job, draft, slideLibrary);
+        planStore.confirmCurrentDraft(job, "confirm-1", metadata.version(), metadata.digest());
         when(repository.findById(jobId)).thenReturn(Optional.of(job));
         when(commands.runPythonScript(org.mockito.ArgumentMatchers.anyString(), anyList(), any(Duration.class)))
                 .thenAnswer(invocation -> {
@@ -147,7 +169,8 @@ class PptTemplateFillCommandExecutorTests {
                     }
                     if (script.endsWith("template_fill_pptx.py") && args.get(0).equals("analyze")) {
                         Files.copy(getClass().getResourceAsStream("/template-fill/template.slide_library.json"),
-                                Path.of(args.get(args.indexOf("-o") + 1)));
+                                Path.of(args.get(args.indexOf("-o") + 1)),
+                                java.nio.file.StandardCopyOption.REPLACE_EXISTING);
                         return new PptMasterCommandExecutor.CommandResult(0, "ok", false);
                     }
                     if (script.endsWith("template_fill_pptx.py") && args.get(0).equals("check-plan")) {
@@ -223,11 +246,18 @@ class PptTemplateFillCommandExecutorTests {
         Files.createDirectories(sourcePath.getParent());
         Files.writeString(templatePath, "template");
         Files.writeString(sourcePath, "# source");
-        Files.createDirectories(workspace.resolve("analysis"));
-        Files.writeString(workspace.resolve("analysis/fill_plan.json"), "{\"status\":\"confirmed\",\"slides\":[]}");
+        Path slideLibrary = workspace.resolve("analysis/template.slide_library.json");
+        Files.createDirectories(slideLibrary.getParent());
+        Files.copy(getClass().getResourceAsStream("/template-fill/template.slide_library.json"), slideLibrary);
+        String draft = Files.readString(Path.of(
+                getClass().getResource("/template-fill/fill-plan-draft.json").toURI()));
         PptJob job = new PptJob(jobId, "demo", "ppt169", "fill", PptWorkflowMode.TEMPLATE_FILL, workspace);
         job.setTemplate(new PptTemplateFile("brand.pptx", "application/octet-stream", 8L, templatePath));
         job.addSource(new PptSourceFile("source.md", "text/markdown", 8L, sourcePath));
+        PptTemplateFillPlanStore planStore = new PptTemplateFillPlanStore(
+                PptMasterProperties.forTest(tempDir, tempDir), new TemplateFillPlanValidator());
+        var metadata = planStore.storeDraftPlan(job, draft, slideLibrary);
+        planStore.confirmCurrentDraft(job, "confirm-1", metadata.version(), metadata.digest());
         when(repository.findById(jobId)).thenReturn(Optional.of(job));
         ArgumentCaptor<String> scriptCaptor = ArgumentCaptor.forClass(String.class);
         @SuppressWarnings("unchecked")
@@ -246,7 +276,8 @@ class PptTemplateFillCommandExecutorTests {
                     }
                     if (script.endsWith("template_fill_pptx.py") && args.get(0).equals("analyze")) {
                         Files.copy(getClass().getResourceAsStream("/template-fill/template.slide_library.json"),
-                                Path.of(args.get(args.indexOf("-o") + 1)));
+                                Path.of(args.get(args.indexOf("-o") + 1)),
+                                java.nio.file.StandardCopyOption.REPLACE_EXISTING);
                     }
                     if (script.endsWith("template_fill_pptx.py") && args.get(0).equals("check-plan")) {
                         Files.copy(getClass().getResourceAsStream("/template-fill/check_report.json"),
@@ -254,7 +285,8 @@ class PptTemplateFillCommandExecutorTests {
                     }
                     if (script.endsWith("template_fill_pptx.py") && args.get(0).equals("apply")) {
                         Path requestedOutput = Path.of(args.get(args.indexOf("-o") + 1));
-                        Files.writeString(requestedOutput.resolveSibling("template-fill_20260720_000000.pptx"), "pptx");
+                        Files.copy(getClass().getResourceAsStream("/template-fill/minimal-valid-export.pptx"),
+                                requestedOutput.resolveSibling("template-fill_20260720_000000.pptx"));
                     }
                     return new PptMasterCommandExecutor.CommandResult(0, "ok", false);
                 });

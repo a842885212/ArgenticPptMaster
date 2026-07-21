@@ -427,10 +427,11 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                 1. 调用 list_template_fill_content_sources 与 read_template_fill_content_source 了解内容资料。
                 2. 调用 read_template_slide_library_page 分页读取模板页、文本槽、表格/图表摘要。
                 3. 调用 inspect_template_fill_checkpoint_status 确认 TEMPLATE_ANALYZED 已完成。
-                4. 按内容逻辑选择 templateSlideIndex，形成 outputOrder、slotMappings、omittedContent、capacityRisks、splitSuggestions、tableChartHandling、acceptedWarnings。
-                5. 调用 write_template_fill_plan_draft 保存 status=draft 的计划；可选 write_template_fill_plan_rationale 写入说明。
+                4. 按内容逻辑选择 source_slide，形成 template_fill_pptx_plan.v1 计划：replacements、table_edits、chart_edits、notes、transition，以及 service meta 中的 omittedContent、capacityDecisions、splitSuggestions、unsupportedContent、sourceRefs。
+                5. 调用 write_template_fill_plan_draft 保存 status=draft 的计划（可选 serviceMetaJson）；缺省 transition 为 fade；不得编辑对象动画或设置 font_size_px。
                 6. 调用 request_plan_confirmation（stage="template_fill_plan"），在 contextData 中返回 {type:"template_fill_plan", version, digest, pages:[...]}。
                 7. 收到 REQUEST_REVISION 时读取 Operator 意见，修订计划并再次请求 template_fill_plan 确认；在 APPROVE 前不得假设计划已 confirmed。
+                硬约束（allowed/excluded pages、preserveCover/Ending、maxSlides）由任务 structured constraints 提供，不得用自由文本放宽。
                 """;
     }
 

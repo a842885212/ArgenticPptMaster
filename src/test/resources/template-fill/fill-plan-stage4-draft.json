@@ -1,0 +1,109 @@
+{
+  "schema": "template_fill_pptx_plan.v1",
+  "status": "draft",
+  "source_pptx": "template.pptx",
+  "accepted_warnings": ["warn:slot overflow accepted after rewrite"],
+  "slides": [
+    {
+      "source_slide": 1,
+      "purpose": "cover",
+      "layout_rationale": {
+        "layout_pattern": "title",
+        "why_fit": "cover page for product intro",
+        "risk": ""
+      },
+      "replacements": [
+        {
+          "slot_id": "s01_sh1",
+          "old_text": "Cover Title",
+          "text": "模板填充集成方案"
+        }
+      ],
+      "table_edits": [],
+      "chart_edits": [],
+      "notes": "开场介绍产品背景与目标受众",
+      "transition": "fade"
+    },
+    {
+      "source_slide": 2,
+      "purpose": "content",
+      "layout_rationale": {
+        "layout_pattern": "title_body_table",
+        "why_fit": "holds summary and native table",
+        "risk": "table cells near capacity"
+      },
+      "replacements": [
+        {
+          "slot_id": "s02_sh1",
+          "old_text": "Body",
+          "text": "核心能力"
+        },
+        {
+          "slot_id": "s02_sh2",
+          "old_text": "More",
+          "text": "Agent 自动生成 fill plan\n人工确认后执行原生填充"
+        }
+      ],
+      "table_edits": [
+        {
+          "table_id": "s02_tbl1",
+          "cells": [
+            { "row": 0, "col": 0, "old_text": "A", "text": "指标" },
+            { "row": 0, "col": 1, "old_text": "B", "text": "数值" },
+            { "row": 1, "col": 0, "old_text": "1", "text": "覆盖率" },
+            { "row": 1, "col": 1, "old_text": "2", "text": "95%" }
+          ]
+        }
+      ],
+      "chart_edits": [],
+      "notes": "讲解能力清单与表格摘要",
+      "transition": "fade"
+    },
+    {
+      "source_slide": 3,
+      "purpose": "content",
+      "layout_rationale": {
+        "layout_pattern": "title_chart",
+        "why_fit": "native bar chart for quarterly data",
+        "risk": ""
+      },
+      "replacements": [
+        {
+          "slot_id": "s03_sh1",
+          "old_text": "Chart Title",
+          "text": "季度收入"
+        }
+      ],
+      "table_edits": [],
+      "chart_edits": [
+        {
+          "chart_id": "s03_ch1",
+          "categories": ["Q1", "Q2"],
+          "series": [{ "name": "Revenue", "values": [12, 18] }]
+        }
+      ],
+      "notes": "",
+      "transition": "push"
+    },
+    {
+      "source_slide": 4,
+      "purpose": "ending",
+      "layout_rationale": {
+        "layout_pattern": "title",
+        "why_fit": "closing page",
+        "risk": ""
+      },
+      "replacements": [
+        {
+          "slot_id": "s04_sh1",
+          "old_text": "Thanks",
+          "text": "谢谢"
+        }
+      ],
+      "table_edits": [],
+      "chart_edits": [],
+      "notes": "结束页，欢迎提问",
+      "transition": "fade"
+    }
+  ]
+}

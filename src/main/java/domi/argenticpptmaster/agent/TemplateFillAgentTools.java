@@ -6,11 +6,12 @@ import domi.argenticpptmaster.domain.PptJobNode;
 import domi.argenticpptmaster.domain.PptJobNodeStatus;
 import domi.argenticpptmaster.domain.PptNodeExecution;
 import domi.argenticpptmaster.domain.PptSourceFile;
-import domi.argenticpptmaster.domain.TemplateFillAnalysisSummary;
+import domi.argenticpptmaster.domain.TemplateFillCapabilityIndex;
 import domi.argenticpptmaster.domain.TemplateFillPlanMetadata;
-import domi.argenticpptmaster.exception.PptJobStateException;
 import domi.argenticpptmaster.service.PptTemplateFillAnalysisReader;
 import domi.argenticpptmaster.service.PptTemplateFillPlanStore;
+import domi.argenticpptmaster.service.TemplateFillCapabilityIndexLoader;
+import domi.argenticpptmaster.service.TemplateFillConfirmationSummary;
 import domi.argenticpptmaster.service.TemplateFillPlanValidator;
 import io.agentscope.core.tool.Tool;
 import java.io.IOException;
@@ -76,33 +77,62 @@ public class TemplateFillAgentTools {
                 "truncated", content.endsWith("\n...[truncated]"));
     }
 
-    @Tool(name = "read_template_slide_library_page", description = "Read a page of template slide library entries with slot/table/chart summaries.", readOnly = true)
+    @Tool(name = "read_template_slide_library_page", description = "Read a page of template slide library entries with slot/table/chart/notes/transition capability summaries.", readOnly = true)
     public Map<String, Object> readSlideLibraryPage(PptAgentToolRuntime runtime, Integer page, Integer pageSize) {
         Path slideLibrary = slideLibraryPath(runtime);
-        JsonNode root = readJson(slideLibrary);
-        JsonNode slides = root.get("slides");
+        TemplateFillCapabilityIndex index = new TemplateFillCapabilityIndexLoader().load(slideLibrary);
         int effectivePage = page == null || page < 1 ? 1 : page;
         int size = pageSize == null || pageSize < 1 ? DEFAULT_PAGE_SIZE : Math.min(pageSize, DEFAULT_PAGE_SIZE);
+        List<Integer> slideIndexes = new ArrayList<>(index.slidesByIndex().keySet());
+        slideIndexes.sort(Integer::compareTo);
+        int start = (effectivePage - 1) * size;
+        int end = Math.min(start + size, slideIndexes.size());
         List<Map<String, Object>> items = new ArrayList<>();
-        if (slides != null && slides.isArray()) {
-            int start = (effectivePage - 1) * size;
-            int end = Math.min(start + size, slides.size());
-            for (int index = start; index < end; index++) {
-                JsonNode slide = slides.get(index);
-                Map<String, Object> item = new LinkedHashMap<>();
-                item.put("slideIndex", slide.path("slide_index").asInt());
-                item.put("textSlots", summarizeArray(slide.get("slots"), "slot_id", "text"));
-                item.put("tables", summarizeArray(slide.get("tables"), "table_id", null));
-                item.put("charts", summarizeArray(slide.get("charts"), "chart_id", null));
-                items.add(item);
-            }
+        for (int i = start; i < end; i++) {
+            TemplateFillCapabilityIndex.SlideCapability slide = index.slidesByIndex().get(slideIndexes.get(i));
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("slideIndex", slide.slideIndex());
+            item.put("pageType", slide.pageType());
+            item.put("textSlots", slide.textSlots().values().stream().map(slot -> {
+                Map<String, Object> summary = new LinkedHashMap<>();
+                summary.put("id", slot.slotId());
+                summary.put("role", slot.role());
+                summary.put("fontSizePx", slot.fontSizePx());
+                summary.put("fontAdjustable", slot.fontAdjustable());
+                return summary;
+            }).toList());
+            item.put("tables", slide.tables().values().stream().map(table -> Map.of(
+                    "id", table.tableId(),
+                    "rowCount", table.rowCount(),
+                    "columnCount", table.columnCount())).toList());
+            item.put("charts", slide.charts().values().stream().map(chart -> {
+                Map<String, Object> summary = new LinkedHashMap<>();
+                summary.put("id", chart.chartId());
+                summary.put("chartType", chart.chartType() == null ? "" : chart.chartType());
+                summary.put("categoryCount", chart.categoryCount());
+                summary.put("seriesCount", chart.seriesCount());
+                return summary;
+            }).toList());
+            item.put("notesSupported", true);
+            item.put("defaultTransition", "fade");
+            item.put("supportedTransitions", List.of(
+                    "fade", "push", "wipe", "split", "strips", "cover", "random", "none", "keep"));
+            items.add(item);
         }
-        int total = slides == null ? 0 : slides.size();
-        return Map.of(
-                "page", effectivePage,
-                "pageSize", size,
-                "totalSlides", total,
-                "slides", items);
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("page", effectivePage);
+        result.put("pageSize", size);
+        result.put("totalSlides", index.slideCount());
+        result.put("schemaVersion", index.schemaVersion());
+        Map<String, Object> constraints = new LinkedHashMap<>();
+        constraints.put("allowedTemplateSlides", runtime.job().templateConstraints().allowedTemplateSlides());
+        constraints.put("excludedTemplateSlides", runtime.job().templateConstraints().excludedTemplateSlides());
+        constraints.put("preserveCover", runtime.job().templateConstraints().preserveCover());
+        constraints.put("preserveEnding", runtime.job().templateConstraints().preserveEnding());
+        constraints.put("maxSlides", runtime.job().templateConstraints().maxSlides());
+        result.put("constraints", constraints);
+        result.put("slides", items);
+        return result;
     }
 
     @Tool(name = "inspect_template_fill_checkpoint_status", description = "Inspect template-fill checkpoint progress without exposing absolute paths.", readOnly = true)
@@ -129,22 +159,38 @@ public class TemplateFillAgentTools {
         return result;
     }
 
-    @Tool(name = "write_template_fill_plan_draft", description = "Validate and atomically store a draft fill plan for operator confirmation.")
+    /** Convenience overload for callers that only provide the upstream plan JSON. */
     public Map<String, Object> writePlanDraft(PptAgentToolRuntime runtime, String planJson) {
+        return writePlanDraft(runtime, planJson, null);
+    }
+
+    @Tool(name = "write_template_fill_plan_draft", description = "Validate and atomically store a draft fill plan (template_fill_pptx_plan.v1) plus optional service meta for operator confirmation.")
+    public Map<String, Object> writePlanDraft(PptAgentToolRuntime runtime, String planJson, String serviceMetaJson) {
         if (planJson != null && planJson.contains("--force")) {
             throw new IllegalStateException("force execution is not allowed");
         }
+        if (serviceMetaJson != null && serviceMetaJson.contains("--force")) {
+            throw new IllegalStateException("force execution is not allowed");
+        }
         Path slideLibrary = slideLibraryPath(runtime);
-        TemplateFillPlanMetadata metadata = planStore.storeDraftPlan(runtime.job(), planJson, slideLibrary);
+        TemplateFillPlanMetadata metadata = planStore.storeDraftPlan(
+                runtime.job(), planJson, slideLibrary, serviceMetaJson);
         runtime.completeNode(PptJobNode.FILL_PLAN_DRAFTED, Map.of(
                 "planVersion", metadata.version(),
                 "planDigest", metadata.digest(),
                 "planSlideCount", runtime.job().planSlideCount()));
-        return Map.of(
-                "status", "draft",
-                "version", metadata.version(),
-                "digest", metadata.digest(),
-                "planSlideCount", runtime.job().planSlideCount());
+        Map<String, Object> confirmationContext = TemplateFillConfirmationSummary.fromWorkspace(
+                runtime.job(), Map.of());
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("status", "draft");
+        result.put("version", metadata.version());
+        result.put("digest", metadata.digest());
+        result.put("planSlideCount", runtime.job().planSlideCount());
+        result.put("notesMappingCount", runtime.job().notesMappingCount());
+        result.put("tableMappingCount", runtime.job().tableMappingCount());
+        result.put("chartMappingCount", runtime.job().chartMappingCount());
+        result.put("confirmationContext", confirmationContext);
+        return result;
     }
 
     @Tool(name = "write_template_fill_plan_rationale", description = "Store a bounded markdown rationale for the current fill plan draft.")

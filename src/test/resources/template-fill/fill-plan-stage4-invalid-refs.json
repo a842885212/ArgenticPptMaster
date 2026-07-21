@@ -1,0 +1,19 @@
+{
+  "schema": "template_fill_pptx_plan.v1",
+  "status": "draft",
+  "accepted_warnings": [],
+  "slides": [
+    {
+      "source_slide": 99,
+      "purpose": "content",
+      "replacements": [
+        {
+          "slot_id": "missing_slot",
+          "text": "x"
+        }
+      ],
+      "table_edits": [],
+      "chart_edits": []
+    }
+  ]
+}

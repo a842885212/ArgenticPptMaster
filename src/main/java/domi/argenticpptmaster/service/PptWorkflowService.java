@@ -16,11 +16,16 @@ import domi.argenticpptmaster.domain.PptTemplateFile;
 import domi.argenticpptmaster.domain.PptSlideEdit;
 import domi.argenticpptmaster.domain.PptWorkflowMode;
 import domi.argenticpptmaster.util.PptConfirmationStageResolver;
-import domi.argenticpptmaster.exception.PptJobResumeException;
 import domi.argenticpptmaster.exception.PptJobNotFoundException;
+import domi.argenticpptmaster.exception.PptJobResumeException;
 import domi.argenticpptmaster.exception.PptJobStateException;
 import domi.argenticpptmaster.exception.PptStorageException;
+import domi.argenticpptmaster.exception.PptTemplateFillAccessException;
 import domi.argenticpptmaster.repository.PptJobRepository;
+import domi.argenticpptmaster.security.FailClosedPptAccessContextResolver;
+import domi.argenticpptmaster.security.PptAccessContext;
+import domi.argenticpptmaster.security.PptAccessContextResolver;
+import domi.argenticpptmaster.security.PptJobAccessAuthorizer;
 import domi.argenticpptmaster.web.dto.PptSlideEditRequest;
 import domi.argenticpptmaster.web.dto.PptOutlineEditRequest;
 import java.io.IOException;
@@ -85,6 +90,13 @@ public class PptWorkflowService {
     private final PptTemplateFillAsyncRunner templateFillAsyncRunner;
     private final PptTemplateFillPlanningOrchestrator templateFillPlanningOrchestrator;
     private final PptTemplateFillPlanStore templateFillPlanStore;
+    private final TemplateFillConstraintsParser templateFillConstraintsParser;
+    private final TemplateFillRolloutPolicy templateFillRolloutPolicy;
+    private final PptAccessContextResolver accessContextResolver;
+    private final PptJobAccessAuthorizer jobAccessAuthorizer;
+    private final TemplateFillLifecycleStore lifecycleStore;
+    private final TemplateFillAuditSink templateFillAuditSink;
+    private final TemplateFillTelemetry telemetry;
     private final PptOutlineStore outlineStore = new PptOutlineStore();
     private final PptArtifactRegistry artifactRegistry = new PptArtifactRegistry();
     private final Map<String, PptRevisionImpactPreview> revisionImpactPreviews = new ConcurrentHashMap<>();
@@ -97,7 +109,64 @@ public class PptWorkflowService {
             PptWorkflowAsyncRunner asyncRunner,
             PptTemplateFillAsyncRunner templateFillAsyncRunner,
             PptTemplateFillPlanningOrchestrator templateFillPlanningOrchestrator,
-            PptTemplateFillPlanStore templateFillPlanStore) {
+            PptTemplateFillPlanStore templateFillPlanStore,
+            TemplateFillConstraintsParser templateFillConstraintsParser) {
+        this(properties, repository, events, asyncRunner, templateFillAsyncRunner,
+                templateFillPlanningOrchestrator, templateFillPlanStore, templateFillConstraintsParser,
+                new TemplateFillRolloutPolicy(properties),
+                new FailClosedPptAccessContextResolver(),
+                null, null, null, null);
+    }
+
+    public PptWorkflowService(
+            PptMasterProperties properties,
+            PptJobRepository repository,
+            PptWorkflowEvents events,
+            PptWorkflowAsyncRunner asyncRunner,
+            PptTemplateFillAsyncRunner templateFillAsyncRunner,
+            PptTemplateFillPlanningOrchestrator templateFillPlanningOrchestrator,
+            PptTemplateFillPlanStore templateFillPlanStore,
+            TemplateFillConstraintsParser templateFillConstraintsParser,
+            TemplateFillRolloutPolicy templateFillRolloutPolicy,
+            PptAccessContextResolver accessContextResolver) {
+        this(properties, repository, events, asyncRunner, templateFillAsyncRunner,
+                templateFillPlanningOrchestrator, templateFillPlanStore, templateFillConstraintsParser,
+                templateFillRolloutPolicy, accessContextResolver, null, null, null, null);
+    }
+
+    public PptWorkflowService(
+            PptMasterProperties properties,
+            PptJobRepository repository,
+            PptWorkflowEvents events,
+            PptWorkflowAsyncRunner asyncRunner,
+            PptTemplateFillAsyncRunner templateFillAsyncRunner,
+            PptTemplateFillPlanningOrchestrator templateFillPlanningOrchestrator,
+            PptTemplateFillPlanStore templateFillPlanStore,
+            TemplateFillConstraintsParser templateFillConstraintsParser,
+            TemplateFillRolloutPolicy templateFillRolloutPolicy,
+            PptAccessContextResolver accessContextResolver,
+            PptJobAccessAuthorizer jobAccessAuthorizer) {
+        this(properties, repository, events, asyncRunner, templateFillAsyncRunner,
+                templateFillPlanningOrchestrator, templateFillPlanStore, templateFillConstraintsParser,
+                templateFillRolloutPolicy, accessContextResolver, jobAccessAuthorizer, null, null, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public PptWorkflowService(
+            PptMasterProperties properties,
+            PptJobRepository repository,
+            PptWorkflowEvents events,
+            PptWorkflowAsyncRunner asyncRunner,
+            PptTemplateFillAsyncRunner templateFillAsyncRunner,
+            PptTemplateFillPlanningOrchestrator templateFillPlanningOrchestrator,
+            PptTemplateFillPlanStore templateFillPlanStore,
+            TemplateFillConstraintsParser templateFillConstraintsParser,
+            TemplateFillRolloutPolicy templateFillRolloutPolicy,
+            PptAccessContextResolver accessContextResolver,
+            PptJobAccessAuthorizer jobAccessAuthorizer,
+            TemplateFillLifecycleStore lifecycleStore,
+            TemplateFillAuditSink templateFillAuditSink,
+            TemplateFillTelemetry telemetry) {
         this.properties = properties;
         this.repository = repository;
         this.events = events;
@@ -105,6 +174,25 @@ public class PptWorkflowService {
         this.templateFillAsyncRunner = templateFillAsyncRunner;
         this.templateFillPlanningOrchestrator = templateFillPlanningOrchestrator;
         this.templateFillPlanStore = templateFillPlanStore;
+        this.templateFillConstraintsParser = templateFillConstraintsParser == null
+                ? new TemplateFillConstraintsParser()
+                : templateFillConstraintsParser;
+        this.templateFillRolloutPolicy = templateFillRolloutPolicy == null
+                ? new TemplateFillRolloutPolicy(properties)
+                : templateFillRolloutPolicy;
+        this.accessContextResolver = accessContextResolver == null
+                ? new FailClosedPptAccessContextResolver()
+                : accessContextResolver;
+        this.jobAccessAuthorizer = jobAccessAuthorizer == null
+                ? new PptJobAccessAuthorizer(properties, this.accessContextResolver)
+                : jobAccessAuthorizer;
+        this.lifecycleStore = lifecycleStore == null
+                ? new TemplateFillLifecycleStore(properties)
+                : lifecycleStore;
+        this.templateFillAuditSink = templateFillAuditSink == null
+                ? new TemplateFillAuditSink()
+                : templateFillAuditSink;
+        this.telemetry = telemetry;
     }
 
     /**
@@ -143,7 +231,6 @@ public class PptWorkflowService {
         if (files == null || files.isEmpty() || files.stream().allMatch(MultipartFile::isEmpty)) {
             throw new PptJobStateException("at least one source file is required");
         }
-        UUID jobId = UUID.randomUUID();
         String normalizedProjectName = normalizeProjectName(command.projectName());
         String normalizedFormat = normalizeFormat(command.format());
         PptWorkflowMode mode;
@@ -152,17 +239,34 @@ public class PptWorkflowService {
         } catch (IllegalArgumentException ex) {
             throw new PptJobStateException(ex.getMessage());
         }
-        validateTemplateContract(mode, command.templateFile());
+        PptAccessContext access = null;
         if (mode == PptWorkflowMode.TEMPLATE_FILL) {
+            access = accessContextResolver.resolve().orElse(null);
+            templateFillRolloutPolicy.assertCreationAllowed(access);
             validateTemplateFillUploadSizes(command.templateFile(), files);
         }
+        validateTemplateContract(mode, command.templateFile());
+        if (mode != PptWorkflowMode.TEMPLATE_FILL
+                && command.templateConstraintsJson() != null
+                && !command.templateConstraintsJson().isBlank()) {
+            throw new PptJobStateException("templateConstraints is only supported for template-fill workflow");
+        }
+        var templateConstraints = mode == PptWorkflowMode.TEMPLATE_FILL
+                ? templateFillConstraintsParser.parse(command.templateConstraintsJson())
+                : domi.argenticpptmaster.domain.TemplateFillConstraints.empty();
+        UUID jobId = UUID.randomUUID();
         Path jobWorkspace = properties.workspacePath().resolve("jobs").resolve(jobId.toString()).toAbsolutePath().normalize();
         PptJob job = new PptJob(jobId, normalizedProjectName, normalizedFormat, command.instruction(), mode, jobWorkspace);
+        if (mode == PptWorkflowMode.TEMPLATE_FILL) {
+            job.assignTemplateConstraints(templateConstraints);
+            job.assignOwnership(access.subjectId(), access.tenantId());
+        }
         log.info("ppt_job_create_started: jobId={}, projectName={}, format={}, workflowMode={}, fileCount={}",
                 jobId, normalizedProjectName, normalizedFormat, mode, files.size());
         if (mode == PptWorkflowMode.TEMPLATE_FILL) {
             storeTemplate(job, command.templateFile());
             storeSources(job, files, job.workspacePath().resolve("uploads/content"));
+            lifecycleStore.initialize(job);
         } else {
             storeSources(job, files, job.workspacePath().resolve("uploads"));
         }
@@ -174,6 +278,9 @@ public class PptWorkflowService {
         } else {
             templateFillPlanningOrchestrator.startAfterCreate(job.id());
             templateFillAsyncRunner.prepareAndAnalyze(job.id());
+            if (telemetry != null) {
+                telemetry.recordCreation(TemplateFillTelemetry.CreationOutcome.ACCEPTED);
+            }
         }
         log.info("ppt_job_create_accepted: jobId={}, projectName={}, format={}, workflowMode={}, sourceCount={}",
                 jobId, normalizedProjectName, normalizedFormat, mode, job.sourceFiles().size());
@@ -189,6 +296,13 @@ public class PptWorkflowService {
      */
     public PptJob getJob(UUID jobId) {
         return repository.findById(jobId).orElseThrow(() -> new PptJobNotFoundException(jobId));
+    }
+
+    /** 外部查询：对 TEMPLATE_FILL 任务执行归属授权。 */
+    public PptJob getAccessibleJob(UUID jobId) {
+        PptJob job = getJob(jobId);
+        jobAccessAuthorizer.assertCanAccess(job);
+        return job;
     }
 
     /**
@@ -264,6 +378,7 @@ public class PptWorkflowService {
             PptConfirmationAction action, String overallComment, List<PptSlideEditRequest> slideEdits,
             Integer outlineVersion, List<PptOutlineEditRequest> outlineEdits, String revisionImpactToken) {
         PptJob job = getJob(jobId);
+        jobAccessAuthorizer.assertCanAccess(job);
         PptConfirmationAction effectiveAction = action == null
                 ? (approved ? PptConfirmationAction.APPROVE : PptConfirmationAction.CANCEL)
                 : action;
@@ -599,6 +714,9 @@ public class PptWorkflowService {
                 repository.save(job);
                 events.record(job, PptJobEvent.of(PptJobEventType.CONFIRMATION_RECEIVED, "confirmation received",
                         Map.of("confirmationId", confirmationId, "action", action.name())));
+                if (telemetry != null) {
+                    telemetry.recordDecision(TemplateFillTelemetry.Decision.REJECT);
+                }
                 templateFillPlanningOrchestrator.restartPlanningAfterRevision(job.id(), revisionComment);
                 return job;
             }
@@ -631,6 +749,9 @@ public class PptWorkflowService {
             repository.save(job);
             events.record(job, PptJobEvent.of(PptJobEventType.TEMPLATE_FILL_PLAN_ACCEPTED,
                     "template fill plan approved", Map.of("planVersion", expectedVersion)));
+            if (telemetry != null) {
+                telemetry.recordDecision(TemplateFillTelemetry.Decision.ACCEPT);
+            }
             templateFillAsyncRunner.start(job.id(), planPath);
             return job;
         }
@@ -733,6 +854,17 @@ public class PptWorkflowService {
      */
     public Path exportPath(UUID jobId) {
         PptJob job = getJob(jobId);
+        if (job.workflowMode() == PptWorkflowMode.TEMPLATE_FILL) {
+            PptAccessContext access = accessContextResolver.resolve().orElse(null);
+            try {
+                jobAccessAuthorizer.assertCanAccess(job, access);
+            } catch (PptTemplateFillAccessException ex) {
+                auditTemplateFillDownload(job, access, "DENIED", "ACCESS_DENIED");
+                throw ex;
+            }
+        } else {
+            jobAccessAuthorizer.assertCanAccess(job);
+        }
         if (job.status() != PptJobStatus.COMPLETED) {
             throw new PptJobStateException("job is not completed");
         }
@@ -743,7 +875,22 @@ public class PptWorkflowService {
         if (!exportPath.startsWith(exportsDir)) {
             throw new PptJobStateException("export path is outside job exports directory");
         }
+        if (job.workflowMode() == PptWorkflowMode.TEMPLATE_FILL) {
+            lifecycleStore.recordDownload(job);
+            auditTemplateFillDownload(job, accessContextResolver.resolve().orElse(null), "SUCCESS", "OK");
+        }
         return exportPath;
+    }
+
+    private void auditTemplateFillDownload(
+            PptJob job, PptAccessContext access, String outcome, String reasonCode) {
+        String subjectDigest = access == null
+                ? null
+                : TemplateFillLifecycleStore.digestSubject(access.subjectId());
+        String tenantDigest = access == null
+                ? null
+                : TemplateFillLifecycleStore.digestTenant(access.tenantId());
+        templateFillAuditSink.record("download", job.id(), subjectDigest, tenantDigest, outcome, reasonCode);
     }
 
     /**
@@ -759,12 +906,16 @@ public class PptWorkflowService {
      */
     public PptJob resumeJob(UUID jobId) {
         PptJob job = getJob(jobId);
+        jobAccessAuthorizer.assertCanAccess(job);
         log.info("ppt_job_resume_requested: jobId={}, currentStatus={}, lastCompletedNode={}",
                 jobId, job.status(), job.lastCompletedNode().map(Enum::name).orElse("none"));
         String previousFailureNode = job.lastFailureNode().map(Enum::name).orElse("none");
         String rejection = job.tryStartResumeAttempt(MAX_RESUME_ATTEMPTS);
         if (rejection != null) {
             log.warn("ppt_job_resume_rejected: jobId={}, reason={}", jobId, rejection);
+            if (job.workflowMode() == PptWorkflowMode.TEMPLATE_FILL && telemetry != null) {
+                telemetry.recordRecovery(false);
+            }
             throw new PptJobResumeException(jobId, rejection);
         }
         PptJobNode checkpoint = resolveEffectiveCheckpoint(job);
@@ -779,6 +930,9 @@ public class PptWorkflowService {
                         "previousFailureNode", previousFailureNode)));
         repository.save(job);
         if (job.workflowMode() == PptWorkflowMode.TEMPLATE_FILL) {
+            if (telemetry != null) {
+                telemetry.recordRecovery(true);
+            }
             templateFillAsyncRunner.resumeFromCheckpoint(job.id(), checkpoint);
         } else {
             asyncRunner.resumeFromCheckpoint(job.id(), checkpoint);

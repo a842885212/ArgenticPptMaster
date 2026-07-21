@@ -1,0 +1,117 @@
+# Template-fill Prometheus alert examples
+
+Version: **2026.07-stage4** — metric names match `TemplateFillTelemetry`.
+
+```yaml
+groups:
+  - name: template-fill-rollout
+    rules:
+      - alert: TemplateFillCreationSuccessRateLow
+        expr: |
+          (
+            sum(rate(template_fill_creation_total{outcome="accepted"}[30m]))
+            /
+            sum(rate(template_fill_creation_total[30m]))
+          ) < 0.90
+          and sum(increase(template_fill_creation_total[30m])) >= 20
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: Template-fill creation success rate below rollout block threshold
+          runbook_url: docs/ops/template-fill-runbook.md#metrics-and-alerts
+
+      - alert: TemplateFillAnalyzeP95High
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum(rate(template_fill_stage_duration_seconds_bucket{stage="ANALYZE"}[30m])) by (le)
+          ) > 300
+          and sum(increase(template_fill_stage_total{stage="ANALYZE"}[30m])) >= 15
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: Template-fill analyze P95 latency above block threshold
+
+      - alert: TemplateFillStageFailureRateHigh
+        expr: |
+          (
+            sum(rate(template_fill_stage_total{outcome="FAILURE"}[30m]))
+            /
+            sum(rate(template_fill_stage_total[30m]))
+          ) > 0.10
+          and sum(increase(template_fill_stage_total[30m])) >= 30
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Template-fill stage failure rate elevated
+
+      - alert: TemplateFillApplyErrorSpike
+        expr: |
+          sum(rate(template_fill_error_total{error_code="TEMPLATE_APPLY_FAILED"}[15m])) > 0.16
+          and sum(increase(template_fill_error_total{error_code="TEMPLATE_APPLY_FAILED"}[15m])) >= 10
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: Sustained TEMPLATE_APPLY_FAILED errors
+
+      - alert: TemplateFillIncompatibleObjectRateHigh
+        expr: |
+          (
+            sum(rate(template_fill_incompatible_total[30m]))
+            /
+            sum(rate(template_fill_stage_total{stage="APPLY"}[30m]))
+          ) > 0.30
+          and sum(increase(template_fill_stage_total{stage="APPLY"}[30m])) >= 10
+        for: 20m
+        labels:
+          severity: warning
+        annotations:
+          summary: High incompatible object rate during apply
+
+      - alert: TemplateFillRecoveryFailureRateHigh
+        expr: |
+          (
+            sum(rate(template_fill_recovery_total{outcome="FAILURE"}[1h]))
+            /
+            sum(rate(template_fill_recovery_total[1h]))
+          ) > 0.40
+          and sum(increase(template_fill_recovery_total[1h])) >= 5
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: Template-fill recovery failures elevated
+
+      - alert: TemplateFillReadinessDown
+        expr: |
+          max_over_time(
+            (spring_health_status{component="templateFillReadiness"} == 0)[5m:]
+          ) >= 1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Template-fill readiness contributor reports DOWN
+          runbook_url: docs/ops/template-fill-runbook.md#readiness
+
+      - alert: TemplateFillAbnormalTaskLifetime
+        expr: |
+          (
+            time() - max by (stage) (template_fill_stage_start_timestamp_seconds)
+          ) > 7200
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Template-fill stage running longer than 2h (requires external timestamp exporter if enabled)
+```
+
+Notes:
+
+- Micrometer exports counters with dot names converted to underscores in Prometheus (`template.fill.creation.total` → `template_fill_creation_total`).
+- Adjust `spring_health_status` label set to match your Spring Boot Actuator Prometheus scrape config.
+- Cleanup safety alerts remain manual until Group 3 cleanup metrics land; see rollout thresholds doc.

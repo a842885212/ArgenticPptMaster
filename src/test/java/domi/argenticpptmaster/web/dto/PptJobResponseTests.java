@@ -204,6 +204,29 @@ class PptJobResponseTests {
     }
 
     @Test
+    void exposesStage4TemplateFillProgressAggregatesWithoutSensitiveText() {
+        PptJob job = new PptJob(
+                UUID.randomUUID(), "demo", "ppt169", "fill", PptWorkflowMode.TEMPLATE_FILL,
+                Path.of("var/ppt-master/jobs/demo"));
+        job.updateNativePlanAggregates(2, 1, 1, 3, 0, "VALID");
+        job.updateReadbackValidation("PASSED_WITH_WARNINGS", 1, 0);
+        job.complete(Path.of("var/ppt-master/jobs/demo/exports/demo.pptx"));
+        // Force completed status for download gate
+        job.completeNode(PptJobNode.OUTPUT_VALIDATED, Map.of());
+
+        PptJobResponse response = PptJobResponse.from(job);
+
+        assertThat(response.templateFillProgress()).isNotNull();
+        assertThat(response.templateFillProgress().notesMappingCount()).isEqualTo(2);
+        assertThat(response.templateFillProgress().tableMappingCount()).isEqualTo(1);
+        assertThat(response.templateFillProgress().chartMappingCount()).isEqualTo(1);
+        assertThat(response.templateFillProgress().capacityRiskCount()).isEqualTo(3);
+        assertThat(response.templateFillProgress().constraintValidationStatus()).isEqualTo("VALID");
+        assertThat(response.templateFillProgress().readbackValidationStatus()).isEqualTo("PASSED_WITH_WARNINGS");
+        assertThat(response.toString()).doesNotContain("speaker notes secret");
+    }
+
+    @Test
     void basicJobHasNullTemplateFillFields() {
         PptJob job = new PptJob(
                 UUID.randomUUID(), "demo", "ppt169", "make a deck", PptWorkflowMode.BASIC,

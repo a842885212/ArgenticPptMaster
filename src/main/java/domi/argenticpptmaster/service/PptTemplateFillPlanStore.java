@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import domi.argenticpptmaster.config.PptMasterProperties;
 import domi.argenticpptmaster.domain.FillPlanStatus;
 import domi.argenticpptmaster.domain.PptJob;
+import domi.argenticpptmaster.domain.TemplateFillConstraints;
 import domi.argenticpptmaster.domain.TemplateFillPlanMetadata;
 import domi.argenticpptmaster.exception.PptJobStateException;
 import domi.argenticpptmaster.exception.PptTemplateFillConflictException;
@@ -21,15 +22,17 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 /**
- * 在任务工作区内校验并原子保存 template-fill 计划及服务端元数据。
+ * Persists draft/confirmed fill plans and bound service metadata.
  */
 @Component
 public class PptTemplateFillPlanStore {
 
     static final String PLAN_FILE = "fill_plan.json";
     static final String META_FILE = "fill_plan.meta.json";
+    static final String SERVICE_META_FILE = "fill_plan.service-meta.json";
     static final String RATIONALE_FILE = "fill_plan_rationale.md";
     static final int MAX_RATIONALE_CHARS = 8_000;
+    static final String SERVICE_META_SCHEMA = "template_fill_service_meta.v1";
 
     private final PptMasterProperties properties;
     private final ObjectMapper objectMapper;
@@ -53,17 +56,33 @@ public class PptTemplateFillPlanStore {
 
     /** Agent 保存 draft 计划并返回新元数据。 */
     public TemplateFillPlanMetadata storeDraftPlan(PptJob job, String jsonPlan, Path slideLibraryPath) {
-        JsonNode validated = validator.parseAndValidateDraft(jsonPlan, slideLibraryPath);
+        return storeDraftPlan(job, jsonPlan, slideLibraryPath, null);
+    }
+
+    public TemplateFillPlanMetadata storeDraftPlan(
+            PptJob job, String jsonPlan, Path slideLibraryPath, String serviceMetaJson) {
+        TemplateFillConstraints constraints = job.templateConstraints();
+        JsonNode validated = validator.parseAndValidateDraft(jsonPlan, slideLibraryPath, constraints);
         int nextVersion = readMetadata(job).map(meta -> meta.version() + 1).orElse(1);
         ObjectNode normalized = validator.normalizeDraft(validated, nextVersion);
-        byte[] bytes = writeJsonBytes(normalized);
-        enforceSize(bytes);
-        String digest = TemplateFillPlanDigest.compute(bytes);
+        ObjectNode serviceMeta = normalizeServiceMeta(serviceMetaJson, nextVersion, constraints);
+        validator.validateCapacityDecisions(serviceMeta.get("capacityDecisions"));
+        validator.validateServiceMetaFontAdjustments(serviceMeta.get("fontAdjustments"));
+
+        byte[] planBytes = writeJsonBytes(normalized);
+        byte[] serviceMetaBytes = writeJsonBytes(serviceMeta);
+        enforceSize(planBytes);
+        enforceSize(serviceMetaBytes);
+        String digest = TemplateFillPlanDigest.computeCombined(planBytes, serviceMetaBytes);
+
         Path planPath = planPath(job);
-        atomicWrite(planPath, bytes);
+        Path serviceMetaPath = serviceMetaPath(job);
+        atomicWrite(planPath, planBytes);
+        atomicWrite(serviceMetaPath, serviceMetaBytes);
         TemplateFillPlanMetadata metadata = TemplateFillPlanMetadata.draft(nextVersion, digest);
         writeMetadata(job, metadata);
         job.updateFillPlanStatus(FillPlanStatus.DRAFT, normalized.get("slides").size(), 0, 0);
+        updateNativeAggregates(job, normalized, serviceMeta, "VALID");
         return metadata;
     }
 
@@ -97,12 +116,17 @@ public class PptTemplateFillPlanStore {
             throw new PptTemplateFillConflictException("fill plan version mismatch");
         }
         Path planPath = planPath(job);
+        Path serviceMetaPath = serviceMetaPath(job);
         if (!Files.isRegularFile(planPath)) {
             throw new PptTemplateFillConflictException("fill plan file is missing");
         }
         String actualDigest;
         try {
-            actualDigest = TemplateFillPlanDigest.compute(Files.readAllBytes(planPath));
+            byte[] planBytes = Files.readAllBytes(planPath);
+            byte[] serviceMetaBytes = Files.isRegularFile(serviceMetaPath)
+                    ? Files.readAllBytes(serviceMetaPath)
+                    : new byte[0];
+            actualDigest = TemplateFillPlanDigest.computeCombined(planBytes, serviceMetaBytes);
         } catch (IOException ex) {
             throw new PptJobStateException("failed to read fill plan");
         }
@@ -117,9 +141,19 @@ public class PptTemplateFillPlanStore {
         }
         ObjectNode confirmed = plan.deepCopy();
         confirmed.put("status", "confirmed");
-        byte[] bytes = writeJsonBytes(confirmed);
-        atomicWrite(planPath, bytes);
-        TemplateFillPlanMetadata approved = current.confirmed(confirmationId, Instant.now());
+        byte[] confirmedPlanBytes = writeJsonBytes(confirmed);
+        atomicWrite(planPath, confirmedPlanBytes);
+        byte[] serviceMetaBytes;
+        try {
+            serviceMetaBytes = Files.isRegularFile(serviceMetaPath)
+                    ? Files.readAllBytes(serviceMetaPath)
+                    : new byte[0];
+        } catch (IOException ex) {
+            throw new PptJobStateException("failed to read fill plan service meta");
+        }
+        String confirmedDigest = TemplateFillPlanDigest.computeCombined(confirmedPlanBytes, serviceMetaBytes);
+        TemplateFillPlanMetadata approved = new TemplateFillPlanMetadata(
+                current.version(), confirmedDigest, "confirmed", confirmationId, Instant.now());
         writeMetadata(job, approved);
         job.updateFillPlanStatus(FillPlanStatus.CONFIRMED, confirmed.get("slides").size(), 0, 0);
         return approved;
@@ -130,6 +164,7 @@ public class PptTemplateFillPlanStore {
      *
      * @deprecated 生产路径应使用 {@link #confirmCurrentDraft}；此方法仅保留调试兼容。
      */
+    @Deprecated
     public Path storeConfirmedPlan(PptJob job, String jsonPlan) {
         if (jsonPlan == null || jsonPlan.isBlank()) {
             throw new PptJobStateException("fill plan JSON is required");
@@ -148,7 +183,7 @@ public class PptTemplateFillPlanStore {
         Path planPath = planPath(job);
         atomicWrite(planPath, writeJsonBytes(plan));
         TemplateFillPlanMetadata metadata = new TemplateFillPlanMetadata(
-                plan.path("version").asInt(1),
+                plan.path("service_version").asInt(plan.path("version").asInt(1)),
                 TemplateFillPlanDigest.compute(bytes),
                 "confirmed",
                 "debug",
@@ -217,6 +252,111 @@ public class PptTemplateFillPlanStore {
                 .isPresent();
     }
 
+    public Optional<JsonNode> readServiceMeta(PptJob job) {
+        Path path = serviceMetaPath(job);
+        if (!Files.isRegularFile(path)) {
+            return Optional.empty();
+        }
+        try {
+            return Optional.of(objectMapper.readTree(path.toFile()));
+        } catch (IOException ex) {
+            return Optional.empty();
+        }
+    }
+
+    public void assertPlanIntegrity(PptJob job) {
+        TemplateFillPlanMetadata metadata = readMetadata(job)
+                .orElseThrow(() -> new PptTemplateFillConflictException("fill plan metadata is missing"));
+        Path planPath = planPath(job);
+        Path serviceMetaPath = serviceMetaPath(job);
+        try {
+            byte[] planBytes = Files.readAllBytes(planPath);
+            byte[] serviceMetaBytes = Files.isRegularFile(serviceMetaPath)
+                    ? Files.readAllBytes(serviceMetaPath)
+                    : new byte[0];
+            String digest = TemplateFillPlanDigest.computeCombined(planBytes, serviceMetaBytes);
+            if (!digest.equals(metadata.digest())) {
+                throw new PptTemplateFillConflictException("fill plan digest mismatch");
+            }
+        } catch (IOException ex) {
+            throw new PptJobStateException("failed to verify fill plan integrity");
+        }
+    }
+
+    private ObjectNode normalizeServiceMeta(
+            String serviceMetaJson, int version, TemplateFillConstraints constraints) {
+        ObjectNode root;
+        if (serviceMetaJson == null || serviceMetaJson.isBlank()) {
+            root = objectMapper.createObjectNode();
+        } else {
+            try {
+                JsonNode parsed = objectMapper.readTree(serviceMetaJson);
+                if (parsed == null || !parsed.isObject()) {
+                    throw new PptJobStateException("service meta must be a JSON object");
+                }
+                root = parsed.deepCopy();
+            } catch (IOException ex) {
+                throw new PptJobStateException("service meta must be valid JSON");
+            }
+        }
+        root.put("schema", SERVICE_META_SCHEMA);
+        root.put("version", version);
+        ObjectNode constraintsNode = objectMapper.createObjectNode();
+        constraintsNode.set("allowedTemplateSlides", objectMapper.valueToTree(constraints.allowedTemplateSlides()));
+        constraintsNode.set("excludedTemplateSlides", objectMapper.valueToTree(constraints.excludedTemplateSlides()));
+        constraintsNode.put("preserveCover", constraints.preserveCover());
+        constraintsNode.put("preserveEnding", constraints.preserveEnding());
+        if (constraints.maxSlides() != null) {
+            constraintsNode.put("maxSlides", constraints.maxSlides());
+        } else {
+            constraintsNode.putNull("maxSlides");
+        }
+        root.set("constraints", constraintsNode);
+        if (!root.has("capacityDecisions")) {
+            root.putArray("capacityDecisions");
+        }
+        if (!root.has("fontAdjustments")) {
+            root.putArray("fontAdjustments");
+        }
+        if (!root.has("omittedContent")) {
+            root.putArray("omittedContent");
+        }
+        if (!root.has("splitSuggestions")) {
+            root.putArray("splitSuggestions");
+        }
+        if (!root.has("unsupportedContent")) {
+            root.putArray("unsupportedContent");
+        }
+        if (!root.has("sourceRefs")) {
+            root.putObject("sourceRefs");
+        }
+        return root;
+    }
+
+    private void updateNativeAggregates(PptJob job, JsonNode plan, JsonNode serviceMeta, String constraintStatus) {
+        int notes = 0;
+        int tables = 0;
+        int charts = 0;
+        for (JsonNode slide : plan.path("slides")) {
+            String notesText = slide.path("notes").asText("");
+            if (notesText.isBlank()) {
+                notesText = slide.path("speaker_notes").asText("");
+            }
+            if (!notesText.isBlank()) {
+                notes++;
+            }
+            tables += slide.path("table_edits").isArray() ? slide.path("table_edits").size() : 0;
+            charts += slide.path("chart_edits").isArray() ? slide.path("chart_edits").size() : 0;
+        }
+        int capacityRisks = serviceMeta.path("capacityDecisions").isArray()
+                ? serviceMeta.path("capacityDecisions").size()
+                : 0;
+        int fontAdjustments = serviceMeta.path("fontAdjustments").isArray()
+                ? serviceMeta.path("fontAdjustments").size()
+                : 0;
+        job.updateNativePlanAggregates(notes, tables, charts, capacityRisks, fontAdjustments, constraintStatus);
+    }
+
     private void writeMetadata(PptJob job, TemplateFillPlanMetadata metadata) {
         ObjectNode root = objectMapper.createObjectNode();
         root.put("version", metadata.version());
@@ -251,6 +391,12 @@ public class PptTemplateFillPlanStore {
 
     private Path metaPath(PptJob job) {
         Path path = analysisDir(job).resolve(META_FILE).normalize();
+        ensureInside(job, path);
+        return path;
+    }
+
+    private Path serviceMetaPath(PptJob job) {
+        Path path = analysisDir(job).resolve(SERVICE_META_FILE).normalize();
         ensureInside(job, path);
         return path;
     }

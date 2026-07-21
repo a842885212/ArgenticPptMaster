@@ -14,6 +14,8 @@ import domi.argenticpptmaster.exception.PptJobStateException;
 import domi.argenticpptmaster.agent.AgentScopeWorkflowAgent;
 import domi.argenticpptmaster.agent.AgentScopeWorkflowAgentFactory;
 import domi.argenticpptmaster.repository.PptJobRepository;
+import domi.argenticpptmaster.security.FixedPptAccessContextResolver;
+import domi.argenticpptmaster.security.PptAccessContext;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
 import io.agentscope.core.event.AgentStartEvent;
@@ -67,6 +69,8 @@ class PptWorkflowServiceTests {
     static void properties(DynamicPropertyRegistry registry) {
         registry.add("ppt-master.workspace-path", () -> tempDir.resolve("workspace").toString());
         registry.add("ppt-master.repo-path", () -> tempDir.resolve("repo").toString());
+        registry.add("ppt-master.template-fill-enabled", () -> "true");
+        registry.add("ppt-master.template-fill-allowed-tenants[0]", () -> "test-tenant");
     }
 
     @BeforeEach
@@ -275,6 +279,7 @@ class PptWorkflowServiceTests {
         PptJob job = new PptJob(
                 java.util.UUID.randomUUID(), "demo", "ppt169", null, PptWorkflowMode.TEMPLATE_FILL,
                 tempDir.resolve("jobs/export-guard"));
+        job.assignOwnership("user-1", "test-tenant");
         job.complete(tempDir.resolve("outside.pptx"));
         repository.save(job);
 
@@ -438,6 +443,13 @@ class PptWorkflowServiceTests {
      */
     @TestConfiguration
     static class TestAgentConfig {
+
+        @Bean
+        @Primary
+        FixedPptAccessContextResolver pptAccessContextResolver() {
+            return new FixedPptAccessContextResolver(
+                    PptAccessContext.user("user-1", "test-tenant", java.util.Set.of()));
+        }
 
         /** 为工作流提供可在测试结束前确定性关闭的执行器。 */
         @Bean(name = "taskExecutor")

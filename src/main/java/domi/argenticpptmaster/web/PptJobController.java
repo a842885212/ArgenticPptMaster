@@ -4,6 +4,7 @@ import domi.argenticpptmaster.service.PptJobEventPublisher;
 import domi.argenticpptmaster.service.PptJobCreateCommand;
 import domi.argenticpptmaster.service.PptTemplateFillService;
 import domi.argenticpptmaster.service.PptWorkflowService;
+import domi.argenticpptmaster.service.TemplateFillDiagnosticService;
 import domi.argenticpptmaster.domain.PptJob;
 import domi.argenticpptmaster.domain.PptRevisionImpactPreview;
 import domi.argenticpptmaster.web.dto.ConfirmationRequest;
@@ -50,14 +51,17 @@ public class PptJobController {
 
     private final PptWorkflowService workflowService;
     private final PptTemplateFillService templateFillService;
+    private final TemplateFillDiagnosticService diagnosticService;
     private final PptJobEventPublisher eventPublisher;
 
     public PptJobController(
             PptWorkflowService workflowService,
             PptTemplateFillService templateFillService,
+            TemplateFillDiagnosticService diagnosticService,
             PptJobEventPublisher eventPublisher) {
         this.workflowService = workflowService;
         this.templateFillService = templateFillService;
+        this.diagnosticService = diagnosticService;
         this.eventPublisher = eventPublisher;
     }
 
@@ -78,10 +82,11 @@ public class PptJobController {
             @RequestParam(required = false) String projectName,
             @RequestParam(defaultValue = "ppt169") String format,
             @RequestParam(required = false) String instruction,
-            @RequestParam(defaultValue = "basic") String workflowMode) {
+            @RequestParam(defaultValue = "basic") String workflowMode,
+            @RequestParam(required = false) String templateConstraints) {
         return ResponseEntity.status(HttpStatus.ACCEPTED)
                 .body(PptJobResponse.from(workflowService.createJob(new PptJobCreateCommand(
-                        files, templateFile, projectName, format, instruction, workflowMode))));
+                        files, templateFile, projectName, format, instruction, workflowMode, templateConstraints))));
     }
 
     /**
@@ -92,7 +97,7 @@ public class PptJobController {
      */
     @GetMapping("/{jobId}")
     public PptJobResponse get(@PathVariable UUID jobId) {
-        return PptJobResponse.from(workflowService.getJob(jobId));
+        return PptJobResponse.from(workflowService.getAccessibleJob(jobId));
     }
 
     /**
@@ -116,6 +121,18 @@ public class PptJobController {
         return ResponseEntity.status(HttpStatus.ACCEPTED).body(PptJobResponse.from(job));
     }
 
+    /** 生成并下载脱敏模板填充诊断包（白名单字段，有大小上限）。 */
+    @GetMapping("/{jobId}/template-fill/diagnostics")
+    public ResponseEntity<Resource> exportTemplateFillDiagnostics(@PathVariable UUID jobId) {
+        var bundle = diagnosticService.exportDiagnostics(jobId);
+        Resource resource = new FileSystemResource(bundle.path());
+        return ResponseEntity.ok()
+                .contentType(MediaType.parseMediaType("application/zip"))
+                .header(HttpHeaders.CONTENT_DISPOSITION,
+                        "attachment; filename=\"" + bundle.path().getFileName() + "\"")
+                .body(resource);
+    }
+
     /**
      * 订阅指定任务的 Server-Sent Events (SSE) 事件流。
      * <p>
@@ -130,7 +147,7 @@ public class PptJobController {
      */
     @GetMapping(path = "/{jobId}/events", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter events(@PathVariable UUID jobId) {
-        PptJob job = workflowService.getJob(jobId);
+        PptJob job = workflowService.getAccessibleJob(jobId);
         return eventPublisher.subscribe(job);
     }
 

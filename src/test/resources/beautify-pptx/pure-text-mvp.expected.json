@@ -1,0 +1,9 @@
+{
+  "slideCount": 4,
+  "slides": [
+    ["Pure Text Beautify", "Every slide remains in order."],
+    ["Repeated text", "Keep me", "Keep me", "Dense page starts here"],
+    ["Dense page", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight"],
+    ["Pause"]
+  ]
+}

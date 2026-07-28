@@ -39,6 +39,12 @@ class PptWorkflowModeTests {
     }
 
     @Test
+    void beautifyVariantsResolveToBeautifyPptx() {
+        assertThat(PptWorkflowMode.from("beautify-pptx")).isEqualTo(PptWorkflowMode.BEAUTIFY_PPTX);
+        assertThat(PptWorkflowMode.from("BEAUTIFY_PPTX")).isEqualTo(PptWorkflowMode.BEAUTIFY_PPTX);
+    }
+
+    @Test
     void unknownNonBlankModeIsRejected() {
         assertThatThrownBy(() -> PptWorkflowMode.from("unsupported"))
                 .isInstanceOf(IllegalArgumentException.class)

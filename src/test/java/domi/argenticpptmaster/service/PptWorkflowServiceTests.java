@@ -71,6 +71,7 @@ class PptWorkflowServiceTests {
         registry.add("ppt-master.repo-path", () -> tempDir.resolve("repo").toString());
         registry.add("ppt-master.template-fill-enabled", () -> "true");
         registry.add("ppt-master.template-fill-allowed-tenants[0]", () -> "test-tenant");
+        registry.add("ppt-master.local-access.enabled", () -> "false");
     }
 
     @BeforeEach
@@ -153,6 +154,52 @@ class PptWorkflowServiceTests {
                 "image-enhanced");
 
         assertThat(job.workflowMode()).isEqualTo(PptWorkflowMode.IMAGE_ENHANCED);
+    }
+
+    @Test
+    void createsBeautifyJobForExactlyOnePptxSource() {
+        MockMultipartFile source = new MockMultipartFile(
+                "files", "source.PPTX", MediaType.APPLICATION_OCTET_STREAM_VALUE, "pptx".getBytes());
+
+        PptJob job = workflowService.createJob(List.of(source), "demo", "ppt169", "layout only", "beautify_pptx");
+
+        assertThat(job.workflowMode()).isEqualTo(PptWorkflowMode.BEAUTIFY_PPTX);
+        assertThat(job.sourceFiles()).singleElement().satisfies(file ->
+                assertThat(file.storedPath().getParent().getFileName().toString()).isEqualTo("uploads"));
+    }
+
+    @Test
+    void rejectsInvalidBeautifySourcesBeforeCreatingJob() {
+        MockMultipartFile first = new MockMultipartFile(
+                "files", "first.pptx", MediaType.APPLICATION_OCTET_STREAM_VALUE, "pptx".getBytes());
+        MockMultipartFile second = new MockMultipartFile(
+                "files", "second.pptx", MediaType.APPLICATION_OCTET_STREAM_VALUE, "pptx".getBytes());
+        MockMultipartFile legacy = new MockMultipartFile(
+                "files", "legacy.ppt", MediaType.APPLICATION_OCTET_STREAM_VALUE, "ppt".getBytes());
+
+        assertThatThrownBy(() -> workflowService.createJob(List.of(first, second), "demo", "ppt169", null, "beautify-pptx"))
+                .isInstanceOf(PptJobStateException.class)
+                .hasMessageContaining("exactly one");
+        assertThatThrownBy(() -> workflowService.createJob(List.of(legacy), "demo", "ppt169", null, "beautify-pptx"))
+                .isInstanceOf(PptJobStateException.class)
+                .hasMessageContaining(".pptx");
+    }
+
+    @Test
+    void rejectsBeautifyTemplateFields() {
+        MockMultipartFile source = new MockMultipartFile(
+                "files", "source.pptx", MediaType.APPLICATION_OCTET_STREAM_VALUE, "pptx".getBytes());
+        MockMultipartFile template = new MockMultipartFile(
+                "templateFile", "template.pptx", MediaType.APPLICATION_OCTET_STREAM_VALUE, "pptx".getBytes());
+
+        assertThatThrownBy(() -> workflowService.createJob(new PptJobCreateCommand(
+                List.of(source), template, "demo", "ppt169", null, "beautify-pptx", null)))
+                .isInstanceOf(PptJobStateException.class)
+                .hasMessageContaining("templateFile");
+        assertThatThrownBy(() -> workflowService.createJob(new PptJobCreateCommand(
+                List.of(source), null, "demo", "ppt169", null, "beautify-pptx", "{}")))
+                .isInstanceOf(PptJobStateException.class)
+                .hasMessageContaining("templateConstraints");
     }
 
     @Test
@@ -412,6 +459,35 @@ class PptWorkflowServiceTests {
                 .isEqualTo(PptJobNodeStatus.COMPLETED);
         assertThat(result.nodeExecution(PptJobNode.OUTLINE_CONFIRMED).status())
                 .isEqualTo(PptJobNodeStatus.COMPLETED);
+    }
+
+    @Test
+    void beautifyConfirmationApprovesOnlyCurrentDraftAndRejectsRevision() {
+        Path project = tempDir.resolve("jobs/beautify-confirmation");
+        PptJob job = new PptJob(java.util.UUID.randomUUID(), "beautify", "ppt169", null,
+                PptWorkflowMode.BEAUTIFY_PPTX, project);
+        job.prepareProject(project);
+        BeautifyPptxPlanStore.PlanMetadata draft = BeautifyPptxPlanStore.storeDraft(job, """
+                {"version":1,"status":"draft","hardConstraints":{"textVerbatim":true,
+                "dataVerbatim":true,"pageMapping":"1:1"},"slides":[]}
+                """);
+        job.completeNode(PptJobNode.BEAUTIFY_ANALYZED, Map.of());
+        job.completeNode(PptJobNode.BEAUTIFY_PLAN_DRAFTED, Map.of());
+        job.requireConfirmation("beautify-1", Map.of("stage", "beautify_plan_confirmation", "contextData", Map.of(
+                "type", "beautify_pptx_plan", "version", 1, "digest", draft.digest())));
+        repository.save(job);
+
+        assertThatThrownBy(() -> workflowService.submitConfirmation(job.id(), "beautify-1", true, Map.of(), "修改",
+                PptConfirmationAction.REQUEST_REVISION, null, List.of()))
+                .isInstanceOf(PptJobStateException.class)
+                .hasMessageContaining("revision is not supported");
+        assertThat(job.status()).isEqualTo(PptJobStatus.WAITING_CONFIRMATION);
+
+        PptJob approved = workflowService.submitConfirmation(job.id(), "beautify-1", true, Map.of(), null,
+                PptConfirmationAction.APPROVE, null, List.of());
+        assertThat(approved.nodeExecution(PptJobNode.BEAUTIFY_PLAN_CONFIRMED).status())
+                .isEqualTo(PptJobNodeStatus.COMPLETED);
+        assertThat(BeautifyPptxPlanStore.read(approved).orElseThrow().status()).isEqualTo("confirmed");
     }
 
     @Test

@@ -239,6 +239,7 @@ public class PptWorkflowService {
         } catch (IllegalArgumentException ex) {
             throw new PptJobStateException(ex.getMessage());
         }
+        validateBeautifyContract(mode, files, command.templateFile(), command.templateConstraintsJson());
         PptAccessContext access = null;
         if (mode == PptWorkflowMode.TEMPLATE_FILL) {
             access = accessContextResolver.resolve().orElse(null);
@@ -404,6 +405,9 @@ public class PptWorkflowService {
             events.record(job, PptJobEvent.of(PptJobEventType.JOB_FAILED, "confirmation rejected"));
             return job;
         }
+        if (isBeautifyPlanConfirmation(job) && effectiveAction == PptConfirmationAction.REQUEST_REVISION) {
+            throw new PptJobStateException("beautify plan revision is not supported in this MVP");
+        }
         validateImageManifestConfirmation(job, effectiveAction);
         validateImageReadyContinuation(job, effectiveAction);
         if (isTemplateFillPlanConfirmation(job)) {
@@ -437,12 +441,21 @@ public class PptWorkflowService {
                 ? PptConfirmationStageResolver.resolveConfirmedNode(job.confirmationPayload())
                 : null;
         if (confirmedNode != null) {
+            BeautifyPptxPlanStore.PlanMetadata beautifyPlan = null;
+            if (confirmedNode == PptJobNode.BEAUTIFY_PLAN_CONFIRMED) {
+                beautifyPlan = confirmBeautifyPlan(job);
+            }
             lockApprovedOutline(job, outlineVersion);
             if (confirmedNode == PptJobNode.OUTLINE_CONFIRMED
                     && job.currentNode().orElse(null) == PptJobNode.OUTLINE_DRAFTED) {
                 job.completeNode(PptJobNode.OUTLINE_DRAFTED, Map.of("confirmed", true));
             }
-            job.confirmNode(confirmedNode);
+            if (beautifyPlan == null) {
+                job.confirmNode(confirmedNode);
+            } else {
+                job.completeNode(confirmedNode, Map.of(
+                        "version", beautifyPlan.version(), "digest", beautifyPlan.digest()));
+            }
         }
         job.receiveConfirmation(confirmation);
         events.record(job, PptJobEvent.of(PptJobEventType.CONFIRMATION_RECEIVED, "confirmation received",
@@ -691,6 +704,25 @@ public class PptWorkflowService {
 
     private boolean isTemplateFillPlanConfirmation(PptJob job) {
         return "template_fill_plan".equals(job.confirmationPayload().get("stage"));
+    }
+
+    private boolean isBeautifyPlanConfirmation(PptJob job) {
+        return "beautify_plan_confirmation".equals(job.confirmationPayload().get("stage"));
+    }
+
+    private BeautifyPptxPlanStore.PlanMetadata confirmBeautifyPlan(PptJob job) {
+        Object rawContext = job.confirmationPayload().get("contextData");
+        if (!(rawContext instanceof Map<?, ?> context)) {
+            throw new PptJobStateException("beautify plan confirmation context is missing");
+        }
+        Object version = context.get("version");
+        Object digest = context.get("digest");
+        if (!(version instanceof Number number) || !(digest instanceof String text) || text.isBlank()) {
+            throw new PptJobStateException("beautify plan confirmation requires version and digest");
+        }
+        BeautifyPptxPlanStore.confirmDraft(job, number.intValue(), text);
+        return BeautifyPptxPlanStore.read(job)
+                .orElseThrow(() -> new PptJobStateException("confirmed beautify plan is missing"));
     }
 
     private PptJob submitTemplateFillPlanConfirmation(
@@ -1161,6 +1193,31 @@ public class PptWorkflowService {
             validateTemplateExtension(originalName);
         } else if (templateFile != null) {
             throw new PptJobStateException("templateFile is only supported for template-fill workflow");
+        }
+    }
+
+    private void validateBeautifyContract(
+            PptWorkflowMode mode, List<MultipartFile> files, MultipartFile templateFile, String templateConstraintsJson) {
+        if (mode != PptWorkflowMode.BEAUTIFY_PPTX) {
+            return;
+        }
+        if (templateFile != null) {
+            throw new PptJobStateException("templateFile is not supported for beautify-pptx workflow");
+        }
+        if (templateConstraintsJson != null && !templateConstraintsJson.isBlank()) {
+            throw new PptJobStateException("templateConstraints is not supported for beautify-pptx workflow");
+        }
+        List<MultipartFile> nonEmptyFiles = files == null ? List.of() : files.stream()
+                .filter(file -> file != null && !file.isEmpty())
+                .toList();
+        if (nonEmptyFiles.size() != 1) {
+            throw new PptJobStateException("beautify-pptx workflow requires exactly one non-empty .pptx source file");
+        }
+        MultipartFile source = nonEmptyFiles.get(0);
+        String name = StringUtils.cleanPath(source.getOriginalFilename() == null
+                ? "" : source.getOriginalFilename());
+        if (!name.toLowerCase().endsWith(".pptx")) {
+            throw new PptJobStateException("beautify-pptx source file must have .pptx extension");
         }
     }
 

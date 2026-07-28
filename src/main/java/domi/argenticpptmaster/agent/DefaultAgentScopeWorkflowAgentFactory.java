@@ -1,5 +1,6 @@
 package domi.argenticpptmaster.agent;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import domi.argenticpptmaster.config.AgentScopeProperties;
 import domi.argenticpptmaster.config.PptMasterProperties;
@@ -16,6 +17,8 @@ import domi.argenticpptmaster.service.PptWorkflowEvents;
 import domi.argenticpptmaster.service.PptOutlineStore;
 import domi.argenticpptmaster.service.PptArtifactRegistry;
 import domi.argenticpptmaster.service.PptImageManifestStore;
+import domi.argenticpptmaster.service.BeautifyPptxPlanStore;
+import domi.argenticpptmaster.service.BeautifyPptxSvgContractValidator;
 import io.agentscope.core.ReActAgent;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
@@ -82,6 +85,9 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
     private static final String SVG_QUALITY_CHECKER_SCRIPT = "skills/ppt-master/scripts/svg_quality_checker.py";
     private static final String EXPORT_SCRIPT = "skills/ppt-master/scripts/svg_to_pptx.py";
     private static final String IMAGE_GEN_SCRIPT = "skills/ppt-master/scripts/image_gen.py";
+    private static final String BEAUTIFY_IDENTITY_SCRIPT = "skills/ppt-master/scripts/beautify_identity.py";
+    private static final String BEAUTIFY_INTAKE_SCRIPT = "skills/ppt-master/scripts/pptx_intake.py";
+    private static final String BEAUTIFY_INVENTORY_SCRIPT = "skills/ppt-master/scripts/beautify_inventory.py";
     private static final String TEMPLATE_FILL_SCRIPT = "skills/ppt-master/scripts/template_fill_pptx.py";
     private static final Logger log = LoggerFactory.getLogger(DefaultAgentScopeWorkflowAgentFactory.class);
 
@@ -397,12 +403,37 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                     buildTemplateFillWorkflowPatchPrompt(),
                     buildTemplateFillToolingConstraintsPrompt());
         }
+        if (workflowMode == PptWorkflowMode.BEAUTIFY_PPTX) {
+            return String.join("\n\n", buildUpstreamCoreRulesPrompt(), buildBeautifyWorkflowPatchPrompt(),
+                    buildBeautifyToolingConstraintsPrompt());
+        }
         return String.join("\n\n",
                 buildUpstreamCoreRulesPrompt(),
                 workflowMode == PptWorkflowMode.IMAGE_ENHANCED
                         ? buildImageEnhancedWorkflowPatchPrompt()
                         : buildBasicWorkflowPatchPrompt(),
                 buildLocalToolingConstraintsPrompt());
+    }
+
+    private String buildBeautifyWorkflowPatchPrompt() {
+        return """
+                当前任务模式：BEAUTIFY_PPTX（纯文本逐页重新排版）。
+                先调用 describe_job，再调用 prepare_beautify_project；只读取其产物后起草计划。
+                必须逐页、逐字符串保留源文本，页数和页序严格 1:1；禁止改写、拆合页、文生图和模板填充。
+                计划草案使用 write_beautify_plan_draft，并以 stage=beautify_plan_confirmation 请求确认。
+                仅在计划确认后，才可写 design_spec.md、spec_lock.md、svg_output/*.svg，并依次 validate、finalize、export。
+                """;
+    }
+
+    private String buildBeautifyToolingConstraintsPrompt() {
+        return """
+                Beautify 本地工具约束：
+                - 必须使用 prepare_beautify_project 处理 identity、intake 和 inventory；不得调用 init_ppt_project 或 import_job_sources。
+                - 仅允许通过 write_beautify_plan_draft 写入草案，并用 request_plan_confirmation 的
+                  stage=beautify_plan_confirmation、contextData={type:"beautify_pptx_plan",version,digest} 请求确认。
+                - 禁止 outline.json、图片 manifest、generate_project_images、template-fill 工具和任何源文本改写。
+                - 只有 BEAUTIFY_PLAN_CONFIRMED 后才能写 design_spec.md、spec_lock.md、svg_output/*.svg 或导出。
+                """;
     }
 
     private String buildTemplateFillCoreRulesPrompt() {
@@ -632,6 +663,144 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
             return data;
         }
 
+        @Tool(name = "prepare_beautify_project", description = "Prepare a beautify-pptx project through identity, import/intake, and inventory.")
+        public Map<String, Object> prepareBeautifyProject(PptAgentToolRuntime runtime) {
+            if (runtime.job().workflowMode() != PptWorkflowMode.BEAUTIFY_PPTX) {
+                throw new IllegalStateException("prepare_beautify_project is only available for beautify-pptx jobs");
+            }
+            if (runtime.job().sourceFiles().size() != 1) {
+                throw new IllegalStateException("beautify-pptx requires exactly one source file");
+            }
+            Path source = runtime.job().sourceFiles().get(0).storedPath();
+            PptMasterCommandExecutor.CommandResult identity = runtime.executor().runPythonScript(
+                    BEAUTIFY_IDENTITY_SCRIPT, List.of(source.toString()));
+            if (!identity.successful()) {
+                throw new IllegalStateException("BEAUTIFY_IDENTITY_FAILED: " + identity.output());
+            }
+            String resolvedFormat = resolveBeautifyFormat(identity.output(), runtime.job().format());
+            Path preparedPath = runtime.job().projectPath().orElseThrow();
+            Path projectPath = preparedPath.getParent().resolve(preparedPath.getFileName().toString()
+                    .replace("_" + runtime.job().format() + "_", "_" + resolvedFormat + "_"));
+            runtime.job().prepareProject(projectPath);
+            PptMasterCommandExecutor.CommandResult initialized = runtime.executor().runPythonScript(
+                    PROJECT_MANAGER_SCRIPT, List.of("init", runtime.job().projectName() + "_"
+                    + runtime.job().id().toString().substring(0, 8), "--format", resolvedFormat, "--dir",
+                    projectPath.getParent().toString()));
+            if (!initialized.successful()) {
+                throw new IllegalStateException("BEAUTIFY_INTAKE_FAILED: project init failed: " + initialized.output());
+            }
+            List<String> importArguments = List.of("import-sources", projectPath.toString(), source.toString(), "--copy");
+            PptMasterCommandExecutor.CommandResult imported = runtime.executor().runPythonScript(
+                    PROJECT_MANAGER_SCRIPT, importArguments);
+            if (!imported.successful()) {
+                throw new IllegalStateException("BEAUTIFY_INTAKE_FAILED: " + imported.output());
+            }
+            String stem = source.getFileName().toString().replaceFirst("(?i)\\.pptx$", "");
+            Path analysis = projectPath.resolve("analysis");
+            Path identityPath = analysis.resolve(stem + ".identity.json");
+            Path libraryPath = analysis.resolve(stem + ".slide_library.json");
+            if (!Files.isRegularFile(identityPath) || !Files.isRegularFile(libraryPath)) {
+                PptMasterCommandExecutor.CommandResult intake = runtime.executor().runPythonScript(
+                        BEAUTIFY_INTAKE_SCRIPT, List.of(source.toString(), "-o", analysis.toString()));
+                if (!intake.successful()) {
+                    throw new IllegalStateException("BEAUTIFY_INTAKE_FAILED: " + intake.output());
+                }
+            }
+            Path inventoryPath = analysis.resolve("beautify_inventory.json");
+            Path imageManifest = projectPath.resolve("images/image_manifest.json");
+            List<String> inventoryArguments = new ArrayList<>(List.of(libraryPath.toString()));
+            if (Files.isRegularFile(imageManifest)) {
+                inventoryArguments.addAll(List.of("--images", imageManifest.toString()));
+            }
+            inventoryArguments.addAll(List.of("-o", inventoryPath.toString()));
+            PptMasterCommandExecutor.CommandResult inventory = runtime.executor().runPythonScript(
+                    BEAUTIFY_INVENTORY_SCRIPT, inventoryArguments);
+            if (!inventory.successful()) {
+                throw new IllegalStateException("BEAUTIFY_INVENTORY_FAILED: " + inventory.output());
+            }
+            Map<String, Object> summary = new LinkedHashMap<>(validatePureTextInventory(identityPath, libraryPath, inventoryPath));
+            summary.put("resolvedFormat", resolvedFormat);
+            runtime.completeNode(PptJobNode.PROJECT_READY, Map.of("sourcesDir", "sources"));
+            runtime.completeNode(PptJobNode.BEAUTIFY_ANALYZED, summary);
+            return summary;
+        }
+
+        @Tool(name = "write_beautify_plan_draft", description = "Persist the constrained beautify plan draft and return its version and digest.")
+        public Map<String, Object> writeBeautifyPlanDraft(
+                @ToolParam(name = "content", description = "Beautify plan JSON draft.", required = true) String content,
+                PptAgentToolRuntime runtime) {
+            if (runtime.job().workflowMode() != PptWorkflowMode.BEAUTIFY_PPTX) {
+                throw new IllegalStateException("write_beautify_plan_draft is only available for beautify-pptx jobs");
+            }
+            PptNodeExecution analysis = runtime.job().nodeExecution(PptJobNode.BEAUTIFY_ANALYZED);
+            if (analysis == null || analysis.status() != PptJobNodeStatus.COMPLETED) {
+                throw new IllegalStateException("beautify analysis must complete before planning");
+            }
+            BeautifyPptxPlanStore.PlanMetadata draft = BeautifyPptxPlanStore.storeDraft(runtime.job(), content);
+            runtime.completeNode(PptJobNode.BEAUTIFY_PLAN_DRAFTED,
+                    Map.of("version", draft.version(), "digest", draft.digest()));
+            return Map.of("version", draft.version(), "digest", draft.digest(), "status", draft.status());
+        }
+
+        private Map<String, Object> validatePureTextInventory(Path identityPath, Path libraryPath, Path inventoryPath) {
+            try {
+                JsonNode identity = objectMapper.readTree(identityPath.toFile());
+                JsonNode library = objectMapper.readTree(libraryPath.toFile());
+                JsonNode inventory = objectMapper.readTree(inventoryPath.toFile());
+                int slideCount = inventory.path("slide_count").asInt(0);
+                if (!identity.path("canvas").isObject()
+                        || !library.path("slides").isArray()
+                        || library.path("slides").size() != slideCount
+                        || identity.path("slide_count").asInt(0) != slideCount
+                        || library.path("slide_count").asInt(0) != slideCount
+                        || !inventory.path("slides").isArray()) {
+                    throw new IllegalStateException("BEAUTIFY_INVENTORY_FAILED: invalid page-count contract");
+                }
+                for (int index = 0; index < inventory.path("slides").size(); index++) {
+                    JsonNode slide = inventory.path("slides").get(index);
+                    if (slide.path("slide_index").asInt(-1) != index + 1 || !slide.path("text_blocks").isArray()
+                            || hasEntries(slide, "images") || hasEntries(slide, "tables")
+                            || hasEntries(slide, "charts") || hasEntries(slide, "unknown_objects")
+                            || hasEntries(slide, "unsupported_objects") || hasEntries(slide, "shapes")) {
+                        throw new IllegalStateException("BEAUTIFY_UNSUPPORTED_CONTENT: slide " + (index + 1));
+                    }
+                    for (JsonNode textBlock : slide.path("text_blocks")) {
+                        if (!textBlock.isObject() || !textBlock.path("text").isTextual()) {
+                            throw new IllegalStateException("BEAUTIFY_INVENTORY_FAILED: invalid text ledger");
+                        }
+                    }
+                }
+                if (hasEntries(inventory, "ignored") || hasEntries(inventory, "needs_confirmation")
+                        || hasEntries(inventory, "needsConfirmation") || hasEntries(inventory, "unknown_objects")
+                        || hasEntries(inventory, "unsupported_objects")) {
+                    throw new IllegalStateException("BEAUTIFY_UNSUPPORTED_CONTENT: inventory requires confirmation");
+                }
+                return Map.of("sourcePageCount", slideCount, "identity", "analysis/" + identityPath.getFileName(),
+                        "inventory", "analysis/beautify_inventory.json");
+            } catch (IOException ex) {
+                throw new IllegalStateException("BEAUTIFY_INVENTORY_FAILED: unable to read analysis artifacts", ex);
+            }
+        }
+
+        private boolean hasEntries(JsonNode parent, String field) {
+            JsonNode value = parent.path(field);
+            return value.isArray() ? !value.isEmpty() : !value.isMissingNode() && !value.isNull() && value.asBoolean(false);
+        }
+
+        private String resolveBeautifyFormat(String identityOutput, String fallback) {
+            try {
+                JsonNode identity = objectMapper.readTree(identityOutput);
+                double aspect = identity.path("canvas").path("aspect").asDouble(0);
+                if (aspect > 0) {
+                    return Math.abs(aspect - 1.778) <= Math.abs(aspect - 1.333) ? "ppt169" : "ppt43";
+                }
+            } catch (IOException ignored) {
+                // The import-produced identity file is validated before analysis completes.
+            }
+            return fallback;
+        }
+
+
         /**
          * 初始化本地 ppt-master 项目目录。
          * <p>
@@ -644,6 +813,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
          */
         @Tool(name = "init_ppt_project", description = "Initialize the local ppt-master project directory for the current job.")
         public String initPptProject(PptAgentToolRuntime runtime) {
+            rejectBeautifyDirectProjectOperation(runtime, "init_ppt_project");
             Path projectPath = runtime.job().projectPath()
                     .orElseThrow(() -> new IllegalStateException("job project path is not prepared"));
             if (Files.exists(projectPath.resolve("README.md"))) {
@@ -680,6 +850,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
          */
         @Tool(name = "import_job_sources", description = "Import uploaded source files into the prepared ppt-master project.")
         public String importJobSources(PptAgentToolRuntime runtime) {
+            rejectBeautifyDirectProjectOperation(runtime, "import_job_sources");
             Path projectPath = runtime.job().projectPath()
                     .orElseThrow(() -> new IllegalStateException("job project path is not prepared"));
             Path sourcesDir = projectPath.resolve("sources");
@@ -858,6 +1029,9 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                 case TEMPLATE_ANALYZED -> Files.isRegularFile(projectPath.resolve("analysis/template.slide_library.json"));
                 case FILL_PLAN_DRAFTED, FILL_PLAN_CONFIRMED -> Files.isRegularFile(projectPath.resolve("analysis/fill_plan.json"));
                 case FILL_PLAN_VALIDATED -> Files.isRegularFile(projectPath.resolve("analysis/check_report.json"));
+                case BEAUTIFY_ANALYZED -> Files.isRegularFile(projectPath.resolve("analysis/beautify_inventory.json"));
+                case BEAUTIFY_PLAN_DRAFTED, BEAUTIFY_PLAN_CONFIRMED ->
+                        Files.isRegularFile(projectPath.resolve("analysis/beautify_plan.draft.json"));
                 case OUTPUT_VALIDATED -> hasAnyFile(files.get("exports"));
             };
         }
@@ -1001,6 +1175,9 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
             Path target = resolveWritableProjectFile(runtime, relativePath);
             Path projectPath = runtime.job().projectPath().orElseThrow();
             String normalized = projectPath.relativize(target).toString().replace('\\', '/');
+            if (runtime.job().workflowMode() == PptWorkflowMode.BEAUTIFY_PPTX && normalized.equals("outline.json")) {
+                throw new IllegalStateException("beautify-pptx does not use outline.json");
+            }
             if (normalized.equals("outline.json")) {
                 return writeOutline(content, projectPath, normalized, runtime);
             }
@@ -1086,6 +1263,9 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
          */
         @Tool(name = "split_speaker_notes", description = "Split notes/total.md into per-slide notes files under notes/ using ppt-master total_md_split.py.")
         public String splitSpeakerNotes(PptAgentToolRuntime runtime) {
+            if (runtime.job().workflowMode() == PptWorkflowMode.BEAUTIFY_PPTX) {
+                throw new IllegalStateException("beautify-pptx does not use speaker notes");
+            }
             requireApprovedOutline(runtime, "split speaker notes");
             requireImagesReadyToContinue(runtime, "split speaker notes");
             Path projectPath = runtime.job().projectPath()
@@ -1112,12 +1292,16 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
          */
         @Tool(name = "validate_svg_output", description = "Run ppt-master svg_quality_checker.py against the current project before finalize/export.", readOnly = true)
         public String validateSvgOutput(PptAgentToolRuntime runtime) {
+            requireApprovedOutline(runtime, "validate SVG");
             requireImagesReadyToContinue(runtime, "validate SVG");
             Path projectPath = runtime.job().projectPath()
                     .orElseThrow(() -> new IllegalStateException("job project path is not prepared"));
+            if (runtime.job().workflowMode() == PptWorkflowMode.BEAUTIFY_PPTX) {
+                BeautifyPptxSvgContractValidator.validate(projectPath);
+            }
             PptMasterCommandExecutor.CommandResult result = runtime.executor().runPythonScript(
                     SVG_QUALITY_CHECKER_SCRIPT,
-                    List.of(projectPath.toString(), "--format", runtime.job().format()));
+                    List.of(projectPath.toString(), "--format", resolvedProjectFormat(projectPath, runtime.job().format())));
             if (!result.successful()) {
                 throw new IllegalStateException("svg quality validation failed: " + result.output());
             }
@@ -1212,6 +1396,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
          */
         @Tool(name = "generate_project_images", description = "Run ppt-master image_gen.py --manifest to generate AI images listed in images/image_prompts.json.")
         public String generateProjectImages(PptAgentToolRuntime runtime) {
+            rejectBeautifyDirectProjectOperation(runtime, "generate_project_images");
             requireApprovedOutline(runtime, "generate images");
             requireConfirmedImageManifest(runtime);
             Path projectPath = runtime.job().projectPath()
@@ -1238,6 +1423,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
 
         @Tool(name = "derive_image_manifest_from_locked_outline", description = "Create images/image_prompts.json only from the current locked outline.json imageRequirement entries.")
         public Map<String, Object> deriveImageManifestFromLockedOutline(PptAgentToolRuntime runtime) {
+            rejectBeautifyDirectProjectOperation(runtime, "derive_image_manifest_from_locked_outline");
             requireApprovedOutline(runtime, "derive image manifest");
             Path projectPath = runtime.job().projectPath()
                     .orElseThrow(() -> new IllegalStateException("job project path is not prepared"));
@@ -1410,6 +1596,10 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
             if (normalized.equals("images/image_prompts.json")) {
                 throw new IllegalStateException("image prompts manifest must be derived from the locked outline");
             }
+            if (runtime.job().workflowMode() == PptWorkflowMode.BEAUTIFY_PPTX
+                    && normalized.startsWith("notes/")) {
+                throw new IllegalStateException("beautify-pptx does not use speaker notes");
+            }
             boolean downstreamArtifact = normalized.equals("design_spec.md")
                     || normalized.equals("spec_lock.md")
                     || normalized.startsWith("notes/")
@@ -1434,6 +1624,20 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
         }
 
         private void requireApprovedOutline(PptAgentToolRuntime runtime, String operation) {
+            if (runtime.job().workflowMode() == PptWorkflowMode.BEAUTIFY_PPTX) {
+                PptNodeExecution planExecution = runtime.job().nodeExecution(PptJobNode.BEAUTIFY_PLAN_CONFIRMED);
+                if (planExecution == null || planExecution.status() != PptJobNodeStatus.COMPLETED) {
+                    throw new IllegalStateException("beautify plan尚未确认，禁止执行下游操作: " + operation);
+                }
+                BeautifyPptxPlanStore.PlanMetadata plan = BeautifyPptxPlanStore.read(runtime.job())
+                        .filter(metadata -> "confirmed".equals(metadata.status()))
+                        .orElseThrow(() -> new IllegalStateException("beautify plan evidence is missing or invalid"));
+                Object expectedDigest = planExecution.summary().get("digest");
+                if (!(expectedDigest instanceof String digest) || !digest.equals(plan.digest())) {
+                    throw new IllegalStateException("beautify plan digest no longer matches confirmation evidence");
+                }
+                return;
+            }
             PptNodeExecution outlineExecution = runtime.job().nodeExecution(PptJobNode.OUTLINE_CONFIRMED);
             PptNodeExecution legacyExecution = runtime.job().nodeExecution(PptJobNode.PLAN_CONFIRMED);
             boolean outlineApproved = outlineExecution != null
@@ -1452,6 +1656,30 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
             }
             if (!outlineApproved && !legacyOutlineApproved) {
                 throw new IllegalStateException("逐页大纲尚未批准，禁止执行下游操作: " + operation);
+            }
+        }
+
+        private void rejectBeautifyDirectProjectOperation(PptAgentToolRuntime runtime, String operation) {
+            if (runtime.job().workflowMode() == PptWorkflowMode.BEAUTIFY_PPTX) {
+                throw new IllegalStateException("beautify-pptx requires prepare_beautify_project instead of " + operation);
+            }
+        }
+
+        private String resolvedProjectFormat(Path projectPath, String fallback) {
+            Path analysis = projectPath.resolve("analysis");
+            try (Stream<Path> files = Files.isDirectory(analysis) ? Files.list(analysis) : Stream.empty()) {
+                Optional<Path> identity = files
+                        .filter(path -> path.getFileName().toString().endsWith(".identity.json"))
+                        .findFirst();
+                return identity.map(path -> {
+                    try {
+                        return resolveBeautifyFormat(Files.readString(path, StandardCharsets.UTF_8), fallback);
+                    } catch (IOException ex) {
+                        return fallback;
+                    }
+                }).orElse(fallback);
+            } catch (IOException ex) {
+                return fallback;
             }
         }
 
@@ -1672,8 +1900,9 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
             super(ToolBase.builder()
                     .name(APPROVAL_TOOL_NAME)
                     .description("Request operator confirmation for the proposed PPT execution plan. "
-                            + "The first confirmation in every job MUST use stage=outline_confirmation with "
-                            + "contextData.type=ppt_outline and complete structured slides; do not request any image stage first. "
+                            + "For BASIC and IMAGE_ENHANCED jobs, the first confirmation MUST use stage=outline_confirmation with "
+                            + "contextData.type=ppt_outline and complete structured slides. For BEAUTIFY_PPTX jobs, use "
+                            + "stage=beautify_plan_confirmation with contextData.type=beautify_pptx_plan after analysis. "
                             + "For image-enhanced workflows, this tool confirms the image manifest before generation "
                             + "and pauses after image generation failures so the operator can choose to retry failed images or continue.")
                     .inputSchema(Map.of(
@@ -1684,8 +1913,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                                     "pendingSteps", Map.of("type", "string"),
                                     "risks", Map.of("type", "string"),
                                     "stage", Map.of("type", "string",
-                                            "description", "Required stage. First call must be outline_confirmation; "
-                                                    + "image stages are only valid after a locked outline approval."),
+                                            "description", "Required workflow stage; image stages are only valid after a locked outline approval."),
                                     "title", Map.of("type", "string"),
                                     "message", Map.of("type", "string"),
                                     "choices", Map.of(
@@ -1698,7 +1926,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                                                     "required", List.of("label", "value"))),
                                     "contextData", Map.of(
                                             "type", "object",
-                                            "description", "For outline_confirmation use {type: ppt_outline, version, locked:false, slides: [{slideNo, title, keyMessage, bullets, visualSuggestion, imageRequirement}]}; for image_manifest_confirmation use {type: ppt_image_manifest, outlineVersion, items}.")),
+                                            "description", "For outline_confirmation use {type: ppt_outline, version, locked:false, slides: [...]}; for beautify_plan_confirmation use {type: beautify_pptx_plan, version, digest}.")),
                             "required", List.of("planSummary", "pendingSteps", "stage", "contextData")))
                     .readOnly(false)
                     .concurrencySafe(true)

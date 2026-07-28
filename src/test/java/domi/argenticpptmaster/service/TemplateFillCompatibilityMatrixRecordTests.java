@@ -23,7 +23,7 @@ class TemplateFillCompatibilityMatrixRecordTests {
         assertThat(matrix).contains("Text slot", "Speaker notes", "Table cells", "Chart data", "Page transition");
 
         String record = Files.readString(stage5);
-        assertThat(record).contains("Fixture-backed evidence", "Live rollout metrics", "insufficient sample");
+        assertThat(record).contains("Fixture-backed evidence", "Live rollout metrics", "canary acceptance PASS");
 
         String thresholdDoc = Files.readString(thresholds);
         assertThat(thresholdDoc).contains("Block rollout", "Analyze P95", "Recovery failure rate");

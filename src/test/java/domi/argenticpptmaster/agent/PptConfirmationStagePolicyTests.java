@@ -10,6 +10,7 @@ import domi.argenticpptmaster.domain.PptOutline;
 import domi.argenticpptmaster.domain.PptWorkflowMode;
 import domi.argenticpptmaster.domain.SlideOutline;
 import domi.argenticpptmaster.service.PptImageManifestStore;
+import domi.argenticpptmaster.service.BeautifyPptxPlanStore;
 import domi.argenticpptmaster.service.PptOutlineStore;
 import java.nio.file.Path;
 import java.util.List;
@@ -21,6 +22,26 @@ import org.junit.jupiter.api.io.TempDir;
 class PptConfirmationStagePolicyTests {
 
     private final PptConfirmationStagePolicy policy = new PptConfirmationStagePolicy();
+
+    @Test
+    void beautifyConfirmationRequiresModeAndCompletedAnalysisAndDraft() {
+        Path projectPath = tempDir.resolve("beautify-project");
+        PptJob job = new PptJob(java.util.UUID.randomUUID(), "beautify", "ppt169", null,
+                PptWorkflowMode.BEAUTIFY_PPTX, projectPath);
+        job.prepareProject(projectPath);
+        BeautifyPptxPlanStore.PlanMetadata plan = BeautifyPptxPlanStore.storeDraft(job, """
+                {"version":1,"status":"draft","hardConstraints":{"textVerbatim":true,
+                "dataVerbatim":true,"pageMapping":"1:1"},"slides":[]}
+                """);
+        job.completeNode(PptJobNode.BEAUTIFY_ANALYZED, Map.of());
+        job.completeNode(PptJobNode.BEAUTIFY_PLAN_DRAFTED, Map.of());
+
+        PptConfirmationStagePolicy.Decision decision = policy.evaluate(job, "beautify_plan_confirmation", Map.of(
+                "type", "beautify_pptx_plan", "version", 1, "digest", plan.digest()));
+
+        assertThat(decision.disposition()).isEqualTo(PptConfirmationStagePolicy.Disposition.WAIT_FOR_USER);
+        assertThat(decision.confirmedNode()).isEqualTo(PptJobNode.BEAUTIFY_PLAN_CONFIRMED);
+    }
 
     @TempDir
     Path tempDir;

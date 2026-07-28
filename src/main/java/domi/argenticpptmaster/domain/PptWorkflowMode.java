@@ -28,7 +28,12 @@ public enum PptWorkflowMode {
     /**
      * 原生 PPTX 模板填充流程：不经过 Agent 或 SVG 导出链路。
      */
-    TEMPLATE_FILL;
+    TEMPLATE_FILL,
+
+    /**
+     * 现有 PPTX 的纯文本逐页重新排版流程。
+     */
+    BEAUTIFY_PPTX;
 
     /**
      * 将字符串规范化为工作流模式枚举。
@@ -47,6 +52,7 @@ public enum PptWorkflowMode {
         return switch (normalized) {
             case "image-enhanced", "image_enhanced", "enhanced" -> IMAGE_ENHANCED;
             case "template-fill", "template_fill" -> TEMPLATE_FILL;
+            case "beautify-pptx", "beautify_pptx" -> BEAUTIFY_PPTX;
             case "basic", "default" -> BASIC;
             default -> throw new IllegalArgumentException("unsupported workflow mode: " + value);
         };

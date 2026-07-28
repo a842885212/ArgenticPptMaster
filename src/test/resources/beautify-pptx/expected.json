@@ -1,0 +1,24 @@
+{
+  "fixture": "phase0-baseline.pptx",
+  "slideCount": 7,
+  "pageTypes": {
+    "1": "title",
+    "2": "text",
+    "3": "image",
+    "4": "table",
+    "5": "chart",
+    "6": "dense",
+    "7": "divider"
+  },
+  "slides": [
+    {"index": 1, "text": ["Beautify Phase 0 Baseline", "Synthetic deck — no external data."]},
+    {"index": 2, "text": ["Text Fidelity", "Every sentence remains on its source slide.", "No rewriting.", "No page reordering.", "No added claims."]},
+    {"index": 3, "text": ["Image Re-layout", "Synthetic gradient image reused as a supplied asset."]},
+    {"index": 4, "text": ["Table Fidelity"], "tables": [["Metric", "Q1", "Q2"], ["Visits", "120", "145"], ["Conversion", "3.2%", "3.8%"]]},
+    {"index": 5, "text": ["Chart Fidelity", "Quarterly Throughput"], "charts": {"categories": ["North", "South", "West"], "series": [{"name": "Actual", "values": [18, 24, 21]}, {"name": "Plan", "values": [20, 20, 20]}]}},
+    {"index": 6, "text": ["Density Check", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten"]},
+    {"index": 7, "text": ["Pause", "A near-empty divider page is still preserved 1:1."]}
+  ],
+  "imageSlideIndexes": [3],
+  "redaction": "All text, values, and artwork are synthetic."
+}

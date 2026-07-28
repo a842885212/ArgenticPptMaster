@@ -7,6 +7,7 @@ import domi.argenticpptmaster.domain.PptNodeExecution;
 import domi.argenticpptmaster.domain.PptOutline;
 import domi.argenticpptmaster.domain.PptWorkflowMode;
 import domi.argenticpptmaster.service.PptImageManifestStore;
+import domi.argenticpptmaster.service.BeautifyPptxPlanStore;
 import domi.argenticpptmaster.service.PptOutlineStore;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -53,8 +54,36 @@ final class PptConfirmationStagePolicy {
             case "image_ready_continue_confirmation" -> evaluateImageReady(job, contextData);
             case "image_retry_decision" -> evaluateImageRetry(job, contextData);
             case "template_fill_plan" -> evaluateTemplateFillPlan(job, contextData);
+            case "beautify_plan_confirmation" -> evaluateBeautifyPlan(job, contextData);
             default -> Decision.waitFor(null);
         };
+    }
+
+    private Decision evaluateBeautifyPlan(PptJob job, Map<String, Object> contextData) {
+        PptJobNode node = PptJobNode.BEAUTIFY_PLAN_CONFIRMED;
+        if (job.workflowMode() != PptWorkflowMode.BEAUTIFY_PPTX) {
+            return Decision.reject(node, "beautify_plan_confirmation is only valid for beautify-pptx jobs");
+        }
+        if (!"beautify_pptx_plan".equals(contextData.get("type"))) {
+            return Decision.reject(node, "contextData.type must be beautify_pptx_plan");
+        }
+        if (positiveVersion(contextData.get("version")) == null) {
+            return Decision.reject(node, "beautify_plan_confirmation requires a positive version");
+        }
+        Object digest = contextData.get("digest");
+        if (!(digest instanceof String text) || text.isBlank()) {
+            return Decision.reject(node, "beautify_plan_confirmation requires digest");
+        }
+        if (!isCompleted(job, PptJobNode.BEAUTIFY_ANALYZED)
+                || !isCompleted(job, PptJobNode.BEAUTIFY_PLAN_DRAFTED)) {
+            return Decision.reject(node, "beautify_plan_confirmation requires completed analysis and draft");
+        }
+        int version = positiveVersion(contextData.get("version"));
+        BeautifyPptxPlanStore.PlanMetadata plan = BeautifyPptxPlanStore.read(job).orElse(null);
+        if (plan == null || plan.version() != version || !plan.digest().equals(digest)) {
+            return Decision.reject(node, "beautify plan version or digest does not match the persisted draft");
+        }
+        return isCompleted(job, node) ? Decision.autoAcknowledge(node) : Decision.waitFor(node);
     }
 
     private Decision evaluateOutline(PptJob job, Map<String, Object> contextData) {

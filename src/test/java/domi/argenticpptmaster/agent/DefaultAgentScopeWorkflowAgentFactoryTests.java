@@ -353,6 +353,35 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
     }
 
     @Test
+    void beautifyPromptUsesDedicatedAnalysisAndConfirmationContract() throws IOException {
+        TestContext context = createContext();
+
+        String prompt = context.factory.buildSystemPrompt(PptWorkflowMode.BEAUTIFY_PPTX);
+
+        assertThat(prompt).contains("prepare_beautify_project");
+        assertThat(prompt).contains("write_beautify_plan_draft");
+        assertThat(prompt).contains("beautify_plan_confirmation");
+        assertThat(prompt).doesNotContain("首次调用 request_plan_confirmation 只能使用 stage=outline_confirmation");
+    }
+
+    @Test
+    void beautifyRejectsOutlineImageAndNotesToolsWithoutFileSideEffects() throws IOException {
+        TestContext context = createContextWithBeautifyMode();
+
+        assertThatThrownBy(() -> context.tools.initPptProject(context.runtime)).isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> context.tools.importJobSources(context.runtime)).isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> context.tools.deriveImageManifestFromLockedOutline(context.runtime))
+                .isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> context.tools.generateProjectImages(context.runtime)).isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> context.tools.writeProjectTextFile("outline.json", "{}", context.runtime))
+                .isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> context.tools.splitSpeakerNotes(context.runtime)).isInstanceOf(IllegalStateException.class);
+
+        assertThat(Files.exists(context.projectPath.resolve("outline.json"))).isFalse();
+        assertThat(Files.exists(context.projectPath.resolve("images/image_prompts.json"))).isFalse();
+    }
+
+    @Test
     void templateFillSystemPromptUsesDedicatedRulesWithoutSvgOrImageTools() throws IOException {
         TestContext context = createContext();
         String prompt = context.factory.buildSystemPrompt(PptWorkflowMode.TEMPLATE_FILL);
@@ -413,6 +442,20 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
             return new TestContext(base.projectPath, base.tools,
                     new PptAgentToolRuntime(
                             job, base.properties, base.executor, base.events),
+                    base.executor, base.factory, job, base.properties, base.events, base.agentProperties);
+        } catch (IOException ex) {
+            throw new RuntimeException(ex);
+        }
+    }
+
+    private TestContext createContextWithBeautifyMode() {
+        try {
+            TestContext base = createContext();
+            PptJob job = new PptJob(base.job.id(), base.job.projectName(), base.job.format(), base.job.instruction(),
+                    PptWorkflowMode.BEAUTIFY_PPTX, base.job.workspacePath());
+            job.prepareProject(base.projectPath);
+            return new TestContext(base.projectPath, base.tools,
+                    new PptAgentToolRuntime(job, base.properties, base.executor, base.events),
                     base.executor, base.factory, job, base.properties, base.events, base.agentProperties);
         } catch (IOException ex) {
             throw new RuntimeException(ex);

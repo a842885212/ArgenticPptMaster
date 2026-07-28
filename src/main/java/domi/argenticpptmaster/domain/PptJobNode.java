@@ -28,7 +28,17 @@ public enum PptJobNode {
      * 证据：项目目录存在且 {@code sources/} 目录下已存在导入的文件。
      * </p>
      */
-    PROJECT_READY(PptWorkflowMode.BASIC, PptWorkflowMode.IMAGE_ENHANCED, PptWorkflowMode.TEMPLATE_FILL, false),
+    PROJECT_READY(List.of(PptWorkflowMode.BASIC, PptWorkflowMode.IMAGE_ENHANCED,
+            PptWorkflowMode.TEMPLATE_FILL, PptWorkflowMode.BEAUTIFY_PPTX), false),
+
+    /** Beautify 源 PPTX 的 identity、intake 与 inventory 已完成。 */
+    BEAUTIFY_ANALYZED(PptWorkflowMode.BEAUTIFY_PPTX, false),
+
+    /** Beautify 计划草案已持久化。 */
+    BEAUTIFY_PLAN_DRAFTED(PptWorkflowMode.BEAUTIFY_PPTX, false),
+
+    /** Beautify 计划已由用户确认。 */
+    BEAUTIFY_PLAN_CONFIRMED(PptWorkflowMode.BEAUTIFY_PPTX, true),
 
     /**
      * 逐页大纲已生成并进入人工确认，但尚未锁定。
@@ -55,7 +65,8 @@ public enum PptJobNode {
      * 证据：项目根目录下 {@code design_spec.md} 存在且非空。
      * </p>
      */
-    DESIGN_SPEC_WRITTEN(PptWorkflowMode.BASIC, PptWorkflowMode.IMAGE_ENHANCED, false),
+    DESIGN_SPEC_WRITTEN(List.of(PptWorkflowMode.BASIC, PptWorkflowMode.IMAGE_ENHANCED,
+            PptWorkflowMode.BEAUTIFY_PPTX), false),
 
     /**
      * 规格锁定文档已写入。
@@ -63,7 +74,8 @@ public enum PptJobNode {
      * 证据：项目根目录下 {@code spec_lock.md} 存在且非空。
      * </p>
      */
-    SPEC_LOCK_WRITTEN(PptWorkflowMode.BASIC, PptWorkflowMode.IMAGE_ENHANCED, false),
+    SPEC_LOCK_WRITTEN(List.of(PptWorkflowMode.BASIC, PptWorkflowMode.IMAGE_ENHANCED,
+            PptWorkflowMode.BEAUTIFY_PPTX), false),
 
     /**
      * 图片生成清单已写入（仅文生图流程）。
@@ -109,7 +121,8 @@ public enum PptJobNode {
      * 证据：{@code validate_svg_output} 工具成功执行，且 {@code svg_output/} 目录非空。
      * </p>
      */
-    SVG_OUTPUT_VALIDATED(PptWorkflowMode.BASIC, PptWorkflowMode.IMAGE_ENHANCED, false),
+    SVG_OUTPUT_VALIDATED(List.of(PptWorkflowMode.BASIC, PptWorkflowMode.IMAGE_ENHANCED,
+            PptWorkflowMode.BEAUTIFY_PPTX), false),
 
     /**
      * 演讲者备注已拆分为每页独立文件。
@@ -125,7 +138,8 @@ public enum PptJobNode {
      * 证据：{@code finalize_project_svg} 工具成功执行，且 {@code svg_final/} 目录非空。
      * </p>
      */
-    SVG_FINALIZED(PptWorkflowMode.BASIC, PptWorkflowMode.IMAGE_ENHANCED, false),
+    SVG_FINALIZED(List.of(PptWorkflowMode.BASIC, PptWorkflowMode.IMAGE_ENHANCED,
+            PptWorkflowMode.BEAUTIFY_PPTX), false),
 
     /**
      * 模板 PPTX 已分析且 slide library 摘要已持久化（仅模板填充流程）。
@@ -153,7 +167,8 @@ public enum PptJobNode {
      * 证据：{@code export_project_pptx} 工具成功执行，且导出文件真实存在。
      * </p>
      */
-    PPT_EXPORTED(PptWorkflowMode.BASIC, PptWorkflowMode.IMAGE_ENHANCED, PptWorkflowMode.TEMPLATE_FILL, false),
+    PPT_EXPORTED(List.of(PptWorkflowMode.BASIC, PptWorkflowMode.IMAGE_ENHANCED,
+            PptWorkflowMode.TEMPLATE_FILL, PptWorkflowMode.BEAUTIFY_PPTX), false),
 
     /**
      * 模板填充导出已通过 validate 且交付文件已复制（仅模板填充流程）。

@@ -54,4 +54,19 @@ class PptJobNodeTests {
         assertThat(PptJobNode.OUTLINE_CONFIRMED.applicableTo(PptWorkflowMode.BASIC)).isTrue();
         assertThat(PptJobNode.OUTLINE_CONFIRMED.applicableTo(PptWorkflowMode.IMAGE_ENHANCED)).isTrue();
     }
+
+    @Test
+    void beautifyNodesAreIsolatedFromOutlineImageNotesAndTemplateFillNodes() {
+        assertThat(PptJobNode.PROJECT_READY.applicableTo(PptWorkflowMode.BEAUTIFY_PPTX)).isTrue();
+        assertThat(PptJobNode.BEAUTIFY_ANALYZED.applicableTo(PptWorkflowMode.BEAUTIFY_PPTX)).isTrue();
+        assertThat(PptJobNode.BEAUTIFY_PLAN_DRAFTED.applicableTo(PptWorkflowMode.BEAUTIFY_PPTX)).isTrue();
+        assertThat(PptJobNode.BEAUTIFY_PLAN_CONFIRMED.applicableTo(PptWorkflowMode.BEAUTIFY_PPTX)).isTrue();
+        assertThat(PptJobNode.DESIGN_SPEC_WRITTEN.applicableTo(PptWorkflowMode.BEAUTIFY_PPTX)).isTrue();
+        assertThat(PptJobNode.PPT_EXPORTED.applicableTo(PptWorkflowMode.BEAUTIFY_PPTX)).isTrue();
+        assertThat(PptJobNode.OUTLINE_DRAFTED.applicableTo(PptWorkflowMode.BEAUTIFY_PPTX)).isFalse();
+        assertThat(PptJobNode.IMAGES_GENERATED.applicableTo(PptWorkflowMode.BEAUTIFY_PPTX)).isFalse();
+        assertThat(PptJobNode.NOTES_TOTAL_WRITTEN.applicableTo(PptWorkflowMode.BEAUTIFY_PPTX)).isFalse();
+        assertThat(PptJobNode.TEMPLATE_ANALYZED.applicableTo(PptWorkflowMode.BEAUTIFY_PPTX)).isFalse();
+        assertThat(PptJobNode.OUTPUT_VALIDATED.applicableTo(PptWorkflowMode.BEAUTIFY_PPTX)).isFalse();
+    }
 }

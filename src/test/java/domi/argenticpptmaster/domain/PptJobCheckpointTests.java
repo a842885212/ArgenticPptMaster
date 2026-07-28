@@ -194,4 +194,24 @@ class PptJobCheckpointTests {
 
         assertThat(job.resumable()).isTrue();
     }
+
+    @Test
+    void tryStartBeautifyAgentIsAtomicAfterAnalysisCompletes() {
+        PptJob job = new PptJob(
+                UUID.randomUUID(),
+                "beautify",
+                "ppt169",
+                "layout",
+                PptWorkflowMode.BEAUTIFY_PPTX,
+                Path.of("var/ppt-master/jobs/beautify"));
+
+        assertThat(job.tryStartBeautifyAgent()).isFalse();
+        job.completeNode(PptJobNode.PROJECT_READY, Map.of("resolvedFormat", "ppt169"));
+        assertThat(job.tryStartBeautifyAgent()).isFalse();
+        job.completeNode(PptJobNode.BEAUTIFY_ANALYZED, Map.of("sourcePageCount", 1));
+
+        assertThat(job.tryStartBeautifyAgent()).isTrue();
+        assertThat(job.status()).isEqualTo(PptJobStatus.RUNNING_AGENT);
+        assertThat(job.tryStartBeautifyAgent()).isFalse();
+    }
 }

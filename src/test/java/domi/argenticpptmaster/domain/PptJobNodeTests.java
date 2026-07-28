@@ -63,6 +63,8 @@ class PptJobNodeTests {
         assertThat(PptJobNode.BEAUTIFY_PLAN_CONFIRMED.applicableTo(PptWorkflowMode.BEAUTIFY_PPTX)).isTrue();
         assertThat(PptJobNode.DESIGN_SPEC_WRITTEN.applicableTo(PptWorkflowMode.BEAUTIFY_PPTX)).isTrue();
         assertThat(PptJobNode.PPT_EXPORTED.applicableTo(PptWorkflowMode.BEAUTIFY_PPTX)).isTrue();
+        assertThat(PptJobNode.BEAUTIFY_OUTPUT_VALIDATED.applicableTo(PptWorkflowMode.BEAUTIFY_PPTX)).isTrue();
+        assertThat(PptJobNode.BEAUTIFY_OUTPUT_VALIDATED.requiresConfirmation()).isFalse();
         assertThat(PptJobNode.OUTLINE_DRAFTED.applicableTo(PptWorkflowMode.BEAUTIFY_PPTX)).isFalse();
         assertThat(PptJobNode.IMAGES_GENERATED.applicableTo(PptWorkflowMode.BEAUTIFY_PPTX)).isFalse();
         assertThat(PptJobNode.NOTES_TOTAL_WRITTEN.applicableTo(PptWorkflowMode.BEAUTIFY_PPTX)).isFalse();

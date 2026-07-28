@@ -358,7 +358,9 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
 
         String prompt = context.factory.buildSystemPrompt(PptWorkflowMode.BEAUTIFY_PPTX);
 
-        assertThat(prompt).contains("prepare_beautify_project");
+        assertThat(prompt).doesNotContain("prepare_beautify_project");
+        assertThat(prompt).contains("服务端已完成 identity、intake 与 inventory");
+        assertThat(prompt).contains("describe_beautify_analysis");
         assertThat(prompt).contains("write_beautify_plan_draft");
         assertThat(prompt).contains("beautify_plan_confirmation");
         assertThat(prompt).doesNotContain("首次调用 request_plan_confirmation 只能使用 stage=outline_confirmation");
@@ -379,6 +381,21 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
 
         assertThat(Files.exists(context.projectPath.resolve("outline.json"))).isFalse();
         assertThat(Files.exists(context.projectPath.resolve("images/image_prompts.json"))).isFalse();
+    }
+
+    @Test
+    void beautifyAgentCannotAdvanceServiceManagedCheckpoints() throws IOException {
+        TestContext context = createContextWithBeautifyMode();
+
+        assertThatThrownBy(() -> context.runtime.completeNode(PptJobNode.PROJECT_READY, Map.of()))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("service-managed");
+        assertThatThrownBy(() -> context.runtime.completeNode(PptJobNode.BEAUTIFY_ANALYZED, Map.of()))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("service-managed");
+        assertThatThrownBy(() -> context.runtime.completeNode(PptJobNode.BEAUTIFY_OUTPUT_VALIDATED, Map.of()))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("service-managed");
     }
 
     @Test

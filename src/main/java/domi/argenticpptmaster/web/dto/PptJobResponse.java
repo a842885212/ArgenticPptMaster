@@ -75,6 +75,7 @@ public record PptJobResponse(
         boolean templateAnalysisReady,
         String fillPlanStatus,
         TemplateFillProgressResponse templateFillProgress,
+        BeautifyAnalysisResponse beautifyAnalysis,
         String errorMessage,
         List<PptJobEvent> events) {
 
@@ -120,8 +121,48 @@ public record PptJobResponse(
                 analysisReady,
                 planStatus,
                 templateProgress,
+                buildBeautifyAnalysis(job),
                 job.errorMessage().orElse(null),
                 job.events());
+    }
+
+    private static BeautifyAnalysisResponse buildBeautifyAnalysis(PptJob job) {
+        if (job.workflowMode() != PptWorkflowMode.BEAUTIFY_PPTX) {
+            return null;
+        }
+        PptNodeExecution projectReady = job.nodeExecution(PptJobNode.PROJECT_READY);
+        PptNodeExecution analyzed = job.nodeExecution(PptJobNode.BEAUTIFY_ANALYZED);
+        Map<String, Object> projectSummary = projectReady == null ? Map.of() : projectReady.summary();
+        Map<String, Object> analysisSummary = analyzed == null ? Map.of() : analyzed.summary();
+        Integer pageCount = number(analysisSummary.get("sourcePageCount"));
+        Integer alerts = number(analysisSummary.get("complexObjectAlertCount"));
+        Map<String, Object> canvas = map(analysisSummary.get("canvas"));
+        boolean analyzedReady = analyzed != null && analyzed.status() == PptJobNodeStatus.COMPLETED;
+        String planStatus = job.nodeExecution(PptJobNode.BEAUTIFY_PLAN_CONFIRMED).status()
+                == PptJobNodeStatus.COMPLETED ? "confirmed"
+                : job.nodeExecution(PptJobNode.BEAUTIFY_PLAN_DRAFTED).status() == PptJobNodeStatus.COMPLETED ? "draft" : "none";
+        return new BeautifyAnalysisResponse(pageCount, canvas,
+                string(analysisSummary.get("resolvedFormat"), string(projectSummary.get("resolvedFormat"), null)),
+                analyzedReady && analysisSummary.containsKey("identity"), analyzedReady,
+                analyzedReady && analysisSummary.containsKey("slideLibrary"), alerts, planStatus,
+                Map.of("status", "not-run"));
+    }
+
+    private static Integer number(Object value) {
+        return value instanceof Number number ? number.intValue() : null;
+    }
+
+    private static String string(Object value, String fallback) {
+        return value instanceof String string && !string.isBlank() ? string : fallback;
+    }
+
+    private static Map<String, Object> map(Object value) {
+        if (!(value instanceof Map<?, ?> map)) {
+            return Map.of();
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        map.forEach((key, item) -> result.put(String.valueOf(key), item));
+        return Map.copyOf(result);
     }
 
     private static TemplateFillProgressResponse buildTemplateFillProgress(PptJob job) {

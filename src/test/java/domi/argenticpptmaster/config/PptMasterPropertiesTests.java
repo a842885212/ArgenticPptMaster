@@ -24,9 +24,26 @@ class PptMasterPropertiesTests {
         assertThat(properties.templateFillMaxConcurrentJobs()).isEqualTo(2);
         assertThat(properties.templateFillAnalyzeTimeout()).isEqualTo(Duration.ofMinutes(5));
         assertThat(properties.isTemplateFillEnabled()).isFalse();
+        assertThat(properties.beautifyPptx().maxSourceSize()).isEqualTo(104_857_600L);
+        assertThat(properties.beautifyPptx().identityTimeout()).isEqualTo(Duration.ofMinutes(1));
+        assertThat(properties.beautifyPptx().maxConcurrentAnalyses()).isEqualTo(2);
         assertThat(properties.templateFillProduction().cleanupDeletionEnabled()).isFalse();
         assertThat(properties.templateFillProduction().cleanupDryRunEnabled()).isTrue();
         assertThat(properties.toString()).doesNotContain("debug");
+    }
+
+    @Test
+    void acceptsBeautifyAnalysisResourceOverrides() {
+        PptMasterProperties properties = new PptMasterProperties(
+                Path.of("repo"), Path.of("workspace"), "python3", Duration.ofMinutes(1), null, 0,
+                0, 0, 0, 0, null, null, null, null, null,
+                new BeautifyPptxProperties(100L, Duration.ofSeconds(10), Duration.ofSeconds(20),
+                        Duration.ofSeconds(30), Duration.ofSeconds(40), 3, 4));
+
+        assertThat(properties.beautifyPptx().maxSourceSize()).isEqualTo(100L);
+        assertThat(properties.beautifyPptx().inventoryTimeout()).isEqualTo(Duration.ofSeconds(40));
+        assertThat(properties.beautifyPptx().maxConcurrentAnalyses()).isEqualTo(3);
+        assertThat(properties.beautifyPptx().queueCapacity()).isEqualTo(4);
     }
 
     @Test

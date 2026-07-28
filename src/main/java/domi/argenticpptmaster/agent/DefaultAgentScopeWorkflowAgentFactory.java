@@ -134,7 +134,8 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
         }
         ensureMarkdownAgentPrerequisites();
         Toolkit toolkit = new Toolkit();
-        toolkit.registerTool(new PptAgentTools());
+        toolkit.registerTool(job.workflowMode() == PptWorkflowMode.BEAUTIFY_PPTX
+                ? new BeautifyPptxAgentTools() : new PptAgentTools());
         toolkit.registerTool(new UserPlanApprovalTool());
 
         ReActAgent agent = ReActAgent.builder()
@@ -418,7 +419,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
     private String buildBeautifyWorkflowPatchPrompt() {
         return """
                 当前任务模式：BEAUTIFY_PPTX（纯文本逐页重新排版）。
-                先调用 describe_job，再调用 prepare_beautify_project；只读取其产物后起草计划。
+                服务端已完成 identity、intake 与 inventory；调用 describe_beautify_analysis 读取安全产物摘要后起草计划。
                 必须逐页、逐字符串保留源文本，页数和页序严格 1:1；禁止改写、拆合页、文生图和模板填充。
                 计划草案使用 write_beautify_plan_draft，并以 stage=beautify_plan_confirmation 请求确认。
                 仅在计划确认后，才可写 design_spec.md、spec_lock.md、svg_output/*.svg，并依次 validate、finalize、export。
@@ -428,7 +429,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
     private String buildBeautifyToolingConstraintsPrompt() {
         return """
                 Beautify 本地工具约束：
-                - 必须使用 prepare_beautify_project 处理 identity、intake 和 inventory；不得调用 init_ppt_project 或 import_job_sources。
+                - identity、intake 和 inventory 仅由服务端执行；不得调用 init_ppt_project 或 import_job_sources。
                 - 仅允许通过 write_beautify_plan_draft 写入草案，并用 request_plan_confirmation 的
                   stage=beautify_plan_confirmation、contextData={type:"beautify_pptx_plan",version,digest} 请求确认。
                 - 禁止 outline.json、图片 manifest、generate_project_images、template-fill 工具和任何源文本改写。
@@ -663,7 +664,6 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
             return data;
         }
 
-        @Tool(name = "prepare_beautify_project", description = "Prepare a beautify-pptx project through identity, import/intake, and inventory.")
         public Map<String, Object> prepareBeautifyProject(PptAgentToolRuntime runtime) {
             if (runtime.job().workflowMode() != PptWorkflowMode.BEAUTIFY_PPTX) {
                 throw new IllegalStateException("prepare_beautify_project is only available for beautify-pptx jobs");
@@ -1026,6 +1026,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                 case SPEAKER_NOTES_SPLIT -> hasSplitSpeakerNotes(files.get("notes"));
                 case SVG_FINALIZED -> hasAnyFile(files.get("svgFinal"));
                 case PPT_EXPORTED -> hasAnyFile(files.get("exports"));
+                case BEAUTIFY_OUTPUT_VALIDATED -> false;
                 case TEMPLATE_ANALYZED -> Files.isRegularFile(projectPath.resolve("analysis/template.slide_library.json"));
                 case FILL_PLAN_DRAFTED, FILL_PLAN_CONFIRMED -> Files.isRegularFile(projectPath.resolve("analysis/fill_plan.json"));
                 case FILL_PLAN_VALIDATED -> Files.isRegularFile(projectPath.resolve("analysis/check_report.json"));
@@ -1661,7 +1662,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
 
         private void rejectBeautifyDirectProjectOperation(PptAgentToolRuntime runtime, String operation) {
             if (runtime.job().workflowMode() == PptWorkflowMode.BEAUTIFY_PPTX) {
-                throw new IllegalStateException("beautify-pptx requires prepare_beautify_project instead of " + operation);
+                throw new IllegalStateException("beautify-pptx analysis is managed by the service; operation is not allowed: " + operation);
             }
         }
 
@@ -1894,6 +1895,37 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
      *   <li>contextData — 结构化上下文（必填），例如逐页大纲、图片清单、失败图片列表或 lastError 摘要</li>
      * </ul>
      */
+    /** 仅暴露 beautify 计划所需的最小工具集，避免 Agent 取得项目初始化或分析能力。 */
+    final class BeautifyPptxAgentTools {
+
+        @Tool(name = "describe_beautify_analysis", description = "Return the safe, completed beautify analysis summary.", readOnly = true)
+        public Map<String, Object> describeBeautifyAnalysis(PptAgentToolRuntime runtime) {
+            if (runtime.job().workflowMode() != PptWorkflowMode.BEAUTIFY_PPTX) {
+                throw new IllegalStateException("beautify analysis is only available for beautify-pptx jobs");
+            }
+            PptNodeExecution analysis = runtime.job().nodeExecution(PptJobNode.BEAUTIFY_ANALYZED);
+            if (analysis == null || analysis.status() != PptJobNodeStatus.COMPLETED) {
+                throw new IllegalStateException("beautify analysis must complete before planning");
+            }
+            return Map.copyOf(analysis.summary());
+        }
+
+        @Tool(name = "write_beautify_plan_draft", description = "Persist the constrained beautify plan draft and return its version and digest.")
+        public Map<String, Object> writeBeautifyPlanDraft(
+                @ToolParam(name = "content", description = "Beautify plan JSON draft.", required = true) String content,
+                PptAgentToolRuntime runtime) {
+            PptNodeExecution analysis = runtime.job().nodeExecution(PptJobNode.BEAUTIFY_ANALYZED);
+            if (runtime.job().workflowMode() != PptWorkflowMode.BEAUTIFY_PPTX
+                    || analysis == null || analysis.status() != PptJobNodeStatus.COMPLETED) {
+                throw new IllegalStateException("beautify analysis must complete before planning");
+            }
+            BeautifyPptxPlanStore.PlanMetadata draft = BeautifyPptxPlanStore.storeDraft(runtime.job(), content);
+            runtime.completeNode(PptJobNode.BEAUTIFY_PLAN_DRAFTED,
+                    Map.of("version", draft.version(), "digest", draft.digest()));
+            return Map.of("version", draft.version(), "digest", draft.digest(), "status", draft.status());
+        }
+    }
+
     static final class UserPlanApprovalTool extends ToolBase {
 
         UserPlanApprovalTool() {

@@ -51,6 +51,7 @@ public class PptJob {
     private PptJobNode lastFailureNode;
     private String activeAttemptSessionId;
     private int resumeCount;
+    private boolean beautifyAgentStarted;
 
     // 模板填充分析与计划状态（安全摘要，不含路径或槽位全文）
     private TemplateFillAnalysisSummary templateAnalysisSummary;
@@ -457,6 +458,23 @@ public class PptJob {
         return true;
     }
 
+    /** 服务端分析完成后原子领取 beautify Agent，避免重复 start/resume 产生并发会话。 */
+    public synchronized boolean tryStartBeautifyAgent() {
+        if (workflowMode != PptWorkflowMode.BEAUTIFY_PPTX || beautifyAgentStarted
+                || status == PptJobStatus.COMPLETED || status == PptJobStatus.CANCELLED) {
+            return false;
+        }
+        PptNodeExecution analyzed = nodeExecutions.get(PptJobNode.BEAUTIFY_ANALYZED);
+        if (analyzed == null || analyzed.status() != PptJobNodeStatus.COMPLETED) {
+            return false;
+        }
+        beautifyAgentStarted = true;
+        status = PptJobStatus.RUNNING_AGENT;
+        currentNode = PptJobNode.BEAUTIFY_PLAN_DRAFTED;
+        touch();
+        return true;
+    }
+
     /** 人工批准 confirmed plan 后领取原生执行。 */
     public synchronized boolean markTemplateFillExecutionStarted() {
         if (workflowMode != PptWorkflowMode.TEMPLATE_FILL) {
@@ -670,7 +688,7 @@ public class PptJob {
     public synchronized void startNewResumeAttempt() {
         this.resumeCount++;
         this.activeAttemptSessionId = buildAttemptSessionId(resumeCount);
-        this.status = workflowMode == PptWorkflowMode.TEMPLATE_FILL
+        this.status = workflowMode == PptWorkflowMode.TEMPLATE_FILL || workflowMode == PptWorkflowMode.BEAUTIFY_PPTX
                 ? PptJobStatus.PREPARING
                 : PptJobStatus.RUNNING_AGENT;
         this.lastFailureNode = null;
@@ -694,7 +712,7 @@ public class PptJob {
         if (status != PptJobStatus.FAILED) {
             return "job is not in failed state: " + status;
         }
-        if (lastCompletedNode == null) {
+        if (lastCompletedNode == null && workflowMode != PptWorkflowMode.BEAUTIFY_PPTX) {
             return "job has no completed node to resume from";
         }
         if (resumeCount >= maxAttempts) {
@@ -716,7 +734,7 @@ public class PptJob {
         if (status != PptJobStatus.FAILED) {
             return false;
         }
-        return lastCompletedNode != null;
+        return lastCompletedNode != null || workflowMode == PptWorkflowMode.BEAUTIFY_PPTX;
     }
 
     private PptNodeExecution currentExecution(PptJobNode node) {

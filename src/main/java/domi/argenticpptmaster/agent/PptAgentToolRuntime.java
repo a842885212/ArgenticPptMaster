@@ -7,6 +7,7 @@ import domi.argenticpptmaster.domain.PptJobEventType;
 import domi.argenticpptmaster.domain.PptJobNode;
 import domi.argenticpptmaster.domain.PptJobNodeStatus;
 import domi.argenticpptmaster.domain.PptNodeExecution;
+import domi.argenticpptmaster.domain.PptWorkflowMode;
 import domi.argenticpptmaster.infra.PptMasterCommandExecutor;
 import domi.argenticpptmaster.service.PptWorkflowEvents;
 import java.util.Map;
@@ -19,6 +20,11 @@ public record PptAgentToolRuntime(
         PptWorkflowEvents events) {
 
     void completeNode(PptJobNode node, Map<String, Object> summary) {
+        if (job.workflowMode() == PptWorkflowMode.BEAUTIFY_PPTX
+                && (node == PptJobNode.PROJECT_READY || node == PptJobNode.BEAUTIFY_ANALYZED
+                || node == PptJobNode.BEAUTIFY_OUTPUT_VALIDATED)) {
+            throw new IllegalStateException("beautify checkpoint is service-managed: " + node.name());
+        }
         if (!node.applicableTo(job.workflowMode())) {
             return;
         }

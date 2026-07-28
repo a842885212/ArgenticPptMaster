@@ -5,6 +5,7 @@ import java.time.Duration;
 import java.util.List;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.NestedConfigurationProperty;
+import org.springframework.boot.context.properties.bind.ConstructorBinding;
 
 /**
  * PPT Master 核心功能配置属性。
@@ -28,6 +29,7 @@ import org.springframework.boot.context.properties.NestedConfigurationProperty;
  * @param templateFillAllowedTenants      灰度允许的租户集合
  * @param templateFillAdminRole           管理员角色名；默认 ADMIN
  * @param templateFillProduction          保留/清理/诊断等生产化嵌套配置；null 时使用默认值
+ * @param beautifyPptx                    beautify 服务端分析资源配置；null 时使用默认值
  */
 @ConfigurationProperties(prefix = "ppt-master")
 public record PptMasterProperties(
@@ -45,13 +47,15 @@ public record PptMasterProperties(
         Boolean templateFillEnabled,
         List<String> templateFillAllowedTenants,
         String templateFillAdminRole,
-        @NestedConfigurationProperty TemplateFillProductionProperties templateFillProduction) {
+        @NestedConfigurationProperty TemplateFillProductionProperties templateFillProduction,
+        @NestedConfigurationProperty BeautifyPptxProperties beautifyPptx) {
 
     private static final long DEFAULT_TEMPLATE_MAX_BYTES = 52_428_800L;
     private static final long DEFAULT_CONTENT_MAX_BYTES = 20_971_520L;
     private static final long DEFAULT_TOTAL_UPLOAD_MAX_BYTES = 104_857_600L;
     private static final int DEFAULT_MAX_CONCURRENT_JOBS = 2;
 
+    @ConstructorBinding
     public PptMasterProperties {
         if (repoPath == null) {
             repoPath = Path.of("/home/zhang/PycharmProjects/ppt-master");
@@ -92,6 +96,22 @@ public record PptMasterProperties(
         templateFillEnabled = templateFillProduction.enabled();
         templateFillAllowedTenants = templateFillProduction.allowedTenants();
         templateFillAdminRole = templateFillProduction.adminRole();
+        beautifyPptx = beautifyPptx == null ? BeautifyPptxProperties.defaults() : beautifyPptx;
+    }
+
+    /** 保留旧测试与调用点的构造签名。 */
+    public PptMasterProperties(
+            Path repoPath, Path workspacePath, String pythonCommand, Duration commandTimeout,
+            String templateFillDebugToken, long templateFillPlanMaxBytes, long templateFillTemplateMaxBytes,
+            long templateFillContentMaxBytes, long templateFillTotalUploadMaxBytes,
+            int templateFillMaxConcurrentJobs, Duration templateFillAnalyzeTimeout,
+            Boolean templateFillEnabled, List<String> templateFillAllowedTenants,
+            String templateFillAdminRole, TemplateFillProductionProperties templateFillProduction) {
+        this(repoPath, workspacePath, pythonCommand, commandTimeout, templateFillDebugToken,
+                templateFillPlanMaxBytes, templateFillTemplateMaxBytes, templateFillContentMaxBytes,
+                templateFillTotalUploadMaxBytes, templateFillMaxConcurrentJobs, templateFillAnalyzeTimeout,
+                templateFillEnabled, templateFillAllowedTenants, templateFillAdminRole,
+                templateFillProduction, null);
     }
 
     private static TemplateFillProductionProperties mergeProduction(
@@ -159,6 +179,8 @@ public record PptMasterProperties(
                 + ", templateFillCleanupDeletionEnabled=" + templateFillProduction.cleanupDeletionEnabled()
                 + ", templateFillDiagnosticsEnabled=" + templateFillProduction.diagnosticsEnabled()
                 + ", templateFillExecutionStopEnabled=" + templateFillProduction.executionStopEnabled()
+                + ", beautifyMaxSourceSize=" + beautifyPptx.maxSourceSize()
+                + ", beautifyMaxConcurrentAnalyses=" + beautifyPptx.maxConcurrentAnalyses()
                 + "]";
     }
 }

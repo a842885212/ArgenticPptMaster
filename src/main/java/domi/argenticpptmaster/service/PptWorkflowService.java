@@ -240,6 +240,7 @@ public class PptWorkflowService {
             throw new PptJobStateException(ex.getMessage());
         }
         validateBeautifyContract(mode, files, command.templateFile(), command.templateConstraintsJson());
+        validateBeautifyUploadSize(mode, files);
         PptAccessContext access = null;
         if (mode == PptWorkflowMode.TEMPLATE_FILL) {
             access = accessContextResolver.resolve().orElse(null);
@@ -274,7 +275,9 @@ public class PptWorkflowService {
         repository.save(job);
         events.record(job, PptJobEvent.of(PptJobEventType.JOB_ACCEPTED, "job accepted",
                 Map.of("jobId", job.id().toString())));
-        if (mode != PptWorkflowMode.TEMPLATE_FILL) {
+        if (mode == PptWorkflowMode.BEAUTIFY_PPTX) {
+            submitBeautifyAnalysis(job.id());
+        } else if (mode != PptWorkflowMode.TEMPLATE_FILL) {
             asyncRunner.startAgent(job.id());
         } else {
             templateFillPlanningOrchestrator.startAfterCreate(job.id());
@@ -966,10 +969,21 @@ public class PptWorkflowService {
                 telemetry.recordRecovery(true);
             }
             templateFillAsyncRunner.resumeFromCheckpoint(job.id(), checkpoint);
+        } else if (job.workflowMode() == PptWorkflowMode.BEAUTIFY_PPTX
+                && checkpoint != PptJobNode.BEAUTIFY_ANALYZED) {
+            submitBeautifyAnalysis(job.id());
         } else {
             asyncRunner.resumeFromCheckpoint(job.id(), checkpoint);
         }
         return job;
+    }
+
+    private void submitBeautifyAnalysis(UUID jobId) {
+        try {
+            asyncRunner.analyzeBeautifyAndStartAgent(jobId);
+        } catch (java.util.concurrent.RejectedExecutionException ex) {
+            asyncRunner.rejectBeautifyAdmission(jobId);
+        }
     }
 
     /**
@@ -983,6 +997,9 @@ public class PptWorkflowService {
      * @return 有效的恢复 checkpoint
      */
     private PptJobNode resolveEffectiveCheckpoint(PptJob job) {
+        if (job.workflowMode() == PptWorkflowMode.BEAUTIFY_PPTX && job.lastCompletedNode().isEmpty()) {
+            return PptJobNode.PROJECT_READY;
+        }
         PptJobNode checkpoint = job.lastCompletedNode().orElseThrow(() ->
                 new PptJobResumeException(job.id(), "job has no completed node to resume from"));
         if (job.workflowMode() == PptWorkflowMode.TEMPLATE_FILL) {
@@ -1218,6 +1235,17 @@ public class PptWorkflowService {
                 ? "" : source.getOriginalFilename());
         if (!name.toLowerCase().endsWith(".pptx")) {
             throw new PptJobStateException("beautify-pptx source file must have .pptx extension");
+        }
+    }
+
+    private void validateBeautifyUploadSize(PptWorkflowMode mode, List<MultipartFile> files) {
+        if (mode != PptWorkflowMode.BEAUTIFY_PPTX) {
+            return;
+        }
+        MultipartFile source = files.stream().filter(file -> file != null && !file.isEmpty()).findFirst()
+                .orElseThrow(() -> new PptJobStateException("beautify-pptx workflow requires exactly one source file"));
+        if (source.getSize() > properties.beautifyPptx().maxSourceSize()) {
+            throw new PptJobStateException("BEAUTIFY_UPLOAD_TOO_LARGE: source file exceeds size limit");
         }
     }
 

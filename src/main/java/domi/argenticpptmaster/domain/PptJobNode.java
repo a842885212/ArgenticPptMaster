@@ -171,6 +171,13 @@ public enum PptJobNode {
             PptWorkflowMode.TEMPLATE_FILL, PptWorkflowMode.BEAUTIFY_PPTX), false),
 
     /**
+     * Beautify 导出后的 read-back 校验保留节点。
+     *
+     * <p>阶段 2 只暴露 pending 状态；阶段 4 实现实际 read-back 前不得完成该节点。</p>
+     */
+    BEAUTIFY_OUTPUT_VALIDATED(PptWorkflowMode.BEAUTIFY_PPTX, false),
+
+    /**
      * 模板填充导出已通过 validate 且交付文件已复制（仅模板填充流程）。
      */
     OUTPUT_VALIDATED(PptWorkflowMode.TEMPLATE_FILL, false);

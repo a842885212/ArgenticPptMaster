@@ -6,10 +6,14 @@ import domi.argenticpptmaster.domain.PptJob;
 import domi.argenticpptmaster.domain.PptJobEvent;
 import domi.argenticpptmaster.domain.PptJobEventType;
 import domi.argenticpptmaster.domain.PptJobNode;
+import domi.argenticpptmaster.domain.PptWorkflowMode;
 import domi.argenticpptmaster.exception.PptJobStateException;
 import domi.argenticpptmaster.repository.PptJobRepository;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.RejectedExecutionException;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.core.task.TaskExecutor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Async;
@@ -30,14 +34,53 @@ public class PptWorkflowAsyncRunner {
     private final PptJobRepository repository;
     private final PptAgentRunner agentRunner;
     private final PptWorkflowEvents events;
+    private final BeautifyPptxAnalysisExecutor beautifyAnalysisExecutor;
+    private final TaskExecutor agentTaskExecutor;
 
     public PptWorkflowAsyncRunner(
             PptJobRepository repository,
             PptAgentRunner agentRunner,
-            PptWorkflowEvents events) {
+            PptWorkflowEvents events,
+            BeautifyPptxAnalysisExecutor beautifyAnalysisExecutor,
+            @Qualifier("taskExecutor") TaskExecutor agentTaskExecutor) {
         this.repository = repository;
         this.agentRunner = agentRunner;
         this.events = events;
+        this.beautifyAnalysisExecutor = beautifyAnalysisExecutor;
+        this.agentTaskExecutor = agentTaskExecutor;
+    }
+
+    /** 在专用执行器中运行 beautify intake，并且只在分析成功后启动 Agent。 */
+    @Async("beautifyAnalysisExecutor")
+    public void analyzeBeautifyAndStartAgent(UUID jobId) {
+        PptJob job = findJob(jobId);
+        try {
+            beautifyAnalysisExecutor.execute(job);
+            if (job.workflowMode() == PptWorkflowMode.BEAUTIFY_PPTX && job.tryStartBeautifyAgent()) {
+                agentTaskExecutor.execute(() -> runAgent(jobId));
+            }
+        } catch (BeautifyPptxAnalysisException ex) {
+            failBeautifyAnalysis(job, ex);
+        } catch (RejectedExecutionException ex) {
+            failBeautifyAnalysis(job, new BeautifyPptxAnalysisException("admission",
+                    domi.argenticpptmaster.domain.BeautifyPptxErrorCode.BEAUTIFY_INTAKE_FAILED,
+                    domi.argenticpptmaster.domain.BeautifyPptxFailureKind.RESOURCE_LIMIT,
+                    "beautify analysis capacity is unavailable", ex));
+        } catch (RuntimeException ex) {
+            failBeautifyAnalysis(job, new BeautifyPptxAnalysisException("analysis",
+                    domi.argenticpptmaster.domain.BeautifyPptxErrorCode.BEAUTIFY_VALIDATION_FAILED,
+                    domi.argenticpptmaster.domain.BeautifyPptxFailureKind.INTERNAL,
+                    "beautify analysis failed", ex));
+        }
+    }
+
+    /** 在专用队列拒绝任务时，将已持久化的任务标记为可恢复的资源限制失败。 */
+    public void rejectBeautifyAdmission(UUID jobId) {
+        PptJob job = findJob(jobId);
+        failBeautifyAnalysis(job, new BeautifyPptxAnalysisException("admission",
+                domi.argenticpptmaster.domain.BeautifyPptxErrorCode.BEAUTIFY_INTAKE_FAILED,
+                domi.argenticpptmaster.domain.BeautifyPptxFailureKind.RESOURCE_LIMIT,
+                "beautify analysis capacity is unavailable"));
     }
 
     /**
@@ -47,6 +90,10 @@ public class PptWorkflowAsyncRunner {
      */
     @Async
     public void startAgent(UUID jobId) {
+        runAgent(jobId);
+    }
+
+    private void runAgent(UUID jobId) {
         log.info("ppt_agent_start_async: jobId={}", jobId);
         PptJob job = findJob(jobId);
         try {
@@ -127,5 +174,15 @@ public class PptWorkflowAsyncRunner {
     private PptJob findJob(UUID jobId) {
         return repository.findById(jobId)
                 .orElseThrow(() -> new PptJobStateException("job not found for async execution: " + jobId));
+    }
+
+    private void failBeautifyAnalysis(PptJob job, BeautifyPptxAnalysisException ex) {
+        PptJobNode node = "identity".equals(ex.stage()) || "init".equals(ex.stage()) || "import".equals(ex.stage())
+                ? PptJobNode.PROJECT_READY : PptJobNode.BEAUTIFY_ANALYZED;
+        job.startNode(node);
+        job.failNode(node, ex.errorCode().code() + ": " + ex.getMessage());
+        events.record(job, PptJobEvent.of(PptJobEventType.JOB_FAILED, "beautify analysis failed", Map.of(
+                "stage", ex.stage(), "errorCode", ex.errorCode().code(),
+                "failureKind", ex.failureKind().name())));
     }
 }

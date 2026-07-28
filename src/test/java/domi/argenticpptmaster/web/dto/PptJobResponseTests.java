@@ -227,6 +227,53 @@ class PptJobResponseTests {
     }
 
     @Test
+    void exposesBeautifyAnalysisSummaryWithoutWorkspaceOrLedger() {
+        PptJob job = new PptJob(UUID.randomUUID(), "beautify", "ppt169", null, PptWorkflowMode.BEAUTIFY_PPTX,
+                Path.of("/private/workspace/job"));
+        job.completeNode(PptJobNode.PROJECT_READY, Map.of("resolvedFormat", "ppt169"));
+        job.completeNode(PptJobNode.BEAUTIFY_ANALYZED, Map.of(
+                "sourcePageCount", 3,
+                "canvas", Map.of("widthPx", 1920, "heightPx", 1080),
+                "resolvedFormat", "ppt169",
+                "identity", "analysis/source.identity.json",
+                "slideLibrary", "analysis/source.slide_library.json",
+                "inventory", "analysis/beautify_inventory.json",
+                "complexObjectAlertCount", 0));
+
+        PptJobResponse response = PptJobResponse.from(job);
+
+        assertThat(response.beautifyAnalysis().sourcePageCount()).isEqualTo(3);
+        assertThat(response.beautifyAnalysis().identityReady()).isTrue();
+        assertThat(response.beautifyAnalysis().outputValidationSummary()).containsEntry("status", "not-run");
+        assertThat(response.toString()).doesNotContain("/private/workspace");
+    }
+
+    @Test
+    void completedBeautifyKeepsOutputValidationPendingAsNotRun() {
+        PptJob job = new PptJob(UUID.randomUUID(), "beautify", "ppt169", null, PptWorkflowMode.BEAUTIFY_PPTX,
+                Path.of("/private/workspace/job"));
+        job.completeNode(PptJobNode.PROJECT_READY, Map.of("resolvedFormat", "ppt169"));
+        job.completeNode(PptJobNode.BEAUTIFY_ANALYZED, Map.of(
+                "sourcePageCount", 1,
+                "resolvedFormat", "ppt169",
+                "identity", "analysis/source.identity.json",
+                "slideLibrary", "analysis/source.slide_library.json",
+                "inventory", "analysis/beautify_inventory.json",
+                "complexObjectAlertCount", 0));
+        job.completeNode(PptJobNode.PPT_EXPORTED, Map.of());
+        job.complete(Path.of("/private/workspace/job/exports/demo.pptx"));
+
+        PptJobResponse response = PptJobResponse.from(job);
+
+        assertThat(response.artifactReady()).isTrue();
+        assertThat(response.downloadUrl()).isEqualTo("/api/ppt-jobs/" + job.id() + "/download");
+        assertThat(response.nodeStates().get("BEAUTIFY_OUTPUT_VALIDATED").status()).isEqualTo(PptJobNodeStatus.PENDING);
+        assertThat(response.beautifyAnalysis().outputValidationSummary()).containsEntry("status", "not-run");
+        assertThat(response.toString()).doesNotContain("/private/workspace");
+        assertThat(response.toString()).doesNotContain("text_blocks");
+    }
+
+    @Test
     void basicJobHasNullTemplateFillFields() {
         PptJob job = new PptJob(
                 UUID.randomUUID(), "demo", "ppt169", "make a deck", PptWorkflowMode.BASIC,

@@ -38,6 +38,7 @@ language: java
 | `projectName` | 否 | 项目名，默认 `ppt_project` |
 | `format` | 否 | ppt-master 画布格式，默认 `ppt169` |
 | `instruction` | 否 | 用户对 agent 的额外生成要求 |
+| `workflowMode` | 否 | `BASIC`（默认）、`IMAGE_ENHANCED`、`TEMPLATE_FILL`、`BEAUTIFY_PPTX` |
 
 ### 提交确认
 
@@ -61,7 +62,7 @@ language: java
 
 `POST /api/ppt-jobs/{jobId}/resume`
 
-请求体为空。仅当任务状态为 `FAILED` 且存在至少一个成功完成的业务节点时允许恢复；
+请求体为空。仅当任务状态为 `FAILED` 时允许恢复；非 beautify 还需至少一个成功节点。beautify 无成功节点也可恢复分析。
 超过最大恢复次数或任务正在等待确认时返回 `409 Conflict`。
 
 ### 执行模板填充
@@ -78,32 +79,33 @@ language: java
 |---|---|
 | `id` | 任务 ID |
 | `status` | `ACCEPTED`、`PREPARING`、`WAITING_CONFIRMATION`、`RUNNING_AGENT`、`EXPORTING`、`COMPLETED`、`FAILED`、`CANCELLED` |
-| `workflowMode` | 工作流模式：`BASIC` 或 `IMAGE_ENHANCED` |
-| `sources` | 已落盘源文件 |
+| `workflowMode` | `BASIC`、`IMAGE_ENHANCED`、`TEMPLATE_FILL`、`BEAUTIFY_PPTX` |
+| `sources` | 已落盘源文件元数据（不含绝对路径） |
 | `template` | 模板文件元数据（不含服务器路径） |
 | `contentSources` | 模板填充模式下的内容源元数据 |
+| `beautifyAnalysis` | 仅 beautify：页数、canvas/`resolvedFormat`、三类 readiness、告警数、计划状态、`outputValidationSummary` |
 | `currentConfirmationId` | 当前待确认 ID，只有 `WAITING_CONFIRMATION` 状态存在 |
 | `confirmationPayload` | agent 给前端展示的确认信息；`WAITING_CONFIRMATION` 时也会通过 SSE 事件 `CONFIRMATION_REQUIRED.data.confirmationPayload` 下发 |
-| `events` | 任务事件历史 |
+| `events` | 任务事件历史；beautify 分析事件含安全 `stage`/`node`/`summary`，失败含 `errorCode`/`failureKind` |
 | `artifactReady` | 是否已进入可下载状态；只有 `COMPLETED` 且产物路径存在时为 `true` |
 | `downloadUrl` | 只有 `COMPLETED` 且产物路径存在时才返回下载地址，否则为空 |
 | `currentNode` | 当前正在执行的业务节点；失败时可能为空 |
 | `lastCompletedNode` | 最近一个成功完成的业务节点，用于确定恢复 checkpoint |
 | `lastFailureNode` | 最近一次失败所在的业务节点 |
 | `resumeCount` | 已执行的恢复次数，初始为 0 |
-| `resumable` | 当前任务是否满足恢复条件（`FAILED` 且存在 `lastCompletedNode`） |
-| `nodeStates` | 各业务节点的执行状态映射，`key` 为节点名，`value` 包含 `node`（节点名）、`status`（节点状态）、`startedAt`（开始时间）、`completedAt`（完成/失败时间）、`errorMessage`（失败原因） |
+| `resumable` | 是否可恢复；beautify 在无成功节点时仍可恢复分析 |
+| `nodeStates` | 各业务节点状态；阶段 2 beautify 的 `BEAUTIFY_OUTPUT_VALIDATED` 保持 pending |
 
 ## 业务流程
 
-1. 接收上传文件，校验扩展名并保存到 `ppt-master.workspace-path/jobs/{jobId}/uploads`；模板填充模式隔离写入 `template/` 与 `content/`。
-2. 创建内存任务记录并异步启动 agent 编排。
-3. `AgentScopePptAgentRunner` 基于 AgentScope Java v2 `ReActAgent.streamEvents()` 驱动真实事件流，使用 `JsonFileAgentStateStore` 持久化会话状态：初始 attempt 按 `(serviceUserId, jobId)` 存储；checkpoint 恢复后会启用新的 attempt session，按 `(serviceUserId, jobId-attempt-N)` 存储，避免旧失败上下文污染新执行。
-4. agent 通过本地工具完成 `init_ppt_project`、`import_job_sources`、`collect_source_markdown`、`inspect_project_info`、`read_project_text_file` 等步骤，先走 markdown-first 路线分析资料并生成包含 `slideNo`、`title`、`keyMessage`、`bullets`、`visualSuggestion` 的逐页大纲；随后以 `stage=plan_confirmation`、`contextData.type=ppt_outline` 调用 `request_plan_confirmation`。
-5. 任务仅在 `plan_confirmation` 含有合法的 `contextData.type=ppt_outline` 与完整 `slides` 时进入 `WAITING_CONFIRMATION`；服务会在 SSE 事件 `CONFIRMATION_REQUIRED` 的 `data.confirmationPayload` 中直接下发确认 UI 所需信息。前端按页渲染大纲，并可提交整体或页级修改意见。提交 `REQUEST_REVISION` 时任务不会失败，服务把整体和页级意见回喂 Agent，Agent 重生成大纲并再次确认。
-6. 用户提交 `APPROVE` 后，服务把确认结果封装为 `ToolResultMessage` 回喂给同一 AgentScope session，agent 从中断点继续执行；在批准前不得写入设计规格、备注、SVG 或图片产物。若再次触发人工确认，会生成新的 `confirmationId`。
-7. agent 在确认后可写入 `design_spec.md`、`spec_lock.md`、`notes/total.md`、`svg_output/*.svg`，再执行 `validate_svg_output`、`split_speaker_notes`、`finalize_project_svg` 和 `export_project_pptx`；任务完成时设置产物并通过下载接口获取 PPTX。若 agent 正常结束但未产出导出物，任务会失败并保留最终总结信息。
-8. 任务失败后，可调用 `POST /api/ppt-jobs/{jobId}/resume`。服务会校验任务状态、恢复次数上限和可恢复节点，通过后启动一次新的 attempt session，并指示 agent 从 `lastCompletedNode` 继续执行；agent 首先通过 `inspect_checkpoint_status` 确认项目当前状态，再推进后续节点。
+1. 接收上传文件，校验扩展名并保存到 `ppt-master.workspace-path/jobs/{jobId}/uploads`；模板填充模式隔离写入 `template/` 与 `content/`；`BEAUTIFY_PPTX` 另校验模式专属单文件大小上限。
+2. 创建内存任务记录：`BASIC`/`IMAGE_ENHANCED` 异步启动通用 Agent；`TEMPLATE_FILL` 走模板填充编排；`BEAUTIFY_PPTX` 先提交服务端托管分析（identity→init/import→intake→inventory），仅在 `BEAUTIFY_ANALYZED` 完成后以任务级原子门禁启动 beautify Agent。
+3. beautify 分析失败写入稳定 `errorCode` 与 `failureKind`，不向客户端回传绝对路径、命令行或 stdout/stderr。
+4. `AgentScopePptAgentRunner` 基于 AgentScope Java v2 `ReActAgent.streamEvents()` 驱动真实事件流，使用 `JsonFileAgentStateStore` 持久化会话状态：初始 attempt 按 `(serviceUserId, jobId)` 存储；checkpoint 恢复后会启用新的 attempt session，按 `(serviceUserId, jobId-attempt-N)` 存储，避免旧失败上下文污染新执行。
+5. BASIC/IMAGE_ENHANCED agent 通过本地工具完成 `init_ppt_project`、`import_job_sources` 等步骤并生成大纲确认；beautify Agent 仅暴露计划工具，不能推进 `PROJECT_READY`/`BEAUTIFY_ANALYZED`/`BEAUTIFY_OUTPUT_VALIDATED`，确认阶段为 `beautify_plan_confirmation`。
+6. 任务进入 `WAITING_CONFIRMATION` 时，SSE `CONFIRMATION_REQUIRED` 下发 `confirmationPayload`。
+7. 用户提交 `APPROVE` 后回喂同一 session 继续；beautify 阶段 2 导出完成后可下载，但 `BEAUTIFY_OUTPUT_VALIDATED` 保持 `PENDING` 且 `outputValidationSummary.status=not-run`。
+8. 失败后可调用 `POST /api/ppt-jobs/{jobId}/resume`：beautify 在 `PROJECT_READY` 前重跑完整分析，在其后补齐 intake/inventory，在 `BEAUTIFY_ANALYZED` 后恢复 Agent；无成功节点的 beautify 失败也可恢复分析。
 9. 模板填充模式只接受 `confirmed` 计划，按 `init/import-sources -> analyze -> check-plan -> apply -> validate` 顺序调用固定脚本；上游项目导出的唯一 `.pptx` 经验证后复制到任务根 `exports/`，才设置完成产物并开放下载。
 
 补充说明：`request_plan_confirmation` 作为外部工具时，AgentScope 可能先发出一条 `tool_result`，其 `state=RUNNING`。这不是“用户已确认”，而是“工具已挂起并等待人工确认”；服务端会立即把任务切换到 `WAITING_CONFIRMATION`，阻止 agent 在未确认时继续执行。
@@ -112,9 +114,11 @@ language: java
 
 | 服务 | 方法 | 说明 |
 |---|---|---|
-| `PptWorkflowService` | `createJob` | 创建任务、保存上传文件、触发异步 agent |
+| `PptWorkflowService` | `createJob` | 创建任务、保存上传文件；beautify 触发托管分析，其他模式触发既有异步路径 |
 | `PptWorkflowService` | `submitConfirmation` | 校验确认 ID 并恢复 agent |
-| `PptWorkflowService` | `resumeJob` | 校验恢复条件并触发 checkpoint 恢复 |
+| `PptWorkflowService` | `resumeJob` | 按模式与 checkpoint 恢复分析或 Agent |
+| `BeautifyPptxAnalysisExecutor` | `execute` | 服务端执行 identity/init/import/intake/inventory 与纯文本门禁 |
+| `PptWorkflowAsyncRunner` | `analyzeBeautifyAndStartAgent` | beautify 专用有界队列分析，成功后原子启动 Agent |
 | `PptJobEventPublisher` | `subscribe` | 建立 SSE 订阅 |
 | `PptAgentRunner` | `start` / `resume` / `resumeFromCheckpoint` | AgentScope 驱动适配层 |
 | `PptTemplateFillService` | `submitPlan` | 校验调试令牌、计划门禁及一次性启动 |

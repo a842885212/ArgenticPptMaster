@@ -14,9 +14,9 @@ Threshold definitions: [`template-fill-rollout-thresholds.md`](template-fill-rol
 | Chart data | stage4 fixtures + validator | Supported when series shape matches library |
 | Page transition | default `fade` in plans | Supported |
 | Unsupported / preserve-only objects | SmartArt/OLE/object animations policy | Fail closed / preserve-only; incompatible metrics adapter ready |
-| Recovery | `PptWorkflowServiceTemplateFillTests` resume routes | Recovery path covered; live recovery rate N/A until canary |
+| Recovery | `PptWorkflowServiceTemplateFillTests` resume routes | Recovery path covered; canary acceptance PASS 2026-07-28 |
 | Readback | `TemplateFillOutputVerifier` + `minimal-valid-export.pptx` | Required before download |
 
 ## Live rollout metrics
 
-Live analyze/apply P95, incompatible-object rate, and recovery failure rate require a test-tenant canary window. Until recorded in [`template-fill-canary-acceptance.md`](template-fill-canary-acceptance.md), treat all blocking latency/rate thresholds as **insufficient sample** (do not expand allowlist).
+Live canary / functional acceptance recorded **PASS** on 2026-07-28 in [`template-fill-canary-acceptance.md`](template-fill-canary-acceptance.md). Stage-5 blocking thresholds are cleared; expanding the allowlist is an ops configuration decision.

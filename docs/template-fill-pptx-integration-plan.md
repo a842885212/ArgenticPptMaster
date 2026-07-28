@@ -161,7 +161,7 @@ POST /api/ppt-jobs (multipart/form-data)
 - [`docs/ops/template-fill-compatibility-matrix-stage5.md`](ops/template-fill-compatibility-matrix-stage5.md)
 - [`docs/ops/template-fill-canary-acceptance.md`](ops/template-fill-canary-acceptance.md)
 
-**阈值结论**：阻断阈值定义已入库；**生产扩大灰度 / 开启实际删除前**，必须以同一发布版本的 canary 样本窗口对照 [`template-fill-rollout-thresholds.md`](ops/template-fill-rollout-thresholds.md) 记录通过证据（见 canary 验收文档当前状态）。
+**验收结论（2026-07-28）**：功能与 canary 测试已完成；阶段五及本规划全部阶段（M0–M4）标记为完成。详见 [`template-fill-canary-acceptance.md`](ops/template-fill-canary-acceptance.md)。扩大租户白名单 / 开启清理删除仍属运维配置项，默认策略不变。
 
 ## 5. 建议的执行流
 
@@ -206,10 +206,12 @@ POST /api/ppt-jobs (multipart/form-data)
 
 ## 8. 推荐里程碑
 
-1. **M0：可行性通过** — 阶段 0 完成，输出兼容矩阵和冻结契约。
-2. **M1：受控 MVP** — 阶段 1 完成，人工提供计划也能生成和下载。
-3. **M2：可用 Beta** — 阶段 2 与阶段 3 完成，具备自动计划、用户确认、恢复和观测能力。
-4. **M3：功能完整** — 阶段 4 完成，覆盖常见表格/图表/备注用例。
-5. **M4：生产发布** — 阶段 5 的灰度、指标、权限与运维条件达标。
+1. **M0：可行性通过** — 阶段 0 完成，输出兼容矩阵和冻结契约。 ✅
+2. **M1：受控 MVP** — 阶段 1 完成，人工提供计划也能生成和下载。 ✅
+3. **M2：可用 Beta** — 阶段 2 与阶段 3 完成，具备自动计划、用户确认、恢复和观测能力。 ✅
+4. **M3：功能完整** — 阶段 4 完成，覆盖常见表格/图表/备注用例。 ✅
+5. **M4：生产发布** — 阶段 5 的灰度、指标、权限与运维条件达标。 ✅（2026-07-28 功能/canary 验收通过）
 
 实施时每个阶段应独立提交、独立测试和独立审查；涉及 API/任务状态变化时，按项目约定在改动前后执行文档同步流程。
+
+**规划完成状态（2026-07-28）**：本接入规划全部阶段与里程碑已完成。

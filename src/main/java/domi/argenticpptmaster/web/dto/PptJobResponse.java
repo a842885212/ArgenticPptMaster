@@ -136,16 +136,62 @@ public record PptJobResponse(
         Map<String, Object> analysisSummary = analyzed == null ? Map.of() : analyzed.summary();
         Integer pageCount = number(analysisSummary.get("sourcePageCount"));
         Integer alerts = number(analysisSummary.get("complexObjectAlertCount"));
+        Integer imageCount = number(analysisSummary.get("imageCount"));
+        Integer tableCount = number(analysisSummary.get("tableCount"));
+        Integer chartCount = number(analysisSummary.get("chartCount"));
+        Boolean imageManifestReady = analysisSummary.get("imageManifestReady") instanceof Boolean ready ? ready : null;
         Map<String, Object> canvas = map(analysisSummary.get("canvas"));
         boolean analyzedReady = analyzed != null && analyzed.status() == PptJobNodeStatus.COMPLETED;
-        String planStatus = job.nodeExecution(PptJobNode.BEAUTIFY_PLAN_CONFIRMED).status()
-                == PptJobNodeStatus.COMPLETED ? "confirmed"
-                : job.nodeExecution(PptJobNode.BEAUTIFY_PLAN_DRAFTED).status() == PptJobNodeStatus.COMPLETED ? "draft" : "none";
+        String planStatus = job.beautifyPlanStatus();
+        if ("none".equals(planStatus)) {
+            PptNodeExecution confirmed = job.nodeExecution(PptJobNode.BEAUTIFY_PLAN_CONFIRMED);
+            PptNodeExecution drafted = job.nodeExecution(PptJobNode.BEAUTIFY_PLAN_DRAFTED);
+            planStatus = confirmed != null && confirmed.status() == PptJobNodeStatus.COMPLETED ? "confirmed"
+                    : drafted != null && drafted.status() == PptJobNodeStatus.COMPLETED ? "draft" : "none";
+        }
+        Map<String, Object> outputValidation = buildBeautifyOutputValidationSummary(job);
         return new BeautifyAnalysisResponse(pageCount, canvas,
                 string(analysisSummary.get("resolvedFormat"), string(projectSummary.get("resolvedFormat"), null)),
                 analyzedReady && analysisSummary.containsKey("identity"), analyzedReady,
                 analyzedReady && analysisSummary.containsKey("slideLibrary"), alerts, planStatus,
-                Map.of("status", "not-run"));
+                outputValidation, imageCount, tableCount, chartCount, imageManifestReady);
+    }
+
+    private static Map<String, Object> buildBeautifyOutputValidationSummary(PptJob job) {
+        PptNodeExecution validated = job.nodeExecution(PptJobNode.BEAUTIFY_OUTPUT_VALIDATED);
+        String status = job.readbackValidationStatus();
+        if (status == null || status.isBlank()) {
+            status = validated != null && validated.status() == PptJobNodeStatus.COMPLETED
+                    ? "PASSED"
+                    : "not-run";
+        }
+        Map<String, Object> summary = new LinkedHashMap<>();
+        summary.put("status", status);
+        if (validated != null && validated.summary() != null) {
+            Object pageMatch = validated.summary().get("pageCountMatch");
+            Object textOk = validated.summary().get("textFidelityPassed");
+            Object dataOk = validated.summary().get("dataFidelityPassed");
+            Object report = validated.summary().get("report");
+            if (pageMatch != null) {
+                summary.put("pageCountMatch", pageMatch);
+            }
+            if (textOk != null) {
+                summary.put("textFidelityPassed", textOk);
+            }
+            if (dataOk != null) {
+                summary.put("dataFidelityPassed", dataOk);
+            }
+            if (report instanceof String path && !path.isBlank()) {
+                summary.put("report", path);
+            }
+        }
+        if (job.readbackWarningCount() > 0) {
+            summary.put("warningCount", job.readbackWarningCount());
+        }
+        if (job.readbackErrorCount() > 0) {
+            summary.put("errorCount", job.readbackErrorCount());
+        }
+        return Map.copyOf(summary);
     }
 
     private static Integer number(Object value) {

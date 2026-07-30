@@ -244,7 +244,31 @@ class PptJobResponseTests {
 
         assertThat(response.beautifyAnalysis().sourcePageCount()).isEqualTo(3);
         assertThat(response.beautifyAnalysis().identityReady()).isTrue();
+        assertThat(response.beautifyAnalysis().beautifyPlanStatus()).isEqualTo("none");
         assertThat(response.beautifyAnalysis().outputValidationSummary()).containsEntry("status", "not-run");
+        assertThat(response.toString()).doesNotContain("/private/workspace");
+    }
+
+    @Test
+    void exposesRejectedBeautifyPlanStatusWithoutIdentityCandidates() {
+        PptJob job = new PptJob(UUID.randomUUID(), "beautify", "ppt169", null, PptWorkflowMode.BEAUTIFY_PPTX,
+                Path.of("/private/workspace/job"));
+        job.completeNode(PptJobNode.BEAUTIFY_ANALYZED, Map.of(
+                "sourcePageCount", 2,
+                "resolvedFormat", "ppt169",
+                "identity", "analysis/source.identity.json",
+                "slideLibrary", "analysis/source.slide_library.json",
+                "inventory", "analysis/beautify_inventory.json",
+                "complexObjectAlertCount", 1));
+        job.markBeautifyPlanDrafted();
+        job.resetBeautifyPlanDrafting("prefer observed palette");
+
+        PptJobResponse response = PptJobResponse.from(job);
+
+        assertThat(response.beautifyAnalysis().beautifyPlanStatus()).isEqualTo("rejected");
+        assertThat(response.beautifyAnalysis().complexObjectAlertCount()).isEqualTo(1);
+        assertThat(response.toString()).doesNotContain("prefer observed palette");
+        assertThat(response.toString()).doesNotContain("identityRecommendation");
         assertThat(response.toString()).doesNotContain("/private/workspace");
     }
 
@@ -259,7 +283,11 @@ class PptJobResponseTests {
                 "identity", "analysis/source.identity.json",
                 "slideLibrary", "analysis/source.slide_library.json",
                 "inventory", "analysis/beautify_inventory.json",
-                "complexObjectAlertCount", 0));
+                "complexObjectAlertCount", 0,
+                "imageCount", 1,
+                "tableCount", 0,
+                "chartCount", 0,
+                "imageManifestReady", true));
         job.completeNode(PptJobNode.PPT_EXPORTED, Map.of());
         job.complete(Path.of("/private/workspace/job/exports/demo.pptx"));
 
@@ -269,8 +297,38 @@ class PptJobResponseTests {
         assertThat(response.downloadUrl()).isEqualTo("/api/ppt-jobs/" + job.id() + "/download");
         assertThat(response.nodeStates().get("BEAUTIFY_OUTPUT_VALIDATED").status()).isEqualTo(PptJobNodeStatus.PENDING);
         assertThat(response.beautifyAnalysis().outputValidationSummary()).containsEntry("status", "not-run");
+        assertThat(response.beautifyAnalysis().imageCount()).isEqualTo(1);
+        assertThat(response.beautifyAnalysis().imageManifestReady()).isTrue();
         assertThat(response.toString()).doesNotContain("/private/workspace");
         assertThat(response.toString()).doesNotContain("text_blocks");
+    }
+
+    @Test
+    void exposesPassedBeautifyOutputValidationSummary() {
+        PptJob job = new PptJob(UUID.randomUUID(), "beautify", "ppt169", null, PptWorkflowMode.BEAUTIFY_PPTX,
+                Path.of("/private/workspace/job"));
+        job.completeNode(PptJobNode.BEAUTIFY_ANALYZED, Map.of(
+                "sourcePageCount", 1,
+                "identity", "analysis/source.identity.json",
+                "slideLibrary", "analysis/source.slide_library.json",
+                "complexObjectAlertCount", 0));
+        job.completeNode(PptJobNode.PPT_EXPORTED, Map.of());
+        job.updateReadbackValidation("PASSED", 0, 0);
+        job.completeNode(PptJobNode.BEAUTIFY_OUTPUT_VALIDATED, Map.of(
+                "status", "PASSED",
+                "pageCountMatch", true,
+                "textFidelityPassed", true,
+                "dataFidelityPassed", true,
+                "report", "validation/beautify-readback.json"));
+        job.complete(Path.of("/private/workspace/job/exports/demo.pptx"));
+
+        PptJobResponse response = PptJobResponse.from(job);
+
+        assertThat(response.beautifyAnalysis().outputValidationSummary())
+                .containsEntry("status", "PASSED")
+                .containsEntry("pageCountMatch", true)
+                .containsEntry("report", "validation/beautify-readback.json");
+        assertThat(response.toString()).doesNotContain("/private/workspace");
     }
 
     @Test

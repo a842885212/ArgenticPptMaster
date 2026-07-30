@@ -31,7 +31,7 @@ public enum PptWorkflowMode {
     TEMPLATE_FILL,
 
     /**
-     * 现有 PPTX 的纯文本逐页重新排版流程。
+     * 现有 PPTX 的布局-only 重新排版流程（文本/图片/表格/常见图表）。
      */
     BEAUTIFY_PPTX;
 

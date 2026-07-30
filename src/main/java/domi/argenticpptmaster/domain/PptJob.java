@@ -52,6 +52,8 @@ public class PptJob {
     private String activeAttemptSessionId;
     private int resumeCount;
     private boolean beautifyAgentStarted;
+    private String beautifyPlanStatus = "none";
+    private String beautifyRevisionFeedback;
 
     // 模板填充分析与计划状态（安全摘要，不含路径或槽位全文）
     private TemplateFillAnalysisSummary templateAnalysisSummary;
@@ -231,6 +233,48 @@ public class PptJob {
 
     public synchronized Optional<String> templateFillRevisionFeedback() {
         return Optional.ofNullable(templateFillRevisionFeedback);
+    }
+
+    public synchronized String beautifyPlanStatus() {
+        return beautifyPlanStatus == null ? "none" : beautifyPlanStatus;
+    }
+
+    public synchronized Optional<String> beautifyRevisionFeedback() {
+        return Optional.ofNullable(beautifyRevisionFeedback);
+    }
+
+    public synchronized void markBeautifyPlanDrafted() {
+        if (workflowMode != PptWorkflowMode.BEAUTIFY_PPTX) {
+            return;
+        }
+        beautifyPlanStatus = "draft";
+        touch();
+    }
+
+    public synchronized void markBeautifyPlanConfirmed() {
+        if (workflowMode != PptWorkflowMode.BEAUTIFY_PPTX) {
+            return;
+        }
+        beautifyPlanStatus = "confirmed";
+        beautifyRevisionFeedback = null;
+        touch();
+    }
+
+    /** 用户要求修订 beautify 计划时重置草拟/确认节点并保留有界反馈。 */
+    public synchronized void resetBeautifyPlanDrafting(String feedback) {
+        if (workflowMode != PptWorkflowMode.BEAUTIFY_PPTX) {
+            return;
+        }
+        nodeExecutions.put(PptJobNode.BEAUTIFY_PLAN_DRAFTED, PptNodeExecution.pending(PptJobNode.BEAUTIFY_PLAN_DRAFTED));
+        nodeExecutions.put(PptJobNode.BEAUTIFY_PLAN_CONFIRMED, PptNodeExecution.pending(PptJobNode.BEAUTIFY_PLAN_CONFIRMED));
+        beautifyPlanStatus = "rejected";
+        beautifyRevisionFeedback = boundedFeedback(feedback);
+        currentConfirmationId = null;
+        confirmationPayload = Map.of();
+        confirmation = null;
+        currentNode = PptJobNode.BEAUTIFY_PLAN_DRAFTED;
+        status = PptJobStatus.PREPARING;
+        touch();
     }
 
     public synchronized void updateTemplateAnalysis(TemplateFillAnalysisSummary summary) {
@@ -577,6 +621,12 @@ public class PptJob {
         this.status = PptJobStatus.COMPLETED;
         this.exportPath = completedExportPath;
         markTerminal();
+        touch();
+    }
+
+    /** 保留导出产物供诊断，不将任务标记为成功完成。 */
+    public synchronized void retainExport(Path retainedExportPath) {
+        this.exportPath = retainedExportPath;
         touch();
     }
 

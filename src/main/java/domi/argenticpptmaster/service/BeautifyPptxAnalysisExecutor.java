@@ -135,7 +135,7 @@ public class BeautifyPptxAnalysisExecutor {
                     BeautifyPptxErrorCode.BEAUTIFY_INVENTORY_FAILED);
         }
         requireFile(inventoryPath, "inventory artifact");
-        Map<String, Object> summary = validatePureTextArtifacts(identityPath, libraryPath, profilePath, inventoryPath, paths);
+        Map<String, Object> summary = validateAnalysisArtifacts(identityPath, libraryPath, profilePath, inventoryPath, paths);
         job.completeNode(PptJobNode.BEAUTIFY_ANALYZED, summary);
         events.record(job, stageEvent(PptJobEventType.NODE_COMPLETED, "inventory", PptJobNode.BEAUTIFY_ANALYZED, summary));
     }
@@ -182,7 +182,7 @@ public class BeautifyPptxAnalysisExecutor {
         }
     }
 
-    private Map<String, Object> validatePureTextArtifacts(
+    private Map<String, Object> validateAnalysisArtifacts(
             Path identityPath, Path libraryPath, Path profilePath, Path inventoryPath, AnalysisPaths paths) {
         try {
             JsonNode identity = objectMapper.readTree(identityPath.toFile());
@@ -196,15 +196,16 @@ public class BeautifyPptxAnalysisExecutor {
                     || library.path("slide_count").asInt(0) != slideCount || library.path("slides").size() != slideCount) {
                 throw validation("analysis schema or page-count contract is invalid");
             }
+            int imageCount = 0;
+            int tableCount = 0;
+            int chartCount = 0;
             int alerts = 0;
             for (int index = 0; index < inventory.path("slides").size(); index++) {
                 JsonNode slide = inventory.path("slides").get(index);
                 if (slide.path("slide_index").asInt(-1) != index + 1 || !slide.path("text_blocks").isArray()) {
                     throw validation("slide index or text ledger is invalid");
                 }
-                if (hasEntries(slide, "images") || hasEntries(slide, "tables") || hasEntries(slide, "charts")
-                        || hasEntries(slide, "unknown_objects") || hasEntries(slide, "unsupported_objects")
-                        || hasEntries(slide, "shapes")) {
+                if (hasEntries(slide, "unknown_objects") || hasEntries(slide, "unsupported_objects")) {
                     throw unsupported("slide " + (index + 1) + " contains unsupported content");
                 }
                 for (JsonNode text : slide.path("text_blocks")) {
@@ -212,28 +213,78 @@ public class BeautifyPptxAnalysisExecutor {
                         throw validation("text ledger is invalid");
                     }
                 }
+                imageCount += countArray(slide, "images");
+                tableCount += countArray(slide, "tables");
+                chartCount += countArray(slide, "charts");
+                alerts += countComplexAlerts(slide);
+                if (hasEntries(slide, "shapes")) {
+                    alerts += countArray(slide, "shapes");
+                }
             }
-            if (hasEntries(inventory, "ignored") || hasEntries(inventory, "needs_confirmation")
-                    || hasEntries(inventory, "needsConfirmation")) {
-                alerts++;
-                throw unsupported("inventory requires confirmation");
-            }
+            alerts += countArray(inventory, "ignored");
+            alerts += countArray(inventory, "needs_confirmation");
+            alerts += countArray(inventory, "needsConfirmation");
+            boolean imageManifestReady = Files.isRegularFile(paths.project().resolve("images/image_manifest.json"));
             Map<String, Object> canvas = new LinkedHashMap<>();
             canvas.put("widthPx", identity.path("canvas").path("width_px").asInt());
             canvas.put("heightPx", identity.path("canvas").path("height_px").asInt());
             canvas.put("aspect", identity.path("canvas").path("aspect").asDouble());
-            return Map.of(
-                    "sourcePageCount", slideCount,
-                    "canvas", Map.copyOf(canvas),
-                    "resolvedFormat", paths.resolvedFormat(),
-                    "identity", "analysis/" + identityPath.getFileName(),
-                    "slideLibrary", "analysis/" + libraryPath.getFileName(),
-                    "inventory", "analysis/beautify_inventory.json",
-                    "complexObjectAlertCount", alerts);
+            Map<String, Object> summary = new LinkedHashMap<>();
+            summary.put("sourcePageCount", slideCount);
+            summary.put("canvas", Map.copyOf(canvas));
+            summary.put("resolvedFormat", paths.resolvedFormat());
+            summary.put("identity", "analysis/" + identityPath.getFileName());
+            summary.put("slideLibrary", "analysis/" + libraryPath.getFileName());
+            summary.put("inventory", "analysis/beautify_inventory.json");
+            summary.put("imageCount", imageCount);
+            summary.put("tableCount", tableCount);
+            summary.put("chartCount", chartCount);
+            summary.put("imageManifestReady", imageManifestReady);
+            summary.put("complexObjectAlertCount", alerts);
+            return Map.copyOf(summary);
         } catch (IOException ex) {
             throw new BeautifyPptxAnalysisException("validation", BeautifyPptxErrorCode.BEAUTIFY_VALIDATION_FAILED,
                     BeautifyPptxFailureKind.INTERNAL, "analysis artifacts cannot be read", ex);
         }
+    }
+
+    private static int countComplexAlerts(JsonNode slide) {
+        int alerts = 0;
+        for (JsonNode table : iterable(slide.path("tables"))) {
+            if (table.path("has_merged_cells").asBoolean(false)
+                    || table.path("merged_cells").asBoolean(false)
+                    || hasEntries(table, "merged_cells")
+                    || table.path("multi_level_headers").asBoolean(false)) {
+                alerts++;
+            }
+        }
+        for (JsonNode chart : iterable(slide.path("charts"))) {
+            String type = chart.path("chart_type").asText(chart.path("type").asText("")).toLowerCase();
+            if (type.contains("combo") || type.contains("dual") || type.contains("waterfall")
+                    || type.contains("secondary")) {
+                alerts++;
+            }
+        }
+        for (JsonNode image : iterable(slide.path("images"))) {
+            if (image.path("cropped").asBoolean(false) || image.path("rotated").asBoolean(false)
+                    || image.path("has_crop").asBoolean(false) || image.path("rotation").asDouble(0) != 0
+                    || image.path("opacity").asDouble(1) < 1) {
+                alerts++;
+            }
+        }
+        return alerts;
+    }
+
+    private static int countArray(JsonNode parent, String field) {
+        JsonNode value = parent.path(field);
+        return value.isArray() ? value.size() : 0;
+    }
+
+    private static Iterable<JsonNode> iterable(JsonNode node) {
+        if (!node.isArray()) {
+            return List.of();
+        }
+        return node;
     }
 
     private PptMasterCommandExecutor.CommandResult run(

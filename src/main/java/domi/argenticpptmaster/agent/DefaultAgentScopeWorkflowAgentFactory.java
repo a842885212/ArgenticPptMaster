@@ -18,6 +18,7 @@ import domi.argenticpptmaster.service.PptOutlineStore;
 import domi.argenticpptmaster.service.PptArtifactRegistry;
 import domi.argenticpptmaster.service.PptImageManifestStore;
 import domi.argenticpptmaster.service.BeautifyPptxPlanStore;
+import domi.argenticpptmaster.service.BeautifyPptxOutputVerifier;
 import domi.argenticpptmaster.service.BeautifyPptxSvgContractValidator;
 import io.agentscope.core.ReActAgent;
 import io.agentscope.core.agent.RuntimeContext;
@@ -418,11 +419,15 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
 
     private String buildBeautifyWorkflowPatchPrompt() {
         return """
-                当前任务模式：BEAUTIFY_PPTX（纯文本逐页重新排版）。
+                当前任务模式：BEAUTIFY_PPTX（现有 PPTX 逐页重新排版，含文本/图片/表格/常见图表）。
                 服务端已完成 identity、intake 与 inventory；调用 describe_beautify_analysis 读取安全产物摘要后起草计划。
-                必须逐页、逐字符串保留源文本，页数和页序严格 1:1；禁止改写、拆合页、文生图和模板填充。
-                计划草案使用 write_beautify_plan_draft，并以 stage=beautify_plan_confirmation 请求确认。
-                仅在计划确认后，才可写 design_spec.md、spec_lock.md、svg_output/*.svg，并依次 validate、finalize、export。
+                必须逐页、逐字符串保留源文本与表格/图表冻结数据，页数和页序严格 1:1；禁止改写、拆合页、文生图和模板填充。
+                图片必须复用 images/ 与 image_manifest.json 绑定，仅重排位置/尺寸；裁剪/旋转/透明度损失写入 ignored。
+                表格/图表从 slide_library 或 inventory 冻结数据重生为原生 SVG；combo/双轴/waterfall、合并单元格写入 needsConfirmation。
+                计划草案使用 write_beautify_plan_draft，必须包含身份推荐（theme/observed）、ignored、needsConfirmation、validationStrictness，
+                并以 stage=beautify_plan_confirmation 请求确认。收到 REQUEST_REVISION 时读取 Operator 反馈后提高 version 再确认。
+                仅在计划确认且 identityLock 就绪后，才可从 sources/<stem>.md 逐页转录写 design_spec.md、spec_lock.md，
+                并依次 validate、finalize、export；导出后由服务端 read-back，禁止自由大纲改写路径。
                 """;
     }
 
@@ -432,8 +437,11 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                 - identity、intake 和 inventory 仅由服务端执行；不得调用 init_ppt_project 或 import_job_sources。
                 - 仅允许通过 write_beautify_plan_draft 写入草案，并用 request_plan_confirmation 的
                   stage=beautify_plan_confirmation、contextData={type:"beautify_pptx_plan",version,digest} 请求确认。
-                - 禁止 outline.json、图片 manifest、generate_project_images、template-fill 工具和任何源文本改写。
-                - 只有 BEAUTIFY_PLAN_CONFIRMED 后才能写 design_spec.md、spec_lock.md、svg_output/*.svg 或导出。
+                - 禁止 outline.json、image_prompts.json、generate_project_images、template-fill 工具和任何源文本/数据改写。
+                - SVG 可引用 images/ 中已绑定源图；不得引入生成图、远程 URL 或 data URI 替换源图。
+                - 只有 BEAUTIFY_PLAN_CONFIRMED 且 identityLock 可读后才能写 design_spec.md、spec_lock.md、svg_output/*.svg 或导出。
+                - 确认后页数锁定为源页数，文本从 sources/<stem>.md 逐页转录，并应用 identityLock；表/图数据保持冻结。
+                - BEAUTIFY_OUTPUT_VALIDATED 由服务端 read-back 完成，Agent 不得伪造该节点。
                 """;
     }
 
@@ -737,6 +745,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                 throw new IllegalStateException("beautify analysis must complete before planning");
             }
             BeautifyPptxPlanStore.PlanMetadata draft = BeautifyPptxPlanStore.storeDraft(runtime.job(), content);
+            runtime.job().markBeautifyPlanDrafted();
             runtime.completeNode(PptJobNode.BEAUTIFY_PLAN_DRAFTED,
                     Map.of("version", draft.version(), "digest", draft.digest()));
             return Map.of("version", draft.version(), "digest", draft.digest(), "status", draft.status());
@@ -1026,7 +1035,8 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                 case SPEAKER_NOTES_SPLIT -> hasSplitSpeakerNotes(files.get("notes"));
                 case SVG_FINALIZED -> hasAnyFile(files.get("svgFinal"));
                 case PPT_EXPORTED -> hasAnyFile(files.get("exports"));
-                case BEAUTIFY_OUTPUT_VALIDATED -> false;
+                case BEAUTIFY_OUTPUT_VALIDATED -> Files.isRegularFile(
+                        projectPath.resolve("validation/beautify-readback.json"));
                 case TEMPLATE_ANALYZED -> Files.isRegularFile(projectPath.resolve("analysis/template.slide_library.json"));
                 case FILL_PLAN_DRAFTED, FILL_PLAN_CONFIRMED -> Files.isRegularFile(projectPath.resolve("analysis/fill_plan.json"));
                 case FILL_PLAN_VALIDATED -> Files.isRegularFile(projectPath.resolve("analysis/check_report.json"));
@@ -1374,8 +1384,36 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                 artifactRegistry.register(projectPath, projectPath.relativize(artifact).toString().replace('\\', '/'),
                         outlineStore.read(projectPath).version());
             }
-            runtime.job().complete(artifact);
             runtime.completeNode(PptJobNode.PPT_EXPORTED, Map.of("fileName", artifact.getFileName().toString()));
+            if (runtime.job().workflowMode() == PptWorkflowMode.BEAUTIFY_PPTX) {
+                BeautifyPptxOutputVerifier.ReadbackResult readback;
+                try {
+                    readback = new BeautifyPptxOutputVerifier(runtime.executor(), runtime.events())
+                            .verify(runtime.job(), artifact, projectPath, pptMasterProperties.commandTimeout());
+                } catch (RuntimeException ex) {
+                    runtime.job().retainExport(artifact);
+                    runtime.events().record(runtime.job(), PptJobEvent.of(
+                            PptJobEventType.EXPORT_READY,
+                            "ppt artifact exported pending failed readback",
+                            Map.of("fileName", artifact.getFileName().toString(),
+                                    "readbackStatus", "FAILED")));
+                    runtime.job().failNode(PptJobNode.PPT_EXPORTED,
+                            "BEAUTIFY_READBACK_FAILED: beautify output validation failed");
+                    throw ex;
+                }
+                if (!readback.passed()) {
+                    runtime.job().retainExport(artifact);
+                    runtime.events().record(runtime.job(), PptJobEvent.of(
+                            PptJobEventType.EXPORT_READY,
+                            "ppt artifact exported pending failed readback",
+                            Map.of("fileName", artifact.getFileName().toString(),
+                                    "readbackStatus", readback.status())));
+                    runtime.job().failNode(PptJobNode.PPT_EXPORTED,
+                            "BEAUTIFY_READBACK_FAILED: beautify output validation failed");
+                    throw new IllegalStateException("BEAUTIFY_READBACK_FAILED: beautify output validation failed");
+                }
+            }
+            runtime.job().complete(artifact);
             runtime.events().record(runtime.job(), PptJobEvent.of(
                     PptJobEventType.EXPORT_READY,
                     "ppt artifact exported",
@@ -1633,6 +1671,9 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                 BeautifyPptxPlanStore.PlanMetadata plan = BeautifyPptxPlanStore.read(runtime.job())
                         .filter(metadata -> "confirmed".equals(metadata.status()))
                         .orElseThrow(() -> new IllegalStateException("beautify plan evidence is missing or invalid"));
+                if (!BeautifyPptxPlanStore.hasIdentityLock(runtime.job())) {
+                    throw new IllegalStateException("beautify identityLock is missing; downstream writes are forbidden");
+                }
                 Object expectedDigest = planExecution.summary().get("digest");
                 if (!(expectedDigest instanceof String digest) || !digest.equals(plan.digest())) {
                     throw new IllegalStateException("beautify plan digest no longer matches confirmation evidence");
@@ -1920,6 +1961,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                 throw new IllegalStateException("beautify analysis must complete before planning");
             }
             BeautifyPptxPlanStore.PlanMetadata draft = BeautifyPptxPlanStore.storeDraft(runtime.job(), content);
+            runtime.job().markBeautifyPlanDrafted();
             runtime.completeNode(PptJobNode.BEAUTIFY_PLAN_DRAFTED,
                     Map.of("version", draft.version(), "digest", draft.digest()));
             return Map.of("version", draft.version(), "digest", draft.digest(), "status", draft.status());

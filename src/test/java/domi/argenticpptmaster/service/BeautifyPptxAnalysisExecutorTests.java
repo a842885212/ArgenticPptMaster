@@ -91,14 +91,62 @@ class BeautifyPptxAnalysisExecutorTests {
     }
 
     @Test
-    void rejectsComplexObjectsBeforeAgentStarts() throws IOException {
+    void acceptsSupportedMediaObjectsAndCountsThem() throws IOException {
         Path workspace = tempDir.resolve("workspace");
         PptJob job = beautifyJob(workspace);
         Path project = preparedProject(workspace, job);
         Files.writeString(project.resolve("analysis/source.identity.json"), identityJson());
         Files.writeString(project.resolve("analysis/source.slide_library.json"), libraryJson());
         Files.writeString(project.resolve("analysis/source_profile.json"), profileJson());
-        Files.writeString(project.resolve("analysis/beautify_inventory.json"), inventoryJson(true));
+        Files.writeString(project.resolve("analysis/beautify_inventory.json"), inventoryWithMediaJson());
+        Files.createDirectories(project.resolve("images"));
+        Files.writeString(project.resolve("images/image_manifest.json"), "[{\"filename\":\"a.png\"}]");
+        job.prepareProject(project);
+        job.completeNode(PptJobNode.PROJECT_READY, java.util.Map.of("resolvedFormat", "ppt169"));
+
+        new BeautifyPptxAnalysisExecutor(PptMasterProperties.forTest(tempDir.resolve("repo"), workspace),
+                mock(PptMasterCommandExecutor.class), mock(PptWorkflowEvents.class)).execute(job);
+
+        assertThat(job.nodeExecution(PptJobNode.BEAUTIFY_ANALYZED).summary())
+                .containsEntry("sourcePageCount", 1)
+                .containsEntry("imageCount", 1)
+                .containsEntry("tableCount", 1)
+                .containsEntry("chartCount", 1)
+                .containsEntry("imageManifestReady", true)
+                .containsEntry("complexObjectAlertCount", 0);
+    }
+
+    @Test
+    void surfacesComplexObjectsAsAlertsWithoutFailingAnalysis() throws IOException {
+        Path workspace = tempDir.resolve("workspace");
+        PptJob job = beautifyJob(workspace);
+        Path project = preparedProject(workspace, job);
+        Files.writeString(project.resolve("analysis/source.identity.json"), identityJson());
+        Files.writeString(project.resolve("analysis/source.slide_library.json"), libraryJson());
+        Files.writeString(project.resolve("analysis/source_profile.json"), profileJson());
+        Files.writeString(project.resolve("analysis/beautify_inventory.json"), inventoryWithComplexJson());
+        job.prepareProject(project);
+        job.completeNode(PptJobNode.PROJECT_READY, java.util.Map.of("resolvedFormat", "ppt169"));
+
+        new BeautifyPptxAnalysisExecutor(PptMasterProperties.forTest(tempDir.resolve("repo"), workspace),
+                mock(PptMasterCommandExecutor.class), mock(PptWorkflowEvents.class)).execute(job);
+
+        assertThat(job.nodeExecution(PptJobNode.BEAUTIFY_ANALYZED).status())
+                .isEqualTo(domi.argenticpptmaster.domain.PptJobNodeStatus.COMPLETED);
+        assertThat(job.nodeExecution(PptJobNode.BEAUTIFY_ANALYZED).summary())
+                .containsEntry("chartCount", 1)
+                .containsEntry("complexObjectAlertCount", 2);
+    }
+
+    @Test
+    void rejectsUnclassifiableOrUnsupportedObjects() throws IOException {
+        Path workspace = tempDir.resolve("workspace");
+        PptJob job = beautifyJob(workspace);
+        Path project = preparedProject(workspace, job);
+        Files.writeString(project.resolve("analysis/source.identity.json"), identityJson());
+        Files.writeString(project.resolve("analysis/source.slide_library.json"), libraryJson());
+        Files.writeString(project.resolve("analysis/source_profile.json"), profileJson());
+        Files.writeString(project.resolve("analysis/beautify_inventory.json"), inventoryUnsupportedJson());
         job.prepareProject(project);
         job.completeNode(PptJobNode.PROJECT_READY, java.util.Map.of("resolvedFormat", "ppt169"));
 
@@ -213,5 +261,31 @@ class BeautifyPptxAnalysisExecutorTests {
         return "{\"schema\":\"beautify_inventory.v1\",\"slide_count\":1,\"slides\":[{\"slide_index\":1,"
                 + "\"text_blocks\":[{\"text\":\"Hello\"}],\"images\":" + (complex ? "[{\"id\":\"image\"}]" : "[]")
                 + ",\"tables\":[],\"charts\":[],\"shapes\":[]}],\"ignored\":[],\"needs_confirmation\":[]}";
+    }
+
+    private static String inventoryWithMediaJson() {
+        return "{\"schema\":\"beautify_inventory.v1\",\"slide_count\":1,\"slides\":[{\"slide_index\":1,"
+                + "\"text_blocks\":[{\"text\":\"Hello\"}],"
+                + "\"images\":[{\"id\":\"img-1\",\"filename\":\"a.png\"}],"
+                + "\"tables\":[{\"id\":\"t1\",\"rows\":[[\"A\",\"B\"],[\"1\",\"2\"]]}],"
+                + "\"charts\":[{\"id\":\"c1\",\"chart_type\":\"clustered_column\","
+                + "\"categories\":[\"Q1\"],\"series\":[{\"name\":\"S1\",\"values\":[1]}]}],"
+                + "\"shapes\":[]}],\"ignored\":[],\"needs_confirmation\":[]}";
+    }
+
+    private static String inventoryWithComplexJson() {
+        return "{\"schema\":\"beautify_inventory.v1\",\"slide_count\":1,\"slides\":[{\"slide_index\":1,"
+                + "\"text_blocks\":[{\"text\":\"Hello\"}],\"images\":[],"
+                + "\"tables\":[{\"id\":\"t1\",\"has_merged_cells\":true,\"rows\":[[\"A\"]]}],"
+                + "\"charts\":[{\"id\":\"c1\",\"chart_type\":\"combo\",\"categories\":[\"Q1\"],"
+                + "\"series\":[{\"name\":\"S1\",\"values\":[1]}]}],\"shapes\":[]}],"
+                + "\"ignored\":[],\"needs_confirmation\":[]}";
+    }
+
+    private static String inventoryUnsupportedJson() {
+        return "{\"schema\":\"beautify_inventory.v1\",\"slide_count\":1,\"slides\":[{\"slide_index\":1,"
+                + "\"text_blocks\":[{\"text\":\"Hello\"}],\"images\":[],\"tables\":[],\"charts\":[],"
+                + "\"shapes\":[],\"unsupported_objects\":[{\"id\":\"x\",\"type\":\"ole\"}]}],"
+                + "\"ignored\":[],\"needs_confirmation\":[]}";
     }
 }

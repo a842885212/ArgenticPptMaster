@@ -462,32 +462,106 @@ class PptWorkflowServiceTests {
     }
 
     @Test
-    void beautifyConfirmationApprovesOnlyCurrentDraftAndRejectsRevision() {
+    void beautifyConfirmationApprovesCurrentDraftAndSupportsRevision() {
         Path project = tempDir.resolve("jobs/beautify-confirmation");
         PptJob job = new PptJob(java.util.UUID.randomUUID(), "beautify", "ppt169", null,
                 PptWorkflowMode.BEAUTIFY_PPTX, project);
         job.prepareProject(project);
+        job.completeNode(PptJobNode.BEAUTIFY_ANALYZED, Map.of("sourcePageCount", 1));
         BeautifyPptxPlanStore.PlanMetadata draft = BeautifyPptxPlanStore.storeDraft(job, """
-                {"version":1,"status":"draft","hardConstraints":{"textVerbatim":true,
-                "dataVerbatim":true,"pageMapping":"1:1"},"slides":[]}
+                {"version":1,"status":"draft","sourcePageCount":1,"hardConstraints":{"textVerbatim":true,
+                "dataVerbatim":true,"pageMapping":"1:1"},"identityRecommendation":{"source":"theme",
+                "candidates":[{"id":"theme"},{"id":"observed"}],"paletteCandidateId":"theme",
+                "fontCandidateId":"theme","bodySizeCandidateId":"theme","rationale":"theme"},
+                "ignored":[],"needsConfirmation":[],"validationStrictness":"strict"}
                 """);
-        job.completeNode(PptJobNode.BEAUTIFY_ANALYZED, Map.of());
         job.completeNode(PptJobNode.BEAUTIFY_PLAN_DRAFTED, Map.of());
+        job.markBeautifyPlanDrafted();
         job.requireConfirmation("beautify-1", Map.of("stage", "beautify_plan_confirmation", "contextData", Map.of(
                 "type", "beautify_pptx_plan", "version", 1, "digest", draft.digest())));
         repository.save(job);
 
-        assertThatThrownBy(() -> workflowService.submitConfirmation(job.id(), "beautify-1", true, Map.of(), "修改",
-                PptConfirmationAction.REQUEST_REVISION, null, List.of()))
-                .isInstanceOf(PptJobStateException.class)
-                .hasMessageContaining("revision is not supported");
-        assertThat(job.status()).isEqualTo(PptJobStatus.WAITING_CONFIRMATION);
+        PptJob revised = workflowService.submitConfirmation(job.id(), "beautify-1", true, Map.of(), "修改配色",
+                PptConfirmationAction.REQUEST_REVISION, null, List.of());
+        assertThat(revised.beautifyPlanStatus()).isEqualTo("rejected");
+        assertThat(revised.beautifyRevisionFeedback()).contains("修改配色");
+        assertThat(revised.nodeExecution(PptJobNode.BEAUTIFY_PLAN_DRAFTED).status())
+                .isEqualTo(PptJobNodeStatus.PENDING);
+        assertThat(revised.nodeExecution(PptJobNode.BEAUTIFY_ANALYZED).status())
+                .isEqualTo(PptJobNodeStatus.COMPLETED);
 
-        PptJob approved = workflowService.submitConfirmation(job.id(), "beautify-1", true, Map.of(), null,
+        BeautifyPptxPlanStore.PlanMetadata draft2 = BeautifyPptxPlanStore.storeDraft(revised, """
+                {"version":2,"status":"draft","sourcePageCount":1,"hardConstraints":{"textVerbatim":true,
+                "dataVerbatim":true,"pageMapping":"1:1"},"identityRecommendation":{"source":"observed",
+                "candidates":[{"id":"theme"},{"id":"observed"}],"paletteCandidateId":"observed",
+                "fontCandidateId":"observed","bodySizeCandidateId":"observed","rationale":"observed"},
+                "ignored":[],"needsConfirmation":[],"validationStrictness":"strict"}
+                """);
+        revised.completeNode(PptJobNode.BEAUTIFY_PLAN_DRAFTED, Map.of());
+        revised.markBeautifyPlanDrafted();
+        revised.requireConfirmation("beautify-2", Map.of("stage", "beautify_plan_confirmation", "contextData", Map.of(
+                "type", "beautify_pptx_plan", "version", 2, "digest", draft2.digest())));
+        repository.save(revised);
+
+        PptJob approved = workflowService.submitConfirmation(revised.id(), "beautify-2", true,
+                Map.of("identitySource", "observed"), null,
                 PptConfirmationAction.APPROVE, null, List.of());
         assertThat(approved.nodeExecution(PptJobNode.BEAUTIFY_PLAN_CONFIRMED).status())
                 .isEqualTo(PptJobNodeStatus.COMPLETED);
+        assertThat(approved.beautifyPlanStatus()).isEqualTo("confirmed");
         assertThat(BeautifyPptxPlanStore.read(approved).orElseThrow().status()).isEqualTo("confirmed");
+        assertThat(BeautifyPptxPlanStore.hasIdentityLock(approved)).isTrue();
+    }
+
+    @Test
+    void beautifyCancelRejectsLaterApprovalAndRevisionHitsAttemptLimit() {
+        Path project = tempDir.resolve("jobs/beautify-cancel");
+        PptJob job = new PptJob(java.util.UUID.randomUUID(), "beautify", "ppt169", null,
+                PptWorkflowMode.BEAUTIFY_PPTX, project);
+        job.prepareProject(project);
+        job.completeNode(PptJobNode.BEAUTIFY_ANALYZED, Map.of("sourcePageCount", 1));
+        BeautifyPptxPlanStore.PlanMetadata draft = BeautifyPptxPlanStore.storeDraft(job, """
+                {"version":1,"status":"draft","sourcePageCount":1,"hardConstraints":{"textVerbatim":true,
+                "dataVerbatim":true,"pageMapping":"1:1"},"identityRecommendation":{"source":"theme",
+                "candidates":[{"id":"theme"},{"id":"observed"}],"paletteCandidateId":"theme",
+                "fontCandidateId":"theme","bodySizeCandidateId":"theme","rationale":"theme"},
+                "ignored":[],"needsConfirmation":[],"validationStrictness":"strict"}
+                """);
+        job.completeNode(PptJobNode.BEAUTIFY_PLAN_DRAFTED, Map.of());
+        job.requireConfirmation("beautify-cancel", Map.of("stage", "beautify_plan_confirmation", "contextData", Map.of(
+                "type", "beautify_pptx_plan", "version", 1, "digest", draft.digest())));
+        repository.save(job);
+
+        PptJob cancelled = workflowService.submitConfirmation(job.id(), "beautify-cancel", false, Map.of(), "stop",
+                PptConfirmationAction.CANCEL, null, List.of());
+        assertThat(cancelled.status()).isEqualTo(PptJobStatus.FAILED);
+        assertThatThrownBy(() -> workflowService.submitConfirmation(job.id(), "beautify-cancel", true, Map.of(), null,
+                PptConfirmationAction.APPROVE, null, List.of()))
+                .isInstanceOf(PptJobStateException.class);
+
+        PptJob revising = new PptJob(java.util.UUID.randomUUID(), "beautify", "ppt169", null,
+                PptWorkflowMode.BEAUTIFY_PPTX, tempDir.resolve("jobs/beautify-limit"));
+        revising.prepareProject(revising.workspacePath());
+        revising.completeNode(PptJobNode.BEAUTIFY_ANALYZED, Map.of("sourcePageCount", 1));
+        for (int i = 0; i < 5; i++) {
+            revising.startNewResumeAttempt();
+        }
+        BeautifyPptxPlanStore.PlanMetadata limitDraft = BeautifyPptxPlanStore.storeDraft(revising, """
+                {"version":1,"status":"draft","sourcePageCount":1,"hardConstraints":{"textVerbatim":true,
+                "dataVerbatim":true,"pageMapping":"1:1"},"identityRecommendation":{"source":"theme",
+                "candidates":[{"id":"theme"},{"id":"observed"}],"paletteCandidateId":"theme",
+                "fontCandidateId":"theme","bodySizeCandidateId":"theme","rationale":"theme"},
+                "ignored":[],"needsConfirmation":[],"validationStrictness":"strict"}
+                """);
+        revising.completeNode(PptJobNode.BEAUTIFY_PLAN_DRAFTED, Map.of());
+        revising.requireConfirmation("beautify-limit", Map.of("stage", "beautify_plan_confirmation", "contextData", Map.of(
+                "type", "beautify_pptx_plan", "version", 1, "digest", limitDraft.digest())));
+        repository.save(revising);
+
+        assertThatThrownBy(() -> workflowService.submitConfirmation(revising.id(), "beautify-limit", true, Map.of(),
+                "again", PptConfirmationAction.REQUEST_REVISION, null, List.of()))
+                .isInstanceOf(PptJobStateException.class)
+                .hasMessageContaining("maximum beautify revision attempts");
     }
 
     @Test

@@ -363,6 +363,9 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
         assertThat(prompt).contains("describe_beautify_analysis");
         assertThat(prompt).contains("write_beautify_plan_draft");
         assertThat(prompt).contains("beautify_plan_confirmation");
+        assertThat(prompt).contains("identityLock");
+        assertThat(prompt).contains("sources/<stem>.md");
+        assertThat(prompt).contains("REQUEST_REVISION");
         assertThat(prompt).doesNotContain("首次调用 request_plan_confirmation 只能使用 stage=outline_confirmation");
     }
 

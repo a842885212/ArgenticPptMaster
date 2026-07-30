@@ -6,7 +6,8 @@ public enum BeautifyPptxErrorCode {
     BEAUTIFY_INTAKE_FAILED,
     BEAUTIFY_INVENTORY_FAILED,
     BEAUTIFY_VALIDATION_FAILED,
-    BEAUTIFY_UNSUPPORTED_CONTENT;
+    BEAUTIFY_UNSUPPORTED_CONTENT,
+    BEAUTIFY_READBACK_FAILED;
 
     public String code() {
         return name();

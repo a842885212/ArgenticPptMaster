@@ -12,5 +12,9 @@ public record BeautifyAnalysisResponse(
         boolean slideLibraryReady,
         Integer complexObjectAlertCount,
         String beautifyPlanStatus,
-        Map<String, Object> outputValidationSummary) {
+        Map<String, Object> outputValidationSummary,
+        Integer imageCount,
+        Integer tableCount,
+        Integer chartCount,
+        Boolean imageManifestReady) {
 }

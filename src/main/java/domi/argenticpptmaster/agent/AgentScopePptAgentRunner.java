@@ -13,6 +13,7 @@ import domi.argenticpptmaster.domain.PptNodeExecution;
 import domi.argenticpptmaster.domain.PptOutline;
 import domi.argenticpptmaster.domain.PptWorkflowMode;
 import domi.argenticpptmaster.service.PptWorkflowEvents;
+import domi.argenticpptmaster.service.BeautifyConfirmationSummary;
 import domi.argenticpptmaster.service.PptOutlineStore;
 import domi.argenticpptmaster.service.TemplateFillConfirmationSummary;
 import io.agentscope.core.agent.RuntimeContext;
@@ -581,6 +582,7 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
             }
             Object contextData = input.get("contextData");
             if (job.workflowMode() != PptWorkflowMode.TEMPLATE_FILL
+                    && job.workflowMode() != PptWorkflowMode.BEAUTIFY_PPTX
                     && !hasApprovedOutline(job)
                     && !"outline_confirmation".equals(stage)
                     && !"plan_confirmation".equals(stage)) {
@@ -650,6 +652,11 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
                         ? extractStringKeyMap(contextMap)
                         : Map.of();
                 payload.put("contextData", TemplateFillConfirmationSummary.fromWorkspace(job, agentContext));
+            } else if ("beautify_plan_confirmation".equals(stage)) {
+                Map<String, Object> agentContext = contextData instanceof Map<?, ?> contextMap
+                        ? extractStringKeyMap(contextMap)
+                        : Map.of();
+                payload.put("contextData", BeautifyConfirmationSummary.fromWorkspace(job, agentContext));
             } else if (contextData instanceof Map<?, ?> contextMap) {
                 if (contextMap.get("slides") != null) {
                     validateOutlineContextData(contextMap);
@@ -976,6 +983,9 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
         if (job.workflowMode() == PptWorkflowMode.TEMPLATE_FILL) {
             return buildTemplateFillInitialInstruction(job);
         }
+        if (job.workflowMode() == PptWorkflowMode.BEAUTIFY_PPTX) {
+            return buildBeautifyInitialInstruction(job);
+        }
         String workflowSteps = job.workflowMode() == PptWorkflowMode.IMAGE_ENHANCED
                 ? """
                 3. 完成资料分析后，先生成逐页大纲并写入 outline.json（version 从 1 开始、locked=false），通过 request_plan_confirmation（stage="outline_confirmation"）在 contextData 中返回 {type:"ppt_outline", version, locked:false, slides:[...]}。
@@ -1014,6 +1024,53 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
                 job.workflowMode().name(),
                 job.sourceFiles().size(),
                 job.instruction() == null ? "" : job.instruction());
+    }
+
+    private String buildBeautifyInitialInstruction(PptJob job) {
+        String revisionHint = job.beautifyRevisionFeedback()
+                .map(feedback -> "- operatorRevisionFeedback: " + feedback)
+                .orElse("");
+        return """
+                当前 beautify 任务已完成 BEAUTIFY_ANALYZED。请基于 identity/inventory 起草可解释计划：
+                1. 调用 describe_beautify_analysis 读取安全摘要。
+                2. 使用 write_beautify_plan_draft 写入 status=draft 的计划，包含身份推荐、ignored、needsConfirmation、validationStrictness，
+                   且 hardConstraints 保持 textVerbatim/dataVerbatim/pageMapping=1:1。
+                3. 通过 request_plan_confirmation（stage="beautify_plan_confirmation"）提交确认，
+                   contextData.type 必须为 beautify_pptx_plan，并包含 version、digest。
+                4. 收到 REQUEST_REVISION 时读取 Operator 反馈，提高 version 后重新草拟并再次确认。
+                5. 仅在 APPROVE 且身份锁定后，从 sources/<stem>.md 逐页转录写 design_spec.md / spec_lock.md，再 validate/finalize/export。
+
+                任务上下文：
+                - jobId: %s
+                - projectName: %s
+                - format: %s
+                - sourceCount: %d
+                - instruction: %s
+                %s
+                """.formatted(
+                job.id(),
+                job.projectName(),
+                job.format(),
+                job.sourceFiles().size(),
+                job.instruction() == null ? "" : job.instruction(),
+                revisionHint);
+    }
+
+    private String buildBeautifyResumeInstruction(PptJob job, PptJobNode checkpoint) {
+        String revisionHint = job.beautifyRevisionFeedback()
+                .map(feedback -> "- operatorRevisionFeedback: " + feedback)
+                .orElse("");
+        return """
+                当前 beautify 任务正在修订计划，请从 %s 继续：
+                1. 调用 describe_beautify_analysis 确认分析产物仍有效，不得重跑 identity/intake/inventory。
+                2. 读取 Operator 反馈，写入更高 version 的 draft，再次 request_plan_confirmation。
+                3. 在 APPROVE 前不得写 design_spec.md、spec_lock.md 或 SVG。
+
+                任务上下文：
+                - jobId: %s
+                - checkpoint: %s
+                %s
+                """.formatted(checkpoint.name(), job.id(), checkpoint.name(), revisionHint);
     }
 
     private String buildTemplateFillInitialInstruction(PptJob job) {
@@ -1083,6 +1140,9 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
     private String buildCheckpointResumeInstruction(PptJob job, PptJobNode checkpoint) {
         if (job.workflowMode() == PptWorkflowMode.TEMPLATE_FILL) {
             return buildTemplateFillResumeInstruction(job, checkpoint);
+        }
+        if (job.workflowMode() == PptWorkflowMode.BEAUTIFY_PPTX) {
+            return buildBeautifyResumeInstruction(job, checkpoint);
         }
         List<PptJobNode> completedNodes = collectCompletedNodes(job, checkpoint);
         List<PptJobNode> allowedNextNodes = collectAllowedNextNodes(job, checkpoint);

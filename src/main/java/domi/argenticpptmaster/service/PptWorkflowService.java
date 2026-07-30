@@ -409,7 +409,8 @@ public class PptWorkflowService {
             return job;
         }
         if (isBeautifyPlanConfirmation(job) && effectiveAction == PptConfirmationAction.REQUEST_REVISION) {
-            throw new PptJobStateException("beautify plan revision is not supported in this MVP");
+            return submitBeautifyPlanRevision(
+                    job, confirmationId, firstNonBlank(overallComment, comment));
         }
         validateImageManifestConfirmation(job, effectiveAction);
         validateImageReadyContinuation(job, effectiveAction);
@@ -446,7 +447,8 @@ public class PptWorkflowService {
         if (confirmedNode != null) {
             BeautifyPptxPlanStore.PlanMetadata beautifyPlan = null;
             if (confirmedNode == PptJobNode.BEAUTIFY_PLAN_CONFIRMED) {
-                beautifyPlan = confirmBeautifyPlan(job);
+                beautifyPlan = confirmBeautifyPlan(job, answers == null ? Map.of() : answers);
+                job.markBeautifyPlanConfirmed();
             }
             lockApprovedOutline(job, outlineVersion);
             if (confirmedNode == PptJobNode.OUTLINE_CONFIRMED
@@ -709,11 +711,13 @@ public class PptWorkflowService {
         return "template_fill_plan".equals(job.confirmationPayload().get("stage"));
     }
 
+    private static final int MAX_BEAUTIFY_REVISION_ATTEMPTS = 5;
+
     private boolean isBeautifyPlanConfirmation(PptJob job) {
         return "beautify_plan_confirmation".equals(job.confirmationPayload().get("stage"));
     }
 
-    private BeautifyPptxPlanStore.PlanMetadata confirmBeautifyPlan(PptJob job) {
+    private BeautifyPptxPlanStore.PlanMetadata confirmBeautifyPlan(PptJob job, Map<String, Object> answers) {
         Object rawContext = job.confirmationPayload().get("contextData");
         if (!(rawContext instanceof Map<?, ?> context)) {
             throw new PptJobStateException("beautify plan confirmation context is missing");
@@ -723,9 +727,30 @@ public class PptWorkflowService {
         if (!(version instanceof Number number) || !(digest instanceof String text) || text.isBlank()) {
             throw new PptJobStateException("beautify plan confirmation requires version and digest");
         }
-        BeautifyPptxPlanStore.confirmDraft(job, number.intValue(), text);
+        BeautifyPptxPlanStore.confirmDraft(job, number.intValue(), text, answers);
         return BeautifyPptxPlanStore.read(job)
                 .orElseThrow(() -> new PptJobStateException("confirmed beautify plan is missing"));
+    }
+
+    private PptJob submitBeautifyPlanRevision(PptJob job, String confirmationId, String revisionComment) {
+        if (isBlank(revisionComment)) {
+            throw new PptJobStateException("beautify plan revision requires feedback");
+        }
+        if (job.resumeCount() >= MAX_BEAUTIFY_REVISION_ATTEMPTS) {
+            throw new PptJobStateException(
+                    "maximum beautify revision attempts reached: " + MAX_BEAUTIFY_REVISION_ATTEMPTS);
+        }
+        PptConfirmation confirmation = new PptConfirmation(
+                confirmationId, true, Map.of(), revisionComment, Instant.now(),
+                PptConfirmationAction.REQUEST_REVISION, revisionComment, List.of(), null, List.of());
+        job.receiveConfirmation(confirmation);
+        events.record(job, PptJobEvent.of(PptJobEventType.CONFIRMATION_RECEIVED, "confirmation received",
+                Map.of("confirmationId", confirmationId, "action", PptConfirmationAction.REQUEST_REVISION.name())));
+        job.resetBeautifyPlanDrafting(revisionComment);
+        job.startNewResumeAttempt();
+        repository.save(job);
+        asyncRunner.resumeFromCheckpoint(job.id(), PptJobNode.BEAUTIFY_ANALYZED);
+        return job;
     }
 
     private PptJob submitTemplateFillPlanConfirmation(

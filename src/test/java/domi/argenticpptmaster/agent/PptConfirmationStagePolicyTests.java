@@ -29,11 +29,14 @@ class PptConfirmationStagePolicyTests {
         PptJob job = new PptJob(java.util.UUID.randomUUID(), "beautify", "ppt169", null,
                 PptWorkflowMode.BEAUTIFY_PPTX, projectPath);
         job.prepareProject(projectPath);
+        job.completeNode(PptJobNode.BEAUTIFY_ANALYZED, Map.of("sourcePageCount", 1));
         BeautifyPptxPlanStore.PlanMetadata plan = BeautifyPptxPlanStore.storeDraft(job, """
-                {"version":1,"status":"draft","hardConstraints":{"textVerbatim":true,
-                "dataVerbatim":true,"pageMapping":"1:1"},"slides":[]}
+                {"version":1,"status":"draft","sourcePageCount":1,"hardConstraints":{"textVerbatim":true,
+                "dataVerbatim":true,"pageMapping":"1:1"},"identityRecommendation":{"source":"theme",
+                "candidates":[{"id":"theme"},{"id":"observed"}],"paletteCandidateId":"theme",
+                "fontCandidateId":"theme","bodySizeCandidateId":"theme","rationale":"theme"},
+                "ignored":[],"needsConfirmation":[],"validationStrictness":"strict"}
                 """);
-        job.completeNode(PptJobNode.BEAUTIFY_ANALYZED, Map.of());
         job.completeNode(PptJobNode.BEAUTIFY_PLAN_DRAFTED, Map.of());
 
         PptConfirmationStagePolicy.Decision decision = policy.evaluate(job, "beautify_plan_confirmation", Map.of(

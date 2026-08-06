@@ -46,6 +46,8 @@ public class PptNativeEnhanceCommandExecutor {
     private final PptMasterCommandExecutor commands;
     private final NativeEnhanceReadinessContributor readiness;
     private final NativeEnhanceOutputVerifier outputVerifier;
+    private final NativeEnhancePptxLifecycleStore lifecycleStore;
+    private final NativeEnhancePptxTelemetry telemetry;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     public PptNativeEnhanceCommandExecutor(
@@ -55,12 +57,27 @@ public class PptNativeEnhanceCommandExecutor {
             PptMasterCommandExecutor commands,
             NativeEnhanceReadinessContributor readiness,
             NativeEnhanceOutputVerifier outputVerifier) {
+        this(properties, repository, events, commands, readiness, outputVerifier, null, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public PptNativeEnhanceCommandExecutor(
+            PptMasterProperties properties,
+            PptJobRepository repository,
+            PptWorkflowEvents events,
+            PptMasterCommandExecutor commands,
+            NativeEnhanceReadinessContributor readiness,
+            NativeEnhanceOutputVerifier outputVerifier,
+            NativeEnhancePptxLifecycleStore lifecycleStore,
+            NativeEnhancePptxTelemetry telemetry) {
         this.properties = properties;
         this.repository = repository;
         this.events = events;
         this.commands = commands;
         this.readiness = readiness;
         this.outputVerifier = outputVerifier;
+        this.lifecycleStore = lifecycleStore;
+        this.telemetry = telemetry;
     }
 
     /** 阶段 3：托管 init/draft 后打开确认门禁；已确认则继续 notes-only。 */
@@ -83,6 +100,14 @@ public class PptNativeEnhanceCommandExecutor {
         PptJob job = repository.findById(jobId).orElseThrow();
         if (job.workflowMode() != PptWorkflowMode.NATIVE_ENHANCE_PPTX) {
             throw new IllegalArgumentException("native-enhance executor requires NATIVE_ENHANCE_PPTX");
+        }
+        if (properties.nativeEnhancePptx().production().executionStopEnabled()) {
+            NativeEnhanceExecutionException stopped = new NativeEnhanceExecutionException(
+                    "EXECUTION",
+                    NativeEnhanceErrorCode.NATIVE_ENHANCE_INIT_FAILED,
+                    "native-enhance-pptx execution is stopped");
+            fail(job, stopped);
+            throw stopped;
         }
         Path workspace = job.workspacePath().toAbsolutePath().normalize();
         try {
@@ -500,6 +525,7 @@ public class PptNativeEnhanceCommandExecutor {
         recordCheckpoint(job, PptJobNode.NATIVE_ENHANCE_OUTPUT_VALIDATED, summary);
         job.complete(delivery);
         repository.save(job);
+        markTerminal(job);
         events.record(job, PptJobEvent.of(PptJobEventType.EXPORT_READY, "native-enhance export ready",
                 Map.of("fileName", delivery.getFileName().toString(), "sourcePageCount", expectedSlides,
                         "outputValidationStatus", result.status())));
@@ -625,8 +651,23 @@ public class PptNativeEnhanceCommandExecutor {
             job.fail(message);
         }
         repository.save(job);
+        markTerminal(job);
+        if (telemetry != null) {
+            telemetry.recordError(ex.errorCode());
+        }
         events.record(job, PptJobEvent.of(PptJobEventType.JOB_FAILED, "native-enhance failed",
                 Map.of("stage", ex.stage(), "errorCode", ex.errorCode().code())));
+    }
+
+    private void markTerminal(PptJob job) {
+        if (lifecycleStore == null) {
+            return;
+        }
+        try {
+            lifecycleStore.markTerminal(job, lifecycleStore.retentionForTerminalStatus(job.status()));
+        } catch (RuntimeException ignored) {
+            // lifecycle is best-effort at terminal boundaries
+        }
     }
 
     private static Map<String, Object> sanitizeSummary(Map<String, Object> summary) {

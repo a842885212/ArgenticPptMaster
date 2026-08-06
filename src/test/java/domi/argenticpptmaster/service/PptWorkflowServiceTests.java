@@ -54,7 +54,9 @@ import reactor.core.publisher.Flux;
 @SpringBootTest
 @org.springframework.test.context.TestPropertySource(properties = {
         "ppt-master.beautify-pptx.enabled=true",
-        "ppt-master.beautify-pptx.allowed-tenants[0]=test-tenant"
+        "ppt-master.beautify-pptx.allowed-tenants[0]=test-tenant",
+        "ppt-master.native-enhance-pptx.enabled=true",
+        "ppt-master.native-enhance-pptx.allowed-tenants[0]=test-tenant"
 })
 class PptWorkflowServiceTests {
 

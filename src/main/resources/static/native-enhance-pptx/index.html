@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>原生增强 · Argentic PPT Master</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <main class="page">
+    <header class="hero">
+      <p class="brand">Argentic PPT Master</p>
+      <h1>原生 PPTX 增强</h1>
+      <p class="lede">上传单个成品 PPTX，不改版式与可见内容，仅追加备注 / 旁白 / 切换。</p>
+    </header>
+
+    <section class="panel" aria-labelledby="create-heading">
+      <h2 id="create-heading">创建任务</h2>
+
+      <aside class="callout" role="note">
+        <p><strong>硬约束（创建前必须确认）：</strong></p>
+        <ul>
+          <li><strong>不改版式与可见内容</strong>，仅追加备注 / 旁白 / 切换。</li>
+          <li>页数与页序保持不变；不做模板填充或美化改版。</li>
+          <li>音频可能含敏感口述内容，仅任务所有者可下载相关产物。</li>
+        </ul>
+        <label class="ack">
+          <input type="checkbox" id="semanticAck" />
+          我已确认：不改版式与可见内容，仅追加备注/旁白/切换
+        </label>
+      </aside>
+
+      <form id="createForm" class="create-form" novalidate>
+        <fieldset class="upload-zone" id="sourceZone">
+          <legend>源 PPTX</legend>
+          <p class="hint">仅 1 个 <code>.pptx</code>，对应字段 <code>files</code>；无模板双槽位。</p>
+          <label class="file-label" for="sourceFile">选择 PPTX</label>
+          <input id="sourceFile" name="files" type="file" accept=".pptx,application/vnd.openxmlformats-officedocument.presentationml.presentation" required />
+          <ul id="sourceList" class="file-list" aria-live="polite"></ul>
+        </fieldset>
+
+        <div class="fields">
+          <label for="projectName">项目名称（可选）</label>
+          <input id="projectName" name="projectName" type="text" autocomplete="off" />
+
+          <label for="instruction">软偏好指令（可选）</label>
+          <textarea id="instruction" name="instruction" rows="3" maxlength="4000"></textarea>
+        </div>
+
+        <p id="createError" class="error" role="alert" hidden></p>
+        <button type="submit" id="createBtn" disabled>创建增强任务</button>
+      </form>
+    </section>
+
+    <section class="panel" id="jobPanel" hidden aria-labelledby="job-heading">
+      <h2 id="job-heading">任务进度</h2>
+      <p class="meta">任务 ID：<code id="jobId"></code> · 状态：<strong id="jobStatus"></strong></p>
+
+      <div id="analysisSummary" class="summary" hidden>
+        <h3>增强摘要</h3>
+        <dl id="analysisDl"></dl>
+      </div>
+
+      <div id="progressSummary" class="summary">
+        <h3>结构化进度</h3>
+        <dl id="progressDl"></dl>
+      </div>
+
+      <div id="confirmPanel" class="confirm" hidden>
+        <h3 id="confirmTitle">确认增强计划</h3>
+        <pre id="confirmSummary" class="confirm-summary"></pre>
+        <label for="rejectFeedback">驳回反馈（计划确认可用，有界）</label>
+        <textarea id="rejectFeedback" maxlength="2000" rows="2"></textarea>
+        <div class="actions">
+          <button type="button" id="approveBtn">确认</button>
+          <button type="button" id="rejectBtn" class="secondary">驳回并重提</button>
+        </div>
+        <p id="confirmError" class="error" role="alert" hidden></p>
+      </div>
+
+      <div class="actions">
+        <button type="button" id="resumeBtn" hidden>从检查点恢复</button>
+        <a id="downloadLink" class="button" hidden href="#">下载已验证 PPTX</a>
+      </div>
+      <p id="jobError" class="error" role="alert" hidden></p>
+    </section>
+  </main>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

@@ -182,12 +182,24 @@ public record PptMasterProperties(
                 BeautifyPptxProperties.forTestEnabled(tenants));
     }
 
+    /** 测试场景：开启 native-enhance 创建并允许给定租户。 */
+    public static PptMasterProperties forNativeEnhanceTest(Path repoPath, Path workspacePath, String... tenants) {
+        return new PptMasterProperties(
+                repoPath, workspacePath, "python3", Duration.ofSeconds(30), null, 1_048_576L,
+                0, 0, 0, 0, null, null, null, null, null, null,
+                NativeEnhancePptxProperties.forTestEnabled(tenants));
+    }
+
     public boolean isTemplateFillEnabled() {
         return templateFillProduction.enabled();
     }
 
     public boolean isBeautifyPptxEnabled() {
         return beautifyPptx.production().enabled();
+    }
+
+    public boolean isNativeEnhancePptxEnabled() {
+        return nativeEnhancePptx.production().enabled();
     }
 
     @Override
@@ -222,6 +234,13 @@ public record PptMasterProperties(
                 + ", beautifyExecutionStopEnabled=" + beautifyProduction.executionStopEnabled()
                 + ", nativeEnhanceMaxSourceSize=" + nativeEnhancePptx.maxSourceSize()
                 + ", nativeEnhanceMaxConcurrentJobs=" + nativeEnhancePptx.maxConcurrentJobs()
+                + ", nativeEnhanceEnabled=" + nativeEnhancePptx.production().enabled()
+                + ", nativeEnhanceAllowedTenantCount=" + nativeEnhancePptx.production().allowedTenants().size()
+                + ", nativeEnhanceAdminRole=" + nativeEnhancePptx.production().adminRole()
+                + ", nativeEnhanceCleanupDryRunEnabled=" + nativeEnhancePptx.production().cleanupDryRunEnabled()
+                + ", nativeEnhanceCleanupDeletionEnabled=" + nativeEnhancePptx.production().cleanupDeletionEnabled()
+                + ", nativeEnhanceDiagnosticsEnabled=" + nativeEnhancePptx.production().diagnosticsEnabled()
+                + ", nativeEnhanceExecutionStopEnabled=" + nativeEnhancePptx.production().executionStopEnabled()
                 + "]";
     }
 }

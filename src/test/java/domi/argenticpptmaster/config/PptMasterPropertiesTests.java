@@ -30,6 +30,10 @@ class PptMasterPropertiesTests {
         assertThat(properties.nativeEnhancePptx().maxSourceSize()).isEqualTo(104_857_600L);
         assertThat(properties.nativeEnhancePptx().initTimeout()).isEqualTo(Duration.ofMinutes(3));
         assertThat(properties.nativeEnhancePptx().maxConcurrentJobs()).isEqualTo(2);
+        assertThat(properties.nativeEnhancePptx().production().enabled()).isFalse();
+        assertThat(properties.nativeEnhancePptx().production().cleanupDeletionEnabled()).isFalse();
+        assertThat(properties.nativeEnhancePptx().production().cleanupDryRunEnabled()).isTrue();
+        assertThat(properties.nativeEnhancePptx().production().diagnosticsEnabled()).isFalse();
         assertThat(properties.templateFillProduction().cleanupDeletionEnabled()).isFalse();
         assertThat(properties.templateFillProduction().cleanupDryRunEnabled()).isTrue();
         assertThat(properties.toString()).doesNotContain("debug");

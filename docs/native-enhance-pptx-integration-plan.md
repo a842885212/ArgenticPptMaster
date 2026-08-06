@@ -79,7 +79,7 @@ ppt_to_md.py <exports/*_enhanced.pptx> -o validation/readback.md
 | `PptConfirmationStagePolicy` / `PptConfirmationStageResolver` | 已支持 `outline_confirmation`、`plan_confirmation`、图片相关 stage、`template_fill_plan`、`beautify_plan_confirmation`、`enhancement_plan_confirmation`、`audio_voice_confirmation` |
 | 上游脚本可达性 | 依赖配置的 `ppt-master.repo-path`；需确认其中包含 `native_enhance_pptx.py`（包装）、`native_narration_pptx.py`（实现）、`notes_to_audio.py`、`ppt_to_md.py`，以及 `ffprobe`（音频时长计时） |
 
-当前即使上传 `.pptx`，在 `BASIC` / `BEAUTIFY_PPTX` / `TEMPLATE_FILL` 下也不会执行 native enhance 的 `init → plan → notes/audio → apply` 契约。beautify 规划文档此前将该能力标注为「本服务暂不接入」——本规划即为其正式接入蓝图；**阶段 1–4 已接入 notes-only、托管分析、双确认门禁与完整 V1 旁白模块（audio/timings/transitions + read-back）**，阶段 5（灰度生产化）仍未完成。
+当前即使上传 `.pptx`，在 `BASIC` / `BEAUTIFY_PPTX` / `TEMPLATE_FILL` 下也不会执行 native enhance 的 `init → plan → notes/audio → apply` 契约。beautify 规划文档此前将该能力标注为「本服务暂不接入」——本规划即为其正式接入蓝图；**阶段 1–5 已完成**（含 notes-only、托管分析、双确认门禁、完整 V1 旁白模块与生产灰度/运维契约）。
 
 ### 2.2 设计结论
 
@@ -255,7 +255,7 @@ PROJECT_READY
 
 ## 5. 分阶段计划（由简单到复杂）
 
-> **文档状态**：阶段 0–4 已完成；阶段 5 仍为规划项。阶段 4 已落地 `notes_to_audio`、受控 timings/transitions apply、`ffprobe` readiness、结构化 `native-enhance-readback.json`；M3 已完成。
+> **文档状态**：阶段 0–5 已完成。阶段 5 已落地 production feature flag、生命周期/审计清理、低基数遥测、脱敏诊断、`/native-enhance-pptx/` 静态入口与 `docs/ops/` canary 契约；M4 已完成。
 
 ### 阶段 0：可行性基线与契约冻结（已完成）
 
@@ -344,7 +344,7 @@ PROJECT_READY
 完成标准：notes/audio/timings/transitions 均有明确支持或明确失败；校验报告可被前端/运维读取。
 
 **阶段 4 完成记录**：OpenSpec change `native-enhance-pptx-phase-4` 已实现。落地：`AUDIO_GENERATED` + `notes_to_audio` 包装（语音确认后）、受控 apply 参数、`NativeEnhanceReadinessContributor`（ffprobe）、`NativeEnhanceOutputVerifier` → `validation/native-enhance-readback.json`；notes-only 路径保持可用。
-### 阶段 5：生产化、灰度与运维（未开始）
+### 阶段 5：生产化、灰度与运维（已完成）
 
 目的：可安全灰度并可长期维护。
 
@@ -359,6 +359,7 @@ PROJECT_READY
 
 完成标准：灰度指标达标、故障可诊断可回滚、前后端与运维契约完整。
 
+**阶段 5 完成记录**：OpenSpec change `native-enhance-pptx-phase-5` 已实现。落地：默认关闭的 production feature flag + tenant/admin 灰度、owner/tenant 生命周期与 dry-run 清理、低基数遥测、脱敏诊断包、`/native-enhance-pptx/` 静态入口，以及 `docs/ops/native-enhance-pptx-*` 运维/canary 契约。notes-only 与 full-audio 路径共用同一门禁；永不 `--force`。
 ---
 
 ## 6. 建议的端到端执行流
@@ -433,7 +434,7 @@ Agent / 服务包装器 **不得**用 `--force` 或改写确认状态绕过门�
 2. **M1：备注 MVP** — 阶段 1 完成，notes-only 可创建、导出、回读。（**已完成**）
 3. **M2：可确认 Beta** — 阶段 2–3 完成，具备托管 init/plan、双确认门禁、恢复与观测。（**已完成**）
 4. **M3：V1 模块完整** — 阶段 4 完成，覆盖 audio/timings/transitions 与导出校验。（**已完成**）
-5. **M4：生产发布** — 阶段 5 的灰度、权限、指标与运维条件达标。（未开始）
+5. **M4：生产发布** — 阶段 5 的灰度、权限、指标与运维条件达标。（**已完成**）
 
 实施时每个阶段应独立提交、独立测试和独立审查；涉及 API/任务状态变化时，按项目约定在改动前后执行文档同步流程。
 
@@ -480,14 +481,14 @@ Agent / 服务包装器 **不得**用 `--force` 或改写确认状态绕过门�
 
 | 项 | 状态 |
 | --- | --- |
-| 规划文档 | **本文档（PLAN；阶段 0–3 已落地）** |
+| 规划文档 | **本文档（PLAN；阶段 0–5 已落地）** |
 | 阶段 0 | **已完成**（上游契约 / 兼容矩阵 / 基线报告已冻结） |
 | 阶段 1 | **已完成**（模式接入 + notes-only MVP；计划确认门禁已由阶段 3 替换） |
 | 阶段 2 | **已完成**（托管 init/plan、checkpoint 恢复、安全摘要与资源边界） |
 | 阶段 3 | **已完成**（enhancement plan / audio voice 确认门禁 + 受限 Agent profile） |
-| 阶段 4 | **未开始** |
-| 阶段 5 | **未开始** |
-| OpenSpec change | `native-enhance-pptx-phase-0` / `phase-1` / `phase-2` / `phase-3` 已归档（见 `openspec/changes/archive/`） |
-| Java 生产代码 | **阶段 3 已落地双确认门禁与 Agent profile**；完整音频生成 / 灰度仍属后续阶段 |
+| 阶段 4 | **已完成**（音频/timings/transitions、ffprobe readiness、导出 read-back） |
+| 阶段 5 | **已完成**（生产灰度、生命周期、遥测、诊断、静态入口与运维契约） |
+| OpenSpec change | `native-enhance-pptx-phase-0` … `phase-5` 已归档（见 `openspec/changes/archive/`） |
+| Java 生产代码 | **阶段 5 已落地生产化组件**；默认 flag 关闭，canary 观察后再扩 allowlist |
 
 本文档结构与分阶段深度对齐 [`beautify-pptx-integration-plan.md`](./beautify-pptx-integration-plan.md)，OOXML 模式先例参考 [`template-fill-pptx-integration-plan.md`](./template-fill-pptx-integration-plan.md)，语气参考 [`PPT_OUTLINE_INTEGRATION_PLAN.md`](./PPT_OUTLINE_INTEGRATION_PLAN.md)。上游行为以部署的 `ppt-master` 仓库中 `native-enhance-pptx` 工作流与脚本为准；若与本文冲突，先更新阶段 0 契约文档再改实现计划。

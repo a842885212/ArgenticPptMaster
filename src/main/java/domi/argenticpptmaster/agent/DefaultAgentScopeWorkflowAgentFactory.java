@@ -18,6 +18,7 @@ import domi.argenticpptmaster.service.PptOutlineStore;
 import domi.argenticpptmaster.service.PptArtifactRegistry;
 import domi.argenticpptmaster.service.PptImageManifestStore;
 import domi.argenticpptmaster.service.BeautifyPptxPlanStore;
+import domi.argenticpptmaster.service.BeautifyPptxLifecycleStore;
 import domi.argenticpptmaster.service.BeautifyPptxOutputVerifier;
 import domi.argenticpptmaster.service.BeautifyPptxSvgContractValidator;
 import io.agentscope.core.ReActAgent;
@@ -101,6 +102,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
     private final PptMasterCommandExecutor commandExecutor;
     private final PptWorkflowEvents events;
     private final TemplateFillAgentTools templateFillAgentTools;
+    private final BeautifyPptxLifecycleStore beautifyLifecycleStore;
     private final PptArtifactRegistry artifactRegistry = new PptArtifactRegistry();
 
     public DefaultAgentScopeWorkflowAgentFactory(
@@ -109,11 +111,23 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
             PptMasterCommandExecutor commandExecutor,
             PptWorkflowEvents events,
             TemplateFillAgentTools templateFillAgentTools) {
+        this(agentScopeProperties, pptMasterProperties, commandExecutor, events, templateFillAgentTools, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public DefaultAgentScopeWorkflowAgentFactory(
+            AgentScopeProperties agentScopeProperties,
+            PptMasterProperties pptMasterProperties,
+            PptMasterCommandExecutor commandExecutor,
+            PptWorkflowEvents events,
+            TemplateFillAgentTools templateFillAgentTools,
+            BeautifyPptxLifecycleStore beautifyLifecycleStore) {
         this.agentScopeProperties = agentScopeProperties;
         this.pptMasterProperties = pptMasterProperties;
         this.commandExecutor = commandExecutor;
         this.events = events;
         this.templateFillAgentTools = templateFillAgentTools;
+        this.beautifyLifecycleStore = beautifyLifecycleStore;
     }
 
     /**
@@ -1414,6 +1428,15 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                 }
             }
             runtime.job().complete(artifact);
+            if (runtime.job().workflowMode() == PptWorkflowMode.BEAUTIFY_PPTX
+                    && beautifyLifecycleStore != null) {
+                try {
+                    beautifyLifecycleStore.markTerminal(runtime.job(),
+                            beautifyLifecycleStore.retentionForTerminalStatus(runtime.job().status()));
+                } catch (RuntimeException ignored) {
+                    // best effort lifecycle update
+                }
+            }
             runtime.events().record(runtime.job(), PptJobEvent.of(
                     PptJobEventType.EXPORT_READY,
                     "ppt artifact exported",

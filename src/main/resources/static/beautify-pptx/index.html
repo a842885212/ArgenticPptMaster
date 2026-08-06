@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PPT 美化 · Argentic PPT Master</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <main class="page">
+    <header class="hero">
+      <p class="brand">Argentic PPT Master</p>
+      <h1>PPT 美化</h1>
+      <p class="lede">上传单个源 PPTX，在冻结文本/数据与页数页序的前提下仅重做布局，生成可编辑的新 PPTX。</p>
+    </header>
+
+    <section class="panel" aria-labelledby="create-heading">
+      <h2 id="create-heading">创建任务</h2>
+
+      <aside class="callout" role="note">
+        <p><strong>硬约束（创建前必须确认）：</strong></p>
+        <ul>
+          <li>文本与表格/图表<strong>数据逐字保留</strong>，不做改写或摘要。</li>
+          <li>页数与页序<strong>1:1 冻结</strong>，不拆页、不合页。</li>
+          <li>仅允许<strong>布局重做</strong>；密排页可能只能告警，无法保证视觉宽松。</li>
+        </ul>
+        <label class="ack">
+          <input type="checkbox" id="semanticAck" />
+          我已确认：内容与页序冻结，仅重做布局（这不等于确认美化计划）
+        </label>
+      </aside>
+
+      <form id="createForm" class="create-form" novalidate>
+        <fieldset class="upload-zone" id="sourceZone">
+          <legend>源 PPTX</legend>
+          <p class="hint">仅 1 个 <code>.pptx</code>，对应字段 <code>files</code>；无模板双槽位。</p>
+          <label class="file-label" for="sourceFile">选择 PPTX</label>
+          <input id="sourceFile" name="files" type="file" accept=".pptx,application/vnd.openxmlformats-officedocument.presentationml.presentation" required />
+          <ul id="sourceList" class="file-list" aria-live="polite"></ul>
+        </fieldset>
+
+        <div class="fields">
+          <label for="projectName">项目名称（可选）</label>
+          <input id="projectName" name="projectName" type="text" autocomplete="off" />
+
+          <label for="instruction">软偏好指令（可选）</label>
+          <textarea id="instruction" name="instruction" rows="3" maxlength="4000"></textarea>
+        </div>
+
+        <p id="createError" class="error" role="alert" hidden></p>
+        <button type="submit" id="createBtn" disabled>创建美化任务</button>
+      </form>
+    </section>
+
+    <section class="panel" id="jobPanel" hidden aria-labelledby="job-heading">
+      <h2 id="job-heading">任务进度</h2>
+      <p class="meta">任务 ID：<code id="jobId"></code> · 状态：<strong id="jobStatus"></strong></p>
+
+      <div id="analysisSummary" class="summary" hidden>
+        <h3>分析摘要</h3>
+        <dl id="analysisDl"></dl>
+      </div>
+
+      <div id="progressSummary" class="summary">
+        <h3>结构化进度</h3>
+        <dl id="progressDl"></dl>
+      </div>
+
+      <div id="confirmPanel" class="confirm" hidden>
+        <h3>确认美化计划</h3>
+        <pre id="confirmSummary" class="confirm-summary"></pre>
+        <label for="rejectFeedback">驳回反馈（可选，有界）</label>
+        <textarea id="rejectFeedback" maxlength="2000" rows="2"></textarea>
+        <div class="actions">
+          <button type="button" id="approveBtn">确认计划</button>
+          <button type="button" id="rejectBtn" class="secondary">驳回并重提</button>
+        </div>
+        <p id="confirmError" class="error" role="alert" hidden></p>
+      </div>
+
+      <div class="actions">
+        <button type="button" id="resumeBtn" hidden>从检查点恢复</button>
+        <a id="downloadLink" class="button" hidden href="#">下载已验证 PPTX</a>
+      </div>
+      <p id="jobError" class="error" role="alert" hidden></p>
+    </section>
+  </main>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

@@ -37,7 +37,7 @@ class PptMasterPropertiesTests {
         PptMasterProperties properties = new PptMasterProperties(
                 Path.of("repo"), Path.of("workspace"), "python3", Duration.ofMinutes(1), null, 0,
                 0, 0, 0, 0, null, null, null, null, null,
-                new BeautifyPptxProperties(100L, Duration.ofSeconds(10), Duration.ofSeconds(20),
+                BeautifyPptxProperties.forAnalysisLimits(100L, Duration.ofSeconds(10), Duration.ofSeconds(20),
                         Duration.ofSeconds(30), Duration.ofSeconds(40), 3, 4));
 
         assertThat(properties.beautifyPptx().maxSourceSize()).isEqualTo(100L);
@@ -90,6 +90,23 @@ class PptMasterPropertiesTests {
                 Duration.ofMinutes(1), Duration.ofDays(7), Duration.ofDays(7),
                 Duration.ofHours(1), Duration.ofDays(90),
                 true, false, false, false))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("retentionCompleted");
+    }
+
+    @Test
+    void beautifyProductionDefaultsToClosedAndBoundsRetention() {
+        BeautifyPptxProductionProperties production = BeautifyPptxProductionProperties.defaults();
+
+        assertThat(production.enabled()).isFalse();
+        assertThat(production.allowedTenants()).isEmpty();
+        assertThat(production.cleanupDryRunEnabled()).isTrue();
+        assertThat(production.cleanupDeletionEnabled()).isFalse();
+        assertThat(production.diagnosticsEnabled()).isFalse();
+        assertThat(production.executionStopEnabled()).isFalse();
+        assertThatThrownBy(() -> new BeautifyPptxProductionProperties(
+                false, List.of(), "ADMIN", Duration.ofMinutes(1), Duration.ofDays(7), Duration.ofDays(7),
+                Duration.ofHours(1), Duration.ofDays(90), true, false, false, false))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("retentionCompleted");
     }

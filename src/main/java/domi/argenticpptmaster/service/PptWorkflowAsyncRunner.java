@@ -36,6 +36,7 @@ public class PptWorkflowAsyncRunner {
     private final PptWorkflowEvents events;
     private final BeautifyPptxAnalysisExecutor beautifyAnalysisExecutor;
     private final TaskExecutor agentTaskExecutor;
+    private final BeautifyPptxLifecycleStore beautifyLifecycleStore;
 
     public PptWorkflowAsyncRunner(
             PptJobRepository repository,
@@ -43,11 +44,23 @@ public class PptWorkflowAsyncRunner {
             PptWorkflowEvents events,
             BeautifyPptxAnalysisExecutor beautifyAnalysisExecutor,
             @Qualifier("taskExecutor") TaskExecutor agentTaskExecutor) {
+        this(repository, agentRunner, events, beautifyAnalysisExecutor, agentTaskExecutor, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public PptWorkflowAsyncRunner(
+            PptJobRepository repository,
+            PptAgentRunner agentRunner,
+            PptWorkflowEvents events,
+            BeautifyPptxAnalysisExecutor beautifyAnalysisExecutor,
+            @Qualifier("taskExecutor") TaskExecutor agentTaskExecutor,
+            BeautifyPptxLifecycleStore beautifyLifecycleStore) {
         this.repository = repository;
         this.agentRunner = agentRunner;
         this.events = events;
         this.beautifyAnalysisExecutor = beautifyAnalysisExecutor;
         this.agentTaskExecutor = agentTaskExecutor;
+        this.beautifyLifecycleStore = beautifyLifecycleStore;
     }
 
     /** 在专用执行器中运行 beautify intake，并且只在分析成功后启动 Agent。 */
@@ -178,11 +191,20 @@ public class PptWorkflowAsyncRunner {
 
     private void failBeautifyAnalysis(PptJob job, BeautifyPptxAnalysisException ex) {
         PptJobNode node = "identity".equals(ex.stage()) || "init".equals(ex.stage()) || "import".equals(ex.stage())
+                || "execution-stop".equals(ex.stage())
                 ? PptJobNode.PROJECT_READY : PptJobNode.BEAUTIFY_ANALYZED;
         job.startNode(node);
         job.failNode(node, ex.errorCode().code() + ": " + ex.getMessage());
         events.record(job, PptJobEvent.of(PptJobEventType.JOB_FAILED, "beautify analysis failed", Map.of(
                 "stage", ex.stage(), "errorCode", ex.errorCode().code(),
                 "failureKind", ex.failureKind().name())));
+        if (beautifyLifecycleStore != null) {
+            try {
+                beautifyLifecycleStore.markTerminal(job,
+                        beautifyLifecycleStore.retentionForTerminalStatus(job.status()));
+            } catch (RuntimeException ignored) {
+                // best effort
+            }
+        }
     }
 }

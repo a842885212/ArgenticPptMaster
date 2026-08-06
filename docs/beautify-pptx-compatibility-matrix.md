@@ -1,18 +1,34 @@
-# `beautify-pptx` 阶段 0 兼容性矩阵
+# `beautify-pptx` 兼容性矩阵（阶段 4 + 阶段 5 生产注记）
 
-| 对象/条件 | 结论 | 阶段 0 证据与后续策略 |
+| 对象/条件 | 结论 | 证据与策略 |
 | --- | --- | --- |
-| 纯文本与页序 | supported | 7 页 SVG 导出后逐页回读通过；阶段 1 必须保持逐字符串与 1:1 比较 |
-| 提供图片 | supported-with-warning | 1 张图片被 intake 绑定到第 3 页并在 finalize/export 后回读；原始 crop/rotation/opacity 不属于 v1 保真项，须列入 `ignored` |
-| 普通表格 | supported | 3×3 无合并单元格表格的所有单元格在 output read-back 中匹配 |
-| 普通簇状柱图 | supported | categories、series 名称与数值全部以 SVG 文本重建并在回读中匹配 |
-| 密排页 | supported-with-warning | 第 6 页保留为单页；只能改善层级与留白，不能拆页 |
-| 近空分隔页 | supported-with-warning | 第 7 页保持单独页面；须在 `needs_confirmation` 中明确保留意图 |
-| 16:9 / 4:3 | supported | identity 实测 `1.7777→ppt169`、`1.3333→ppt43` |
-| 非标准画布 | supported-with-warning | 实测 `1.25` 进入最近标准格式分支；后续须向用户显示源尺寸与风险 |
-| 字体 `Aptos` | supported-with-warning | 当前 host 解析为 Noto Sans；阶段 1 需选择并锁定可用替代字体 |
-| combo、双轴、waterfall 图 | not-tested | 上游 inventory 已定义为 `needs_confirmation` 候选；阶段 4 前不可承诺支持 |
-| 合并单元格、多级表头 | not-tested | 未包含在固定 fixture；后续须显式确认或失败 |
-| 隐藏页、母版文本 | not-tested | 不纳入正文默认范围；后续记录为 `ignored` 并展示给用户 |
+| 纯文本与页序 | supported | 逐字符串与 1:1 页映射；SVG 契约 + 导出 read-back |
+| 提供图片 | supported-with-warning | 复用 `images/` + `image_manifest.json` 重排；crop/rotation/opacity 列入 `ignored`，不做像素级保真 |
+| 普通表格 | supported | 无合并单元格表格从冻结 rows 重生为 SVG；read-back 校验单元格文本 |
+| 普通簇状柱图 | supported | categories/series/values 冻结重生；read-back 校验数据摘要 |
+| 普通折线/饼图（可分类） | supported-with-warning | 与柱图同级冻结重生；样式差异可 warning |
+| 密排页 | supported-with-warning | 保留单页；只改善层级/留白，不拆页 |
+| 近空分隔页 | supported-with-warning | 保持单独页面；意图列入 `needs_confirmation` |
+| 16:9 / 4:3 | supported | identity `1.7777→ppt169`、`1.3333→ppt43` |
+| 非标准画布 | supported-with-warning | 进入最近标准格式；详情展示源尺寸风险 |
+| 字体缺失 / Aptos 等 | supported-with-warning | 确认时锁定 PPT-safe 字体栈 |
+| combo、双轴、waterfall 图 | supported-with-warning | 进入 `needs_confirmation`；确认接受降级后可继续并保留告警；未确认则阻断成功导出 |
+| 合并单元格、多级表头 | supported-with-warning | 进入 `needs_confirmation`；确认降级或 fail-closed |
+| 隐藏页、母版文本 | supported-with-warning | 默认列入 `ignored` 并在确认中展示，不纳入正文 |
+| 无法分类 / `unsupported_objects` | fail-closed | `BEAUTIFY_UNSUPPORTED_CONTENT`，分析阶段失败 |
 | 批量多 deck | unsupported | v1 范围外 |
-| 原地 OOXML patch、字节级/像素级复刻 | unsupported | 本流程只生成新的原生 PPTX，验收只做结构/内容契约 |
+| 原地 OOXML patch、字节级/像素级复刻 | unsupported | 仅生成新的原生 PPTX；验收做结构/内容契约 |
+| 导出 read-back | supported | `validation/beautify-readback.json`；通过后完成 `BEAUTIFY_OUTPUT_VALIDATED` |
+
+## 阶段 5 生产注记
+
+| 能力 | 默认 | 说明 |
+| --- | --- | --- |
+| Production creation flag | **off** (`beautify-pptx.production.enabled=false`) | 新建任务在 ID/工作区副作用前由 `BeautifyPptxRolloutPolicy` fail-closed |
+| Auth / ownership | required when enabled | 可信 `PptAccessContext`；同 tenant owner 或 beautify admin；历史无 owner 任务不对普通调用方开放 |
+| Lifecycle | on when jobs created with ownership | `lifecycle/manifest.json`；保留截止冻结；清理 dry-run 默认开、删除默认关 |
+| Diagnostics | **off** | `GET /api/ppt-jobs/{id}/beautify-pptx/diagnostics`；白名单 ZIP；排除源 PPTX/图片/identity/inventory/plan 全文/SVG/导出/OOXML/路径/stdout |
+| Download | authorized + validated | 仅完成且 read-back 就绪后 `downloadReady`；详情/下载受授权器保护 |
+| First-party page | `/beautify-pptx/` | 单文件上传；硬约束确认；SSE 退避；确认携带 version/digest |
+
+运维手册：[`ops/beautify-pptx-runbook.md`](ops/beautify-pptx-runbook.md)、[`ops/beautify-pptx-upgrade-rollback.md`](ops/beautify-pptx-upgrade-rollback.md)、[`ops/beautify-pptx-frontend-contract.md`](ops/beautify-pptx-frontend-contract.md)、[`ops/beautify-pptx-canary-acceptance.md`](ops/beautify-pptx-canary-acceptance.md)。

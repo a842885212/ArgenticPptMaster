@@ -155,12 +155,25 @@ public record PptMasterProperties(
                 TemplateFillProductionProperties.forTestEnabled(tenants));
     }
 
+    /** 测试场景：开启 beautify 创建并允许给定租户。 */
+    public static PptMasterProperties forBeautifyTest(Path repoPath, Path workspacePath, String... tenants) {
+        return new PptMasterProperties(
+                repoPath, workspacePath, "python3", Duration.ofSeconds(30), null, 1_048_576L,
+                0, 0, 0, 0, null, null, null, null, null,
+                BeautifyPptxProperties.forTestEnabled(tenants));
+    }
+
     public boolean isTemplateFillEnabled() {
         return templateFillProduction.enabled();
     }
 
+    public boolean isBeautifyPptxEnabled() {
+        return beautifyPptx.production().enabled();
+    }
+
     @Override
     public String toString() {
+        BeautifyPptxProductionProperties beautifyProduction = beautifyPptx.production();
         return "PptMasterProperties[repoPath=" + repoPath
                 + ", workspacePath=" + workspacePath
                 + ", pythonCommand=" + pythonCommand
@@ -181,6 +194,13 @@ public record PptMasterProperties(
                 + ", templateFillExecutionStopEnabled=" + templateFillProduction.executionStopEnabled()
                 + ", beautifyMaxSourceSize=" + beautifyPptx.maxSourceSize()
                 + ", beautifyMaxConcurrentAnalyses=" + beautifyPptx.maxConcurrentAnalyses()
+                + ", beautifyEnabled=" + beautifyProduction.enabled()
+                + ", beautifyAllowedTenantCount=" + beautifyProduction.allowedTenants().size()
+                + ", beautifyAdminRole=" + beautifyProduction.adminRole()
+                + ", beautifyCleanupDryRunEnabled=" + beautifyProduction.cleanupDryRunEnabled()
+                + ", beautifyCleanupDeletionEnabled=" + beautifyProduction.cleanupDeletionEnabled()
+                + ", beautifyDiagnosticsEnabled=" + beautifyProduction.diagnosticsEnabled()
+                + ", beautifyExecutionStopEnabled=" + beautifyProduction.executionStopEnabled()
                 + "]";
     }
 }

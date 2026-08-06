@@ -58,6 +58,12 @@ public class BeautifyPptxAnalysisExecutor {
         if (job.workflowMode() != PptWorkflowMode.BEAUTIFY_PPTX) {
             throw new IllegalArgumentException("beautify analysis is only available for BEAUTIFY_PPTX");
         }
+        if (properties.beautifyPptx().production().executionStopEnabled()) {
+            throw new BeautifyPptxAnalysisException("execution-stop",
+                    BeautifyPptxErrorCode.BEAUTIFY_EXECUTION_STOPPED,
+                    BeautifyPptxFailureKind.RESOURCE_LIMIT,
+                    "beautify-pptx execution is stopped");
+        }
         Path workspace = properties.workspacePath().toAbsolutePath().normalize();
         Path source = source(job, workspace);
         if (isCompleted(job, PptJobNode.BEAUTIFY_ANALYZED)) {

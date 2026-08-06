@@ -1,5 +1,7 @@
 package domi.argenticpptmaster.web;
 
+import domi.argenticpptmaster.exception.PptBeautifyAccessException;
+import domi.argenticpptmaster.exception.PptBeautifyUnavailableException;
 import domi.argenticpptmaster.exception.PptJobNotFoundException;
 import domi.argenticpptmaster.exception.PptJobResumeException;
 import domi.argenticpptmaster.exception.PptJobStateException;
@@ -67,8 +69,20 @@ public class GlobalExceptionHandler {
                 .body(ApiErrorResponse.of(403, "Forbidden", ex.getMessage()));
     }
 
+    @ExceptionHandler(PptBeautifyAccessException.class)
+    ResponseEntity<ApiErrorResponse> handleBeautifyAccess(PptBeautifyAccessException ex) {
+        return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                .body(ApiErrorResponse.of(403, "Forbidden", ex.getMessage()));
+    }
+
     @ExceptionHandler(PptTemplateFillUnavailableException.class)
     ResponseEntity<ApiErrorResponse> handleTemplateFillUnavailable(PptTemplateFillUnavailableException ex) {
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .body(ApiErrorResponse.of(503, "Service Unavailable", ex.getMessage()));
+    }
+
+    @ExceptionHandler(PptBeautifyUnavailableException.class)
+    ResponseEntity<ApiErrorResponse> handleBeautifyUnavailable(PptBeautifyUnavailableException ex) {
         return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
                 .body(ApiErrorResponse.of(503, "Service Unavailable", ex.getMessage()));
     }

@@ -1,0 +1,148 @@
+# Beautify-pptx Prometheus alert examples
+
+Version: **2026.08-stage5** — metric names match `BeautifyPptxTelemetry`.
+
+```yaml
+groups:
+  - name: beautify-pptx-rollout
+    rules:
+      - alert: BeautifyPptxCreationSuccessRateLow
+        expr: |
+          (
+            sum(rate(beautify_pptx_creation_total{outcome="accepted"}[30m]))
+            /
+            sum(rate(beautify_pptx_creation_total[30m]))
+          ) < 0.90
+          and sum(increase(beautify_pptx_creation_total[30m])) >= 20
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: Beautify-pptx creation success rate below rollout block threshold
+          runbook_url: docs/ops/beautify-pptx-rollout-thresholds.md
+
+      - alert: BeautifyPptxAnalysisP95High
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum(rate(beautify_pptx_stage_duration_seconds_bucket{stage=~"IDENTITY|INTAKE|INVENTORY"}[30m])) by (le)
+          ) > 300
+          and sum(increase(beautify_pptx_stage_total{stage=~"IDENTITY|INTAKE|INVENTORY"}[30m])) >= 15
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: Beautify-pptx analysis P95 latency above block threshold
+
+      - alert: BeautifyPptxExportP95High
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum(rate(beautify_pptx_stage_duration_seconds_bucket{stage="EXPORT"}[30m])) by (le)
+          ) > 600
+          and sum(increase(beautify_pptx_stage_total{stage="EXPORT"}[30m])) >= 10
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: Beautify-pptx export P95 latency above block threshold
+
+      - alert: BeautifyPptxStageFailureRateHigh
+        expr: |
+          (
+            sum(rate(beautify_pptx_stage_total{outcome="FAILURE"}[30m]))
+            /
+            sum(rate(beautify_pptx_stage_total[30m]))
+          ) > 0.10
+          and sum(increase(beautify_pptx_stage_total[30m])) >= 30
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Beautify-pptx stage failure rate elevated
+
+      - alert: BeautifyPptxReadbackFailureRateHigh
+        expr: |
+          (
+            sum(rate(beautify_pptx_stage_total{stage="READBACK",outcome="FAILURE"}[30m]))
+            /
+            sum(rate(beautify_pptx_stage_total{stage="READBACK"}[30m]))
+          ) > 0.15
+          and sum(increase(beautify_pptx_stage_total{stage="READBACK"}[30m])) >= 10
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: Beautify-pptx read-back failure rate above block threshold
+
+      - alert: BeautifyPptxReadbackErrorSpike
+        expr: |
+          sum(rate(beautify_pptx_error_total{error_code="BEAUTIFY_READBACK_FAILED"}[15m])) > 0.16
+          and sum(increase(beautify_pptx_error_total{error_code="BEAUTIFY_READBACK_FAILED"}[15m])) >= 10
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: Sustained BEAUTIFY_READBACK_FAILED errors
+
+      - alert: BeautifyPptxComplexObjectRateHigh
+        expr: |
+          (
+            sum(rate(beautify_pptx_incompatible_total[30m]))
+            /
+            sum(rate(beautify_pptx_stage_total{stage="INVENTORY"}[30m]))
+          ) > 0.40
+          and sum(increase(beautify_pptx_stage_total{stage="INVENTORY"}[30m])) >= 10
+        for: 20m
+        labels:
+          severity: warning
+        annotations:
+          summary: High complex-object alert rate during inventory
+
+      - alert: BeautifyPptxConfirmationRejectRateHigh
+        expr: |
+          (
+            sum(rate(beautify_pptx_decision_total{decision="REJECT"}[30m]))
+            /
+            sum(rate(beautify_pptx_decision_total[30m]))
+          ) > 0.40
+          and sum(increase(beautify_pptx_decision_total[30m])) >= 10
+        for: 20m
+        labels:
+          severity: warning
+        annotations:
+          summary: Beautify-pptx plan confirmation reject rate elevated
+
+      - alert: BeautifyPptxRecoveryFailureRateHigh
+        expr: |
+          (
+            sum(rate(beautify_pptx_recovery_total{outcome="FAILURE"}[1h]))
+            /
+            sum(rate(beautify_pptx_recovery_total[1h]))
+          ) > 0.40
+          and sum(increase(beautify_pptx_recovery_total[1h])) >= 5
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: Beautify-pptx recovery failures elevated
+
+      - alert: BeautifyPptxReadinessDown
+        expr: |
+          max_over_time(
+            (spring_health_status{component="beautifyPptxReadiness"} == 0)[5m:]
+          ) >= 1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Beautify-pptx readiness contributor reports DOWN
+          runbook_url: docs/ops/beautify-pptx-rollout-thresholds.md
+```
+
+Notes:
+
+- Micrometer exports counters with dot names converted to underscores in Prometheus (`beautify.pptx.creation.total` → `beautify_pptx_creation_total`).
+- Adjust `spring_health_status` label set to match your Spring Boot Actuator Prometheus scrape config.
+- Cleanup safety alerts remain manual until cleanup metrics land; see rollout thresholds doc.
+- Do not expand `allowed-tenants` or enable cleanup deletion based on alerts alone — each is an independent ops decision.

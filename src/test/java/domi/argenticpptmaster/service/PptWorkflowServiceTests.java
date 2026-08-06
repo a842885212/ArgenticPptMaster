@@ -52,6 +52,10 @@ import reactor.core.publisher.Flux;
  * 以及 Agent 任务在 Spring 上下文中的完整启动流程。
  */
 @SpringBootTest
+@org.springframework.test.context.TestPropertySource(properties = {
+        "ppt-master.beautify-pptx.enabled=true",
+        "ppt-master.beautify-pptx.allowed-tenants[0]=test-tenant"
+})
 class PptWorkflowServiceTests {
 
     @TempDir
@@ -166,6 +170,8 @@ class PptWorkflowServiceTests {
         assertThat(job.workflowMode()).isEqualTo(PptWorkflowMode.BEAUTIFY_PPTX);
         assertThat(job.sourceFiles()).singleElement().satisfies(file ->
                 assertThat(file.storedPath().getParent().getFileName().toString()).isEqualTo("uploads"));
+        assertThat(job.hasOwnership()).isTrue();
+        assertThat(Files.isRegularFile(job.workspacePath().resolve("lifecycle/manifest.json"))).isTrue();
     }
 
     @Test
@@ -466,6 +472,7 @@ class PptWorkflowServiceTests {
         Path project = tempDir.resolve("jobs/beautify-confirmation");
         PptJob job = new PptJob(java.util.UUID.randomUUID(), "beautify", "ppt169", null,
                 PptWorkflowMode.BEAUTIFY_PPTX, project);
+        job.assignOwnership("user-1", "test-tenant");
         job.prepareProject(project);
         job.completeNode(PptJobNode.BEAUTIFY_ANALYZED, Map.of("sourcePageCount", 1));
         BeautifyPptxPlanStore.PlanMetadata draft = BeautifyPptxPlanStore.storeDraft(job, """
@@ -518,6 +525,7 @@ class PptWorkflowServiceTests {
         Path project = tempDir.resolve("jobs/beautify-cancel");
         PptJob job = new PptJob(java.util.UUID.randomUUID(), "beautify", "ppt169", null,
                 PptWorkflowMode.BEAUTIFY_PPTX, project);
+        job.assignOwnership("user-1", "test-tenant");
         job.prepareProject(project);
         job.completeNode(PptJobNode.BEAUTIFY_ANALYZED, Map.of("sourcePageCount", 1));
         BeautifyPptxPlanStore.PlanMetadata draft = BeautifyPptxPlanStore.storeDraft(job, """
@@ -541,6 +549,7 @@ class PptWorkflowServiceTests {
 
         PptJob revising = new PptJob(java.util.UUID.randomUUID(), "beautify", "ppt169", null,
                 PptWorkflowMode.BEAUTIFY_PPTX, tempDir.resolve("jobs/beautify-limit"));
+        revising.assignOwnership("user-1", "test-tenant");
         revising.prepareProject(revising.workspacePath());
         revising.completeNode(PptJobNode.BEAUTIFY_ANALYZED, Map.of("sourcePageCount", 1));
         for (int i = 0; i < 5; i++) {

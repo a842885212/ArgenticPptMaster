@@ -402,7 +402,10 @@ Agent **不得**用 `--force` 或改写确认状态绕过门禁。
 | --- | --- |
 | 规划文档 | 本文档；已根据阶段 0 验收结果更新 |
 | 阶段 0 | 已完成；基线、上游契约与兼容性矩阵已冻结 |
-| 阶段 1–5 | 未开始；生产 Java/API 尚未接入 `beautify-pptx` |
-| OpenSpec change | 阶段 0 change 已完成并归档；后续阶段待另行立项 |
+| 阶段 1–2 | 已完成并归档（text MVP + managed analysis） |
+| 阶段 3 | 已完成并归档（`add-beautify-pptx-plan-confirmation`：计划确认闭环与身份锁定） |
+| 阶段 4 | 已完成并归档（`2026-07-29-add-beautify-pptx-media-validation`：多媒体对象 + 导出 read-back） |
+| 阶段 5 | 已完成实现（`productionize-beautify-pptx`：灰度门禁、授权、生命周期、遥测、诊断、第一方页面与运维资产）；生产 canary/扩容观察见任务 8.5 |
+| OpenSpec change | 阶段 0–4 已归档；阶段 5 change `productionize-beautify-pptx` 实现完成（canary 现场观察待部署后签署） |
 
 本文档结构对齐 [`template-fill-pptx-integration-plan.md`](./template-fill-pptx-integration-plan.md) 的分阶段深度，语气与目标表述参考 [`PPT_OUTLINE_INTEGRATION_PLAN.md`](./PPT_OUTLINE_INTEGRATION_PLAN.md)。

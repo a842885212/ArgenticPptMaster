@@ -9,6 +9,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import domi.argenticpptmaster.config.WebConfig;
 import domi.argenticpptmaster.domain.PptJob;
+import domi.argenticpptmaster.service.BeautifyPptxDiagnosticService;
 import domi.argenticpptmaster.service.PptJobEventPublisher;
 import domi.argenticpptmaster.service.PptWorkflowService;
 import domi.argenticpptmaster.service.PptTemplateFillService;
@@ -65,6 +66,9 @@ class PptJobControllerCorsTests {
 
     @MockitoBean
     private TemplateFillDiagnosticService diagnosticService;
+
+    @MockitoBean
+    private BeautifyPptxDiagnosticService beautifyDiagnosticService;
 
     @MockitoBean
     private PptJobEventPublisher eventPublisher;

@@ -1,5 +1,6 @@
 package domi.argenticpptmaster.web;
 
+import domi.argenticpptmaster.service.BeautifyPptxDiagnosticService;
 import domi.argenticpptmaster.service.PptJobEventPublisher;
 import domi.argenticpptmaster.service.PptJobCreateCommand;
 import domi.argenticpptmaster.service.PptTemplateFillService;
@@ -52,16 +53,19 @@ public class PptJobController {
     private final PptWorkflowService workflowService;
     private final PptTemplateFillService templateFillService;
     private final TemplateFillDiagnosticService diagnosticService;
+    private final BeautifyPptxDiagnosticService beautifyDiagnosticService;
     private final PptJobEventPublisher eventPublisher;
 
     public PptJobController(
             PptWorkflowService workflowService,
             PptTemplateFillService templateFillService,
             TemplateFillDiagnosticService diagnosticService,
+            BeautifyPptxDiagnosticService beautifyDiagnosticService,
             PptJobEventPublisher eventPublisher) {
         this.workflowService = workflowService;
         this.templateFillService = templateFillService;
         this.diagnosticService = diagnosticService;
+        this.beautifyDiagnosticService = beautifyDiagnosticService;
         this.eventPublisher = eventPublisher;
     }
 
@@ -125,6 +129,18 @@ public class PptJobController {
     @GetMapping("/{jobId}/template-fill/diagnostics")
     public ResponseEntity<Resource> exportTemplateFillDiagnostics(@PathVariable UUID jobId) {
         var bundle = diagnosticService.exportDiagnostics(jobId);
+        Resource resource = new FileSystemResource(bundle.path());
+        return ResponseEntity.ok()
+                .contentType(MediaType.parseMediaType("application/zip"))
+                .header(HttpHeaders.CONTENT_DISPOSITION,
+                        "attachment; filename=\"" + bundle.path().getFileName() + "\"")
+                .body(resource);
+    }
+
+    /** 生成并下载脱敏 beautify 诊断包（白名单字段，有大小上限）。 */
+    @GetMapping("/{jobId}/beautify-pptx/diagnostics")
+    public ResponseEntity<Resource> exportBeautifyPptxDiagnostics(@PathVariable UUID jobId) {
+        var bundle = beautifyDiagnosticService.exportDiagnostics(jobId);
         Resource resource = new FileSystemResource(bundle.path());
         return ResponseEntity.ok()
                 .contentType(MediaType.parseMediaType("application/zip"))

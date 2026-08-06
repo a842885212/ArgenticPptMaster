@@ -183,6 +183,11 @@ public enum PptJobNode {
     NOTES_GENERATED(PptWorkflowMode.NATIVE_ENHANCE_PPTX, false),
 
     /**
+     * 语音配置已确认并写入 project.json.audio（仅 audio 启用时）。
+     */
+    AUDIO_VOICE_CONFIRMED(PptWorkflowMode.NATIVE_ENHANCE_PPTX, true),
+
+    /**
      * native_enhance validate 覆盖校验已通过。
      */
     NATIVE_ENHANCE_VALIDATED(PptWorkflowMode.NATIVE_ENHANCE_PPTX, false),

@@ -102,6 +102,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
     private final PptMasterCommandExecutor commandExecutor;
     private final PptWorkflowEvents events;
     private final TemplateFillAgentTools templateFillAgentTools;
+    private final NativeEnhanceAgentTools nativeEnhanceAgentTools;
     private final BeautifyPptxLifecycleStore beautifyLifecycleStore;
     private final PptArtifactRegistry artifactRegistry = new PptArtifactRegistry();
 
@@ -111,7 +112,19 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
             PptMasterCommandExecutor commandExecutor,
             PptWorkflowEvents events,
             TemplateFillAgentTools templateFillAgentTools) {
-        this(agentScopeProperties, pptMasterProperties, commandExecutor, events, templateFillAgentTools, null);
+        this(agentScopeProperties, pptMasterProperties, commandExecutor, events, templateFillAgentTools,
+                new NativeEnhanceAgentTools(), null);
+    }
+
+    public DefaultAgentScopeWorkflowAgentFactory(
+            AgentScopeProperties agentScopeProperties,
+            PptMasterProperties pptMasterProperties,
+            PptMasterCommandExecutor commandExecutor,
+            PptWorkflowEvents events,
+            TemplateFillAgentTools templateFillAgentTools,
+            NativeEnhanceAgentTools nativeEnhanceAgentTools) {
+        this(agentScopeProperties, pptMasterProperties, commandExecutor, events, templateFillAgentTools,
+                nativeEnhanceAgentTools, null);
     }
 
     @org.springframework.beans.factory.annotation.Autowired
@@ -121,12 +134,15 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
             PptMasterCommandExecutor commandExecutor,
             PptWorkflowEvents events,
             TemplateFillAgentTools templateFillAgentTools,
+            NativeEnhanceAgentTools nativeEnhanceAgentTools,
             BeautifyPptxLifecycleStore beautifyLifecycleStore) {
         this.agentScopeProperties = agentScopeProperties;
         this.pptMasterProperties = pptMasterProperties;
         this.commandExecutor = commandExecutor;
         this.events = events;
         this.templateFillAgentTools = templateFillAgentTools;
+        this.nativeEnhanceAgentTools = nativeEnhanceAgentTools == null
+                ? new NativeEnhanceAgentTools() : nativeEnhanceAgentTools;
         this.beautifyLifecycleStore = beautifyLifecycleStore;
     }
 
@@ -147,6 +163,9 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
         if (job.workflowMode() == PptWorkflowMode.TEMPLATE_FILL) {
             return createTemplateFillAgent(job);
         }
+        if (job.workflowMode() == PptWorkflowMode.NATIVE_ENHANCE_PPTX) {
+            return createNativeEnhanceAgent(job);
+        }
         ensureMarkdownAgentPrerequisites();
         Toolkit toolkit = new Toolkit();
         toolkit.registerTool(job.workflowMode() == PptWorkflowMode.BEAUTIFY_PPTX
@@ -157,6 +176,31 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                 .name("ppt_master_orchestrator")
                 .description("Orchestrates the ppt-master workflow: markdown-first route with optional image-enhanced generation.")
                 .sysPrompt(buildSystemPrompt(job.workflowMode()))
+                .model(buildModel())
+                .toolkit(toolkit)
+                .stateStore(new JsonFileAgentStateStore(agentScopeProperties.sessionStorePath()))
+                .defaultSessionId(job.id().toString())
+                .maxIters(agentScopeProperties.maxIters())
+                .build();
+
+        PptAgentToolRuntime toolRuntime = new PptAgentToolRuntime(job, pptMasterProperties, commandExecutor, events);
+        return (messages, runtimeContext) -> {
+            RuntimeContext effectiveContext = runtimeContext == null ? RuntimeContext.empty() : runtimeContext;
+            effectiveContext.put(PptAgentToolRuntime.class, toolRuntime);
+            return agent.streamEvents(messages, effectiveContext);
+        };
+    }
+
+    private AgentScopeWorkflowAgent createNativeEnhanceAgent(PptJob job) {
+        ensureNativeEnhanceAgentPrerequisites();
+        Toolkit toolkit = new Toolkit();
+        toolkit.registerTool(nativeEnhanceAgentTools);
+        toolkit.registerTool(new UserPlanApprovalTool());
+
+        ReActAgent agent = ReActAgent.builder()
+                .name("native_enhance_planner")
+                .description("Drafts and revises native PPTX enhancement plans and notes without SVG or template-fill tools.")
+                .sysPrompt(buildSystemPrompt(PptWorkflowMode.NATIVE_ENHANCE_PPTX))
                 .model(buildModel())
                 .toolkit(toolkit)
                 .stateStore(new JsonFileAgentStateStore(agentScopeProperties.sessionStorePath()))
@@ -229,6 +273,15 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
         }
         if (!Files.exists(pptMasterProperties.repoPath().resolve(TEMPLATE_FILL_SCRIPT))) {
             throw new IllegalStateException("ppt-master template_fill_pptx not found under " + pptMasterProperties.repoPath());
+        }
+        ensureModelGroupConfigured();
+    }
+
+    private void ensureNativeEnhanceAgentPrerequisites() {
+        Path nativeEnhance = pptMasterProperties.repoPath()
+                .resolve("skills/ppt-master/scripts/native_enhance_pptx.py");
+        if (!Files.exists(nativeEnhance)) {
+            throw new IllegalStateException("ppt-master native_enhance_pptx not found under " + pptMasterProperties.repoPath());
         }
         ensureModelGroupConfigured();
     }
@@ -419,6 +472,12 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                     buildTemplateFillWorkflowPatchPrompt(),
                     buildTemplateFillToolingConstraintsPrompt());
         }
+        if (workflowMode == PptWorkflowMode.NATIVE_ENHANCE_PPTX) {
+            return String.join("\n\n",
+                    buildNativeEnhanceCoreRulesPrompt(),
+                    buildNativeEnhanceWorkflowPatchPrompt(),
+                    buildNativeEnhanceToolingConstraintsPrompt());
+        }
         if (workflowMode == PptWorkflowMode.BEAUTIFY_PPTX) {
             return String.join("\n\n", buildUpstreamCoreRulesPrompt(), buildBeautifyWorkflowPatchPrompt(),
                     buildBeautifyToolingConstraintsPrompt());
@@ -429,6 +488,41 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                         ? buildImageEnhancedWorkflowPatchPrompt()
                         : buildBasicWorkflowPatchPrompt(),
                 buildLocalToolingConstraintsPrompt());
+    }
+
+    private String buildNativeEnhanceCoreRulesPrompt() {
+        return """
+                你是 ArgenticPptMaster 的原生 PPTX 增强代理。
+
+                核心规则：
+                1. 服务端已完成 init；你只能读取 sources/*.md、slide_index 与 draft enhancement plan。
+                2. 不得改可见文本/形状/图片/图表/表格，不得改页数或页序。
+                3. 只能写入 draft enhancement plan 修订与 notes/*.md；不得调用 SVG、template-fill、beautify、image_gen。
+                4. 计划确认使用 request_plan_confirmation，stage=enhancement_plan_confirmation。
+                5. 当 audio 启用时，使用 stage=audio_voice_confirmation；未确认不得暗示已生成音频或已 apply。
+                6. 永远不得使用 --force。
+                """;
+    }
+
+    private String buildNativeEnhanceWorkflowPatchPrompt() {
+        return """
+                当前任务模式：NATIVE_ENHANCE_PPTX（成品 PPTX 备注/旁白/计时/切换增强，不改可见布局）。
+                先用只读工具检查 slide markdown / slide_index / draft plan，必要时修订草案。
+                通过 request_plan_confirmation（stage=enhancement_plan_confirmation，
+                contextData.type=native_pptx_enhancement_plan，含 version/digest 与有界摘要）请求确认。
+                确认后才可写 notes/*.md。audio 启用时再请求 audio_voice_confirmation。
+                apply/validate 由服务端在确认后托管执行。
+                """;
+    }
+
+    private String buildNativeEnhanceToolingConstraintsPrompt() {
+        return """
+                Native-enhance 本地工具约束：
+                - 仅允许 list/read sources markdown、read slide_index、read/write draft plan、write notes、inspect checkpoints、request_plan_confirmation。
+                - 禁止 init_ppt_project、SVG、finalize、template-fill、beautify、image_gen 及相关工具。
+                - request_plan_confirmation 的 stage 只能是 enhancement_plan_confirmation 或 audio_voice_confirmation。
+                - 确认载荷不得包含绝对路径或试图改页数/可见内容的字段。
+                """;
     }
 
     private String buildBeautifyWorkflowPatchPrompt() {
@@ -1062,6 +1156,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                 case ENHANCEMENT_PLAN_DRAFTED, ENHANCEMENT_PLAN_CONFIRMED ->
                         Files.isRegularFile(projectPath.resolve("analysis/enhancement_plan.json"));
                 case NOTES_GENERATED -> hasAnyFile(files.get("notes"));
+                case AUDIO_VOICE_CONFIRMED -> Files.isRegularFile(projectPath.resolve("project.json"));
                 case NATIVE_ENHANCE_VALIDATED -> Files.isRegularFile(projectPath.resolve("validation/report.json"));
                 case NATIVE_ENHANCE_OUTPUT_VALIDATED -> hasAnyFile(files.get("exports"));
                 case OUTPUT_VALIDATED -> hasAnyFile(files.get("exports"));
@@ -2007,6 +2102,9 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                             + "For BASIC and IMAGE_ENHANCED jobs, the first confirmation MUST use stage=outline_confirmation with "
                             + "contextData.type=ppt_outline and complete structured slides. For BEAUTIFY_PPTX jobs, use "
                             + "stage=beautify_plan_confirmation with contextData.type=beautify_pptx_plan after analysis. "
+                            + "For NATIVE_ENHANCE_PPTX jobs, use stage=enhancement_plan_confirmation with "
+                            + "contextData.type=native_pptx_enhancement_plan (version/digest/summary), or "
+                            + "stage=audio_voice_confirmation when audio is enabled. "
                             + "For image-enhanced workflows, this tool confirms the image manifest before generation "
                             + "and pauses after image generation failures so the operator can choose to retry failed images or continue.")
                     .inputSchema(Map.of(
@@ -2030,7 +2128,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                                                     "required", List.of("label", "value"))),
                                     "contextData", Map.of(
                                             "type", "object",
-                                            "description", "For outline_confirmation use {type: ppt_outline, version, locked:false, slides: [...]}; for beautify_plan_confirmation use {type: beautify_pptx_plan, version, digest}.")),
+                                            "description", "For outline_confirmation use {type: ppt_outline, version, locked:false, slides: [...]}; for beautify_plan_confirmation use {type: beautify_pptx_plan, version, digest}; for enhancement_plan_confirmation use {type: native_pptx_enhancement_plan, version, digest}.")),
                             "required", List.of("planSummary", "pendingSteps", "stage", "contextData")))
                     .readOnly(false)
                     .concurrencySafe(true)

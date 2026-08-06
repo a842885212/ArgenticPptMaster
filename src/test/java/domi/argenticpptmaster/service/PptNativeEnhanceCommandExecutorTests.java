@@ -150,6 +150,24 @@ class PptNativeEnhanceCommandExecutorTests {
 
         executor.runNotesOnlyMvp(jobId);
 
+        PptJob waiting = repository.findById(jobId).orElseThrow();
+        assertThat(waiting.status()).isEqualTo(PptJobStatus.WAITING_CONFIRMATION);
+        assertThat(waiting.confirmationPayload().get("stage")).isEqualTo("enhancement_plan_confirmation");
+        assertThat(waiting.nodeExecution(PptJobNode.ENHANCEMENT_PLAN_DRAFTED).status())
+                .isEqualTo(PptJobNodeStatus.COMPLETED);
+        assertThat(waiting.nodeExecution(PptJobNode.ENHANCEMENT_PLAN_CONFIRMED).status())
+                .isNotEqualTo(PptJobNodeStatus.COMPLETED);
+        assertThat(waiting.exportPath()).isEmpty();
+
+        NativeEnhancePlanStore.PlanMetadata draft = NativeEnhancePlanStore.readDraft(waiting).orElseThrow();
+        NativeEnhancePlanStore.confirmDraft(waiting, draft.version(), draft.digest(), Map.of());
+        waiting.completeNode(PptJobNode.ENHANCEMENT_PLAN_CONFIRMED, Map.of(
+                "enhancementPlanStatus", "confirmed",
+                "confirmationMode", "confirm-api"));
+        repository.save(waiting);
+
+        executor.continueAfterPlanConfirmation(jobId);
+
         PptJob completed = repository.findById(jobId).orElseThrow();
         assertThat(completed.status()).isEqualTo(PptJobStatus.COMPLETED);
         assertThat(completed.exportPath()).isPresent();
@@ -257,15 +275,64 @@ class PptNativeEnhanceCommandExecutorTests {
 
         executor.resumeFromCheckpoint(jobId, PptJobNode.NATIVE_ENHANCE_INITIALIZED);
 
-        PptJob completed = repository.findById(jobId).orElseThrow();
-        assertThat(completed.status()).isEqualTo(PptJobStatus.COMPLETED);
+        PptJob waiting = repository.findById(jobId).orElseThrow();
+        assertThat(waiting.status()).isEqualTo(PptJobStatus.WAITING_CONFIRMATION);
         assertThat(Files.readAllBytes(source)).isEqualTo(original);
-        assertThat(completed.nodeExecution(PptJobNode.ENHANCEMENT_PLAN_CONFIRMED).status())
-                .isEqualTo(PptJobNodeStatus.COMPLETED);
+        assertThat(waiting.confirmationPayload().get("stage")).isEqualTo("enhancement_plan_confirmation");
         org.mockito.Mockito.verify(commands, org.mockito.Mockito.never())
                 .runPythonScript(eq(PptNativeEnhanceCommandExecutor.NATIVE_ENHANCE_SCRIPT),
                         org.mockito.ArgumentMatchers.argThat(args -> args != null && !args.isEmpty() && "init".equals(args.get(0))),
                         any());
+    }
+
+    @Test
+    void cannotApplyWithoutConfirmedPlan() throws Exception {
+        UUID jobId = UUID.randomUUID();
+        Path workspace = properties.workspacePath().resolve("jobs").resolve(jobId.toString());
+        Files.createDirectories(workspace.resolve("uploads"));
+        Path source = workspace.resolve("uploads/source.pptx");
+        Files.write(source, new byte[] {0x50, 0x4b});
+
+        Path project = workspace.resolve("projects/phase0");
+        Files.createDirectories(project.resolve("analysis"));
+        Files.createDirectories(project.resolve("exports"));
+        Files.writeString(project.resolve("project.json"), """
+                {"schema":"native_pptx_enhancement_project.v1","kind":"native_pptx_enhancement","slide_count":1}
+                """);
+        ObjectNode index = objectMapper.createObjectNode();
+        index.put("schema", "native_pptx_enhancement_slide_index.v1");
+        index.put("slide_count", 1);
+        index.putArray("slides").addObject()
+                .put("index", 1).put("note_file", "001.md").put("slide_number", 1);
+        objectMapper.writeValue(project.resolve("analysis/slide_index.json").toFile(), index);
+        ObjectNode plan = objectMapper.createObjectNode();
+        plan.put("schema", "native_pptx_enhancement_plan.v1");
+        plan.put("status", "draft");
+        plan.put("slide_count", 1);
+        ObjectNode modules = plan.putObject("modules");
+        modules.putObject("notes").put("enabled", true);
+        modules.putObject("audio").put("enabled", false);
+        modules.putObject("timings").put("enabled", false);
+        modules.putObject("transitions").put("enabled", false);
+        objectMapper.writeValue(project.resolve("analysis/enhancement_plan.json").toFile(), plan);
+
+        PptJob job = new PptJob(jobId, "phase0", "ppt169", "notes", PptWorkflowMode.NATIVE_ENHANCE_PPTX, workspace);
+        job.addSource(new PptSourceFile("source.pptx", "application/octet-stream", 2, source));
+        job.prepareProject(project);
+        job.completeNode(PptJobNode.PROJECT_READY, Map.of());
+        job.completeNode(PptJobNode.NATIVE_ENHANCE_INITIALIZED, Map.of());
+        job.completeNode(PptJobNode.ENHANCEMENT_PLAN_DRAFTED, Map.of("enhancementPlanStatus", "draft"));
+        // Node marked confirmed but on-disk plan remains draft — apply must still refuse.
+        job.completeNode(PptJobNode.ENHANCEMENT_PLAN_CONFIRMED, Map.of("enhancementPlanStatus", "confirmed"));
+        repository.save(job);
+        NativeEnhancePlanStore.ensureDraftMetadata(job);
+
+        when(commands.runPythonScript(anyString(), anyList(), any(Duration.class)))
+                .thenReturn(new PptMasterCommandExecutor.CommandResult(0, "should not apply", false));
+
+        assertThatThrownBy(() -> executor.continueAfterPlanConfirmation(jobId))
+                .isInstanceOf(NativeEnhanceExecutionException.class)
+                .hasMessageContaining("confirmed");
     }
 
     @Test

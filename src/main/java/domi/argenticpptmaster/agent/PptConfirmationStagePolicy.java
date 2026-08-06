@@ -8,6 +8,7 @@ import domi.argenticpptmaster.domain.PptOutline;
 import domi.argenticpptmaster.domain.PptWorkflowMode;
 import domi.argenticpptmaster.service.PptImageManifestStore;
 import domi.argenticpptmaster.service.BeautifyPptxPlanStore;
+import domi.argenticpptmaster.service.NativeEnhancePlanStore;
 import domi.argenticpptmaster.service.PptOutlineStore;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -55,8 +56,54 @@ final class PptConfirmationStagePolicy {
             case "image_retry_decision" -> evaluateImageRetry(job, contextData);
             case "template_fill_plan" -> evaluateTemplateFillPlan(job, contextData);
             case "beautify_plan_confirmation" -> evaluateBeautifyPlan(job, contextData);
+            case "enhancement_plan_confirmation" -> evaluateEnhancementPlan(job, contextData);
+            case "audio_voice_confirmation" -> evaluateAudioVoice(job, contextData);
             default -> Decision.waitFor(null);
         };
+    }
+
+    private Decision evaluateEnhancementPlan(PptJob job, Map<String, Object> contextData) {
+        PptJobNode node = PptJobNode.ENHANCEMENT_PLAN_CONFIRMED;
+        if (job.workflowMode() != PptWorkflowMode.NATIVE_ENHANCE_PPTX) {
+            return Decision.reject(node, "enhancement_plan_confirmation is only valid for native-enhance-pptx jobs");
+        }
+        if (!NativeEnhancePlanStore.CONTEXT_TYPE.equals(contextData.get("type"))) {
+            return Decision.reject(node, "contextData.type must be native_pptx_enhancement_plan");
+        }
+        if (positiveVersion(contextData.get("version")) == null) {
+            return Decision.reject(node, "enhancement_plan_confirmation requires a positive version");
+        }
+        Object digest = contextData.get("digest");
+        if (!(digest instanceof String text) || text.isBlank()) {
+            return Decision.reject(node, "enhancement_plan_confirmation requires digest");
+        }
+        if (!isCompleted(job, PptJobNode.NATIVE_ENHANCE_INITIALIZED)
+                || !isCompleted(job, PptJobNode.ENHANCEMENT_PLAN_DRAFTED)) {
+            return Decision.reject(node, "enhancement_plan_confirmation requires completed init and draft");
+        }
+        int version = positiveVersion(contextData.get("version"));
+        NativeEnhancePlanStore.PlanMetadata plan = NativeEnhancePlanStore.readDraft(job).orElse(null);
+        if (plan == null || plan.version() != version || !plan.digest().equals(digest)) {
+            return Decision.reject(node, "enhancement plan version or digest does not match the persisted draft");
+        }
+        return isCompleted(job, node) ? Decision.autoAcknowledge(node) : Decision.waitFor(node);
+    }
+
+    private Decision evaluateAudioVoice(PptJob job, Map<String, Object> contextData) {
+        PptJobNode node = PptJobNode.AUDIO_VOICE_CONFIRMED;
+        if (job.workflowMode() != PptWorkflowMode.NATIVE_ENHANCE_PPTX) {
+            return Decision.reject(node, "audio_voice_confirmation is only valid for native-enhance-pptx jobs");
+        }
+        if (!"native_pptx_audio_voice".equals(contextData.get("type"))) {
+            return Decision.reject(node, "contextData.type must be native_pptx_audio_voice");
+        }
+        if (!isCompleted(job, PptJobNode.ENHANCEMENT_PLAN_CONFIRMED)) {
+            return Decision.reject(node, "audio_voice_confirmation requires completed ENHANCEMENT_PLAN_CONFIRMED");
+        }
+        if (!NativeEnhancePlanStore.audioEnabled(job)) {
+            return Decision.reject(node, "audio_voice_confirmation requires audio.enabled in the confirmed plan");
+        }
+        return isCompleted(job, node) ? Decision.autoAcknowledge(node) : Decision.waitFor(node);
     }
 
     private Decision evaluateBeautifyPlan(PptJob job, Map<String, Object> contextData) {

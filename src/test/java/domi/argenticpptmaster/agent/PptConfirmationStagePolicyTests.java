@@ -11,7 +11,10 @@ import domi.argenticpptmaster.domain.PptWorkflowMode;
 import domi.argenticpptmaster.domain.SlideOutline;
 import domi.argenticpptmaster.service.PptImageManifestStore;
 import domi.argenticpptmaster.service.BeautifyPptxPlanStore;
+import domi.argenticpptmaster.service.NativeEnhancePlanStore;
 import domi.argenticpptmaster.service.PptOutlineStore;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
@@ -44,6 +47,74 @@ class PptConfirmationStagePolicyTests {
 
         assertThat(decision.disposition()).isEqualTo(PptConfirmationStagePolicy.Disposition.WAIT_FOR_USER);
         assertThat(decision.confirmedNode()).isEqualTo(PptJobNode.BEAUTIFY_PLAN_CONFIRMED);
+    }
+
+    @Test
+    void enhancementPlanConfirmationRequiresModeDraftAndDigest() throws Exception {
+        Path projectPath = tempDir.resolve("native-enhance-project");
+        Files.createDirectories(projectPath.resolve("analysis"));
+        Files.writeString(projectPath.resolve("project.json"), "{\"schema\":\"native_pptx_enhancement_project.v1\"}");
+        ObjectMapper mapper = new ObjectMapper();
+        ObjectNode planJson = mapper.createObjectNode();
+        planJson.put("schema", "native_pptx_enhancement_plan.v1");
+        planJson.put("status", "draft");
+        planJson.put("slide_count", 1);
+        ObjectNode modules = planJson.putObject("modules");
+        modules.putObject("notes").put("enabled", true);
+        modules.putObject("audio").put("enabled", false);
+        modules.putObject("timings").put("enabled", false);
+        modules.putObject("transitions").put("enabled", false);
+        mapper.writeValue(projectPath.resolve("analysis/enhancement_plan.json").toFile(), planJson);
+
+        PptJob job = new PptJob(UUID.randomUUID(), "ne", "ppt169", null,
+                PptWorkflowMode.NATIVE_ENHANCE_PPTX, projectPath);
+        job.prepareProject(projectPath);
+        job.completeNode(PptJobNode.NATIVE_ENHANCE_INITIALIZED, Map.of());
+        job.completeNode(PptJobNode.ENHANCEMENT_PLAN_DRAFTED, Map.of());
+        NativeEnhancePlanStore.PlanMetadata draft = NativeEnhancePlanStore.ensureDraftMetadata(job);
+
+        PptConfirmationStagePolicy.Decision decision = policy.evaluate(job, "enhancement_plan_confirmation", Map.of(
+                "type", "native_pptx_enhancement_plan",
+                "version", draft.version(),
+                "digest", draft.digest()));
+        assertThat(decision.disposition()).isEqualTo(PptConfirmationStagePolicy.Disposition.WAIT_FOR_USER);
+        assertThat(decision.confirmedNode()).isEqualTo(PptJobNode.ENHANCEMENT_PLAN_CONFIRMED);
+
+        assertThat(policy.evaluate(job, "enhancement_plan_confirmation", Map.of(
+                "type", "native_pptx_enhancement_plan",
+                "version", draft.version(),
+                "digest", "wrong")).disposition())
+                .isEqualTo(PptConfirmationStagePolicy.Disposition.REJECT);
+    }
+
+    @Test
+    void audioVoiceConfirmationMapsAfterPlanConfirmed() throws Exception {
+        Path projectPath = tempDir.resolve("native-enhance-audio");
+        Files.createDirectories(projectPath.resolve("analysis"));
+        Files.writeString(projectPath.resolve("project.json"), "{\"schema\":\"native_pptx_enhancement_project.v1\"}");
+        ObjectMapper mapper = new ObjectMapper();
+        ObjectNode planJson = mapper.createObjectNode();
+        planJson.put("schema", "native_pptx_enhancement_plan.v1");
+        planJson.put("status", "draft");
+        planJson.put("slide_count", 1);
+        ObjectNode modules = planJson.putObject("modules");
+        modules.putObject("notes").put("enabled", true);
+        modules.putObject("audio").put("enabled", true);
+        modules.putObject("timings").put("enabled", false);
+        modules.putObject("transitions").put("enabled", false);
+        mapper.writeValue(projectPath.resolve("analysis/enhancement_plan.json").toFile(), planJson);
+        PptJob job = new PptJob(UUID.randomUUID(), "ne", "ppt169", null,
+                PptWorkflowMode.NATIVE_ENHANCE_PPTX, projectPath);
+        job.prepareProject(projectPath);
+        NativeEnhancePlanStore.PlanMetadata draft = NativeEnhancePlanStore.ensureDraftMetadata(job);
+        NativeEnhancePlanStore.confirmDraft(job, draft.version(), draft.digest(), Map.of(
+                "notesEnabled", true, "audioEnabled", true, "timingsEnabled", false, "transitionsEnabled", false));
+        job.completeNode(PptJobNode.ENHANCEMENT_PLAN_CONFIRMED, Map.of());
+
+        PptConfirmationStagePolicy.Decision decision = policy.evaluate(job, "audio_voice_confirmation", Map.of(
+                "type", "native_pptx_audio_voice", "provider", "edge", "voice", "zh-CN-YunjianNeural"));
+        assertThat(decision.disposition()).isEqualTo(PptConfirmationStagePolicy.Disposition.WAIT_FOR_USER);
+        assertThat(decision.confirmedNode()).isEqualTo(PptJobNode.AUDIO_VOICE_CONFIRMED);
     }
 
     @TempDir

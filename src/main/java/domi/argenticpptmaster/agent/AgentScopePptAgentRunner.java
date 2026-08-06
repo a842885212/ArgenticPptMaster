@@ -14,6 +14,7 @@ import domi.argenticpptmaster.domain.PptOutline;
 import domi.argenticpptmaster.domain.PptWorkflowMode;
 import domi.argenticpptmaster.service.PptWorkflowEvents;
 import domi.argenticpptmaster.service.BeautifyConfirmationSummary;
+import domi.argenticpptmaster.service.NativeEnhanceConfirmationSummary;
 import domi.argenticpptmaster.service.PptOutlineStore;
 import domi.argenticpptmaster.service.TemplateFillConfirmationSummary;
 import io.agentscope.core.agent.RuntimeContext;
@@ -583,6 +584,7 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
             Object contextData = input.get("contextData");
             if (job.workflowMode() != PptWorkflowMode.TEMPLATE_FILL
                     && job.workflowMode() != PptWorkflowMode.BEAUTIFY_PPTX
+                    && job.workflowMode() != PptWorkflowMode.NATIVE_ENHANCE_PPTX
                     && !hasApprovedOutline(job)
                     && !"outline_confirmation".equals(stage)
                     && !"plan_confirmation".equals(stage)) {
@@ -657,6 +659,16 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
                         ? extractStringKeyMap(contextMap)
                         : Map.of();
                 payload.put("contextData", BeautifyConfirmationSummary.fromWorkspace(job, agentContext));
+            } else if ("enhancement_plan_confirmation".equals(stage)) {
+                Map<String, Object> agentContext = contextData instanceof Map<?, ?> contextMap
+                        ? extractStringKeyMap(contextMap)
+                        : Map.of();
+                payload.put("contextData", NativeEnhanceConfirmationSummary.fromWorkspace(job, agentContext));
+            } else if ("audio_voice_confirmation".equals(stage)) {
+                Map<String, Object> agentContext = contextData instanceof Map<?, ?> contextMap
+                        ? extractStringKeyMap(contextMap)
+                        : Map.of();
+                payload.put("contextData", NativeEnhanceConfirmationSummary.audioVoiceContext(job, agentContext));
             } else if (contextData instanceof Map<?, ?> contextMap) {
                 if (contextMap.get("slides") != null) {
                     validateOutlineContextData(contextMap);

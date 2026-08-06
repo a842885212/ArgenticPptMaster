@@ -46,6 +46,8 @@ public final class PptConfirmationStageResolver {
             case "plan_confirmation" -> PptJobNode.PLAN_CONFIRMED;
             case "template_fill_plan" -> PptJobNode.FILL_PLAN_CONFIRMED;
             case "beautify_plan_confirmation" -> PptJobNode.BEAUTIFY_PLAN_CONFIRMED;
+            case "enhancement_plan_confirmation" -> PptJobNode.ENHANCEMENT_PLAN_CONFIRMED;
+            case "audio_voice_confirmation" -> PptJobNode.AUDIO_VOICE_CONFIRMED;
             default -> PptJobNode.PLAN_CONFIRMED;
         };
     }

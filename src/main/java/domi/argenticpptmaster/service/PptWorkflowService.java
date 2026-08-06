@@ -475,11 +475,23 @@ public class PptWorkflowService {
             return submitBeautifyPlanRevision(
                     job, confirmationId, firstNonBlank(overallComment, comment));
         }
+        if (isEnhancementPlanConfirmation(job) && effectiveAction == PptConfirmationAction.REQUEST_REVISION) {
+            return submitEnhancementPlanRevision(
+                    job, confirmationId, firstNonBlank(overallComment, comment));
+        }
         validateImageManifestConfirmation(job, effectiveAction);
         validateImageReadyContinuation(job, effectiveAction);
         if (isTemplateFillPlanConfirmation(job)) {
             return submitTemplateFillPlanConfirmation(
                     job, confirmationId, effectiveAction, firstNonBlank(overallComment, comment));
+        }
+        if (isEnhancementPlanConfirmation(job)) {
+            return submitEnhancementPlanConfirmation(
+                    job, confirmationId, effectiveAction, answers == null ? Map.of() : answers);
+        }
+        if (isAudioVoiceConfirmation(job)) {
+            return submitAudioVoiceConfirmation(
+                    job, confirmationId, effectiveAction, answers == null ? Map.of() : answers);
         }
         List<PptSlideEdit> validatedEdits = validateSlideEdits(job, effectiveAction, slideEdits);
         if (effectiveAction == PptConfirmationAction.REQUEST_REVISION && isLockedOutline(job)
@@ -781,6 +793,123 @@ public class PptWorkflowService {
 
     private boolean isBeautifyPlanConfirmation(PptJob job) {
         return "beautify_plan_confirmation".equals(job.confirmationPayload().get("stage"));
+    }
+
+    private boolean isEnhancementPlanConfirmation(PptJob job) {
+        return "enhancement_plan_confirmation".equals(job.confirmationPayload().get("stage"));
+    }
+
+    private boolean isAudioVoiceConfirmation(PptJob job) {
+        return "audio_voice_confirmation".equals(job.confirmationPayload().get("stage"));
+    }
+
+    private static final int MAX_NATIVE_ENHANCE_REVISION_ATTEMPTS = 5;
+
+    private PptJob submitEnhancementPlanConfirmation(
+            PptJob job,
+            String confirmationId,
+            PptConfirmationAction action,
+            Map<String, Object> answers) {
+        if (action != PptConfirmationAction.APPROVE) {
+            throw new PptJobStateException("unsupported confirmation action for enhancement plan");
+        }
+        Object contextData = job.confirmationPayload().get("contextData");
+        if (!(contextData instanceof Map<?, ?> context)
+                || !NativeEnhancePlanStore.CONTEXT_TYPE.equals(context.get("type"))) {
+            throw new PptJobStateException("enhancement plan confirmation payload is invalid");
+        }
+        int expectedVersion = extractPositiveInt(context.get("version"), "version");
+        String expectedDigest = extractNonBlankString(context.get("digest"), "digest");
+        NativeEnhancePlanStore.PlanMetadata confirmed =
+                NativeEnhancePlanStore.confirmDraft(job, expectedVersion, expectedDigest, answers);
+        List<String> enabled = NativeEnhancePlanStore.readPlan(job)
+                .map(plan -> NativeEnhancePlanStore.moduleSwitches(plan).entrySet().stream()
+                        .filter(e -> Boolean.TRUE.equals(e.getValue()))
+                        .map(Map.Entry::getKey)
+                        .toList())
+                .orElse(List.of("notes"));
+        job.completeNode(PptJobNode.ENHANCEMENT_PLAN_CONFIRMED, Map.of(
+                "enhancementPlanStatus", "confirmed",
+                "enabledModules", enabled,
+                "confirmationMode", "confirm-api",
+                "version", confirmed.version(),
+                "digest", confirmed.digest(),
+                "audioVoiceStatus", NativeEnhancePlanStore.audioEnabled(job) ? "pending" : "skipped"));
+        PptConfirmation confirmation = new PptConfirmation(
+                confirmationId, true, answers, null, Instant.now(),
+                action, null, List.of(), null, List.of());
+        job.receiveConfirmation(confirmation);
+        repository.save(job);
+        events.record(job, PptJobEvent.of(PptJobEventType.CONFIRMATION_RECEIVED, "confirmation received",
+                Map.of("confirmationId", confirmationId,
+                        "confirmedNode", PptJobNode.ENHANCEMENT_PLAN_CONFIRMED.name(),
+                        "action", action.name())));
+        if (nativeEnhanceAsyncRunner != null) {
+            nativeEnhanceAsyncRunner.continueAfterPlanConfirmation(job.id());
+        }
+        return job;
+    }
+
+    private PptJob submitEnhancementPlanRevision(PptJob job, String confirmationId, String revisionComment) {
+        if (isBlank(revisionComment)) {
+            throw new PptJobStateException("enhancement plan revision requires feedback");
+        }
+        if (job.resumeCount() >= MAX_NATIVE_ENHANCE_REVISION_ATTEMPTS) {
+            throw new PptJobStateException(
+                    "maximum native-enhance revision attempts reached: " + MAX_NATIVE_ENHANCE_REVISION_ATTEMPTS);
+        }
+        PptConfirmation confirmation = new PptConfirmation(
+                confirmationId, true, Map.of(), revisionComment, Instant.now(),
+                PptConfirmationAction.REQUEST_REVISION, revisionComment, List.of(), null, List.of());
+        job.receiveConfirmation(confirmation);
+        events.record(job, PptJobEvent.of(PptJobEventType.CONFIRMATION_RECEIVED, "confirmation received",
+                Map.of("confirmationId", confirmationId, "action", PptConfirmationAction.REQUEST_REVISION.name())));
+        job.resetEnhancementPlanDrafting(revisionComment);
+        job.startNewResumeAttempt();
+        repository.save(job);
+        if (nativeEnhanceAsyncRunner != null) {
+            nativeEnhanceAsyncRunner.reopenEnhancementPlanConfirmation(job.id());
+        }
+        return job;
+    }
+
+    private PptJob submitAudioVoiceConfirmation(
+            PptJob job,
+            String confirmationId,
+            PptConfirmationAction action,
+            Map<String, Object> answers) {
+        if (action == PptConfirmationAction.REQUEST_REVISION) {
+            throw new PptJobStateException("audio voice revision is not supported; cancel or approve");
+        }
+        if (action != PptConfirmationAction.APPROVE) {
+            throw new PptJobStateException("unsupported confirmation action for audio voice");
+        }
+        Object contextData = job.confirmationPayload().get("contextData");
+        if (!(contextData instanceof Map<?, ?> context)
+                || !"native_pptx_audio_voice".equals(context.get("type"))) {
+            throw new PptJobStateException("audio voice confirmation payload is invalid");
+        }
+        Map<String, Object> merged = new java.util.LinkedHashMap<>();
+        context.forEach((k, v) -> merged.put(String.valueOf(k), v));
+        merged.putAll(answers);
+        NativeEnhancePlanStore.writeProjectAudio(job, merged);
+        job.completeNode(PptJobNode.AUDIO_VOICE_CONFIRMED, Map.of(
+                "audioVoiceStatus", "confirmed",
+                "provider", merged.getOrDefault("provider", "edge"),
+                "voice", merged.getOrDefault("voice", "")));
+        PptConfirmation confirmation = new PptConfirmation(
+                confirmationId, true, answers, null, Instant.now(),
+                action, null, List.of(), null, List.of());
+        job.receiveConfirmation(confirmation);
+        repository.save(job);
+        events.record(job, PptJobEvent.of(PptJobEventType.CONFIRMATION_RECEIVED, "confirmation received",
+                Map.of("confirmationId", confirmationId,
+                        "confirmedNode", PptJobNode.AUDIO_VOICE_CONFIRMED.name(),
+                        "action", action.name())));
+        if (nativeEnhanceAsyncRunner != null) {
+            nativeEnhanceAsyncRunner.continueAfterAudioVoiceConfirmation(job.id());
+        }
+        return job;
     }
 
     private BeautifyPptxPlanStore.PlanMetadata confirmBeautifyPlan(PptJob job, Map<String, Object> answers) {

@@ -277,6 +277,27 @@ public class PptJob {
         touch();
     }
 
+    /**
+     * 用户要求修订 native-enhance 计划时重置草拟/确认节点，保留 init 产物与有界反馈。
+     */
+    public synchronized void resetEnhancementPlanDrafting(String feedback) {
+        if (workflowMode != PptWorkflowMode.NATIVE_ENHANCE_PPTX) {
+            return;
+        }
+        nodeExecutions.put(PptJobNode.ENHANCEMENT_PLAN_DRAFTED,
+                PptNodeExecution.pending(PptJobNode.ENHANCEMENT_PLAN_DRAFTED));
+        nodeExecutions.put(PptJobNode.ENHANCEMENT_PLAN_CONFIRMED,
+                PptNodeExecution.pending(PptJobNode.ENHANCEMENT_PLAN_CONFIRMED));
+        nodeExecutions.put(PptJobNode.AUDIO_VOICE_CONFIRMED,
+                PptNodeExecution.pending(PptJobNode.AUDIO_VOICE_CONFIRMED));
+        currentConfirmationId = null;
+        confirmationPayload = Map.of();
+        confirmation = null;
+        currentNode = PptJobNode.ENHANCEMENT_PLAN_DRAFTED;
+        status = PptJobStatus.PREPARING;
+        touch();
+    }
+
     public synchronized void updateTemplateAnalysis(TemplateFillAnalysisSummary summary) {
         this.templateAnalysisSummary = summary;
         touch();

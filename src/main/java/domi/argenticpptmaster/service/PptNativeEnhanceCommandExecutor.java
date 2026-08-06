@@ -58,12 +58,22 @@ public class PptNativeEnhanceCommandExecutor {
         this.commands = commands;
     }
 
-    /** 阶段 1/2 notes-only：从托管 init 起完整执行。 */
+    /** 阶段 3：托管 init/draft 后打开确认门禁；已确认则继续 notes-only。 */
     public void runNotesOnlyMvp(UUID jobId) {
         resumeFromCheckpoint(jobId, null);
     }
 
-    /** 按 checkpoint 跳过已完成阶段继续 notes-only 路径。 */
+    /** 确认 enhancement plan 后继续 notes→validate→apply（audio 启用时先语音门禁）。 */
+    public void continueAfterPlanConfirmation(UUID jobId) {
+        resumeFromCheckpoint(jobId, PptJobNode.ENHANCEMENT_PLAN_CONFIRMED);
+    }
+
+    /** 确认语音配置后继续（Phase 3 无 TTS；notes-only 且 audio 关闭时通常不会走到这里）。 */
+    public void continueAfterAudioVoiceConfirmation(UUID jobId) {
+        resumeFromCheckpoint(jobId, PptJobNode.AUDIO_VOICE_CONFIRMED);
+    }
+
+    /** 按 checkpoint 跳过已完成阶段；未确认时仅打开确认等待。 */
     public void resumeFromCheckpoint(UUID jobId, PptJobNode checkpoint) {
         PptJob job = repository.findById(jobId).orElseThrow();
         if (job.workflowMode() != PptWorkflowMode.NATIVE_ENHANCE_PPTX) {
@@ -74,13 +84,19 @@ public class PptNativeEnhanceCommandExecutor {
             Path source = requireSourcePptx(job, workspace);
             Path project = resolveOrInitProject(job, workspace, source, checkpoint);
             if (!nodeCompleted(job, PptJobNode.ENHANCEMENT_PLAN_CONFIRMED)) {
-                confirmNotesOnlyPlan(job, project);
+                openEnhancementPlanConfirmation(job, project);
+                return;
             }
             int slideCount;
             if (nodeCompleted(job, PptJobNode.NOTES_GENERATED)) {
                 slideCount = readSlideCount(project);
             } else {
                 slideCount = injectMinimalNotes(job, project);
+            }
+            if (NativeEnhancePlanStore.audioEnabled(job)
+                    && !nodeCompleted(job, PptJobNode.AUDIO_VOICE_CONFIRMED)) {
+                openAudioVoiceConfirmation(job);
+                return;
             }
             if (!nodeCompleted(job, PptJobNode.NATIVE_ENHANCE_VALIDATED)) {
                 validateProject(job, project);
@@ -108,6 +124,38 @@ public class PptNativeEnhanceCommandExecutor {
         }
     }
 
+    /** 驳回修订后：保留 init，提升 draft version，重新打开确认。 */
+    public void reopenEnhancementPlanConfirmation(UUID jobId) {
+        PptJob job = repository.findById(jobId).orElseThrow();
+        Path project = job.projectPath()
+                .orElseThrow(() -> new NativeEnhanceExecutionException(
+                        "PLAN", NativeEnhanceErrorCode.NATIVE_ENHANCE_PLAN_FAILED, "project path is missing"));
+        if (!nodeCompleted(job, PptJobNode.ENHANCEMENT_PLAN_DRAFTED)) {
+            NativeEnhancePlanStore.PlanMetadata draft = NativeEnhancePlanStore.bumpDraftVersion(job);
+            int slideCount = readSlideCount(project);
+            recordCheckpoint(job, PptJobNode.ENHANCEMENT_PLAN_DRAFTED, Map.of(
+                    "enhancementPlanStatus", "draft",
+                    "enabledModules", readEnabledModules(project.resolve("analysis").resolve("enhancement_plan.json")),
+                    "sourcePageCount", slideCount,
+                    "version", draft.version(),
+                    "digest", draft.digest()));
+        } else {
+            NativeEnhancePlanStore.bumpDraftVersion(job);
+            // re-complete draft evidence with new version/digest
+            NativeEnhancePlanStore.PlanMetadata draft = NativeEnhancePlanStore.readDraft(job)
+                    .orElseThrow(() -> new NativeEnhanceExecutionException(
+                            "PLAN", NativeEnhanceErrorCode.NATIVE_ENHANCE_PLAN_FAILED, "draft missing after bump"));
+            int slideCount = readSlideCount(project);
+            recordCheckpoint(job, PptJobNode.ENHANCEMENT_PLAN_DRAFTED, Map.of(
+                    "enhancementPlanStatus", "draft",
+                    "enabledModules", readEnabledModules(project.resolve("analysis").resolve("enhancement_plan.json")),
+                    "sourcePageCount", slideCount,
+                    "version", draft.version(),
+                    "digest", draft.digest()));
+        }
+        openEnhancementPlanConfirmation(job, project);
+    }
+
     private Path resolveOrInitProject(PptJob job, Path workspace, Path source, PptJobNode checkpoint) {
         boolean skipInit = canSkipInit(job, checkpoint);
         if (skipInit) {
@@ -126,7 +174,7 @@ public class PptNativeEnhanceCommandExecutor {
         }
         return switch (checkpoint) {
             case NATIVE_ENHANCE_INITIALIZED, ENHANCEMENT_PLAN_DRAFTED, ENHANCEMENT_PLAN_CONFIRMED,
-                    NOTES_GENERATED, NATIVE_ENHANCE_VALIDATED, PPT_EXPORTED,
+                    NOTES_GENERATED, AUDIO_VOICE_CONFIRMED, NATIVE_ENHANCE_VALIDATED, PPT_EXPORTED,
                     NATIVE_ENHANCE_OUTPUT_VALIDATED -> true;
             default -> false;
         };
@@ -169,6 +217,7 @@ public class PptNativeEnhanceCommandExecutor {
         }
         job.prepareProject(projectDir);
         int slideCount = readSlideCount(projectDir);
+        NativeEnhancePlanStore.PlanMetadata draftMeta = NativeEnhancePlanStore.ensureDraftMetadata(job);
         List<String> draftModules = readEnabledModules(projectDir.resolve("analysis").resolve("enhancement_plan.json"));
         if (draftModules.isEmpty()) {
             draftModules = List.of("notes");
@@ -184,49 +233,49 @@ public class PptNativeEnhanceCommandExecutor {
         recordCheckpoint(job, PptJobNode.ENHANCEMENT_PLAN_DRAFTED, Map.of(
                 "enhancementPlanStatus", "draft",
                 "enabledModules", draftModules,
-                "sourcePageCount", slideCount));
+                "sourcePageCount", slideCount,
+                "version", draftMeta.version(),
+                "digest", draftMeta.digest()));
         return projectDir;
     }
 
-    private void confirmNotesOnlyPlan(PptJob job, Path project) {
-        Path planPath = requireInside(project, project.resolve("analysis").resolve("enhancement_plan.json"), "plan");
-        // Ensure draft checkpoint exists before MVP server-write confirm (Phase 3 hook).
+    private void openEnhancementPlanConfirmation(PptJob job, Path project) {
         if (!nodeCompleted(job, PptJobNode.ENHANCEMENT_PLAN_DRAFTED)) {
+            NativeEnhancePlanStore.PlanMetadata draft = NativeEnhancePlanStore.ensureDraftMetadata(job);
             int slideCount = readSlideCount(project);
             recordCheckpoint(job, PptJobNode.ENHANCEMENT_PLAN_DRAFTED, Map.of(
                     "enhancementPlanStatus", "draft",
-                    "enabledModules", List.of("notes"),
-                    "sourcePageCount", slideCount));
+                    "enabledModules", readEnabledModules(project.resolve("analysis").resolve("enhancement_plan.json")),
+                    "sourcePageCount", slideCount,
+                    "version", draft.version(),
+                    "digest", draft.digest()));
+        } else {
+            NativeEnhancePlanStore.ensureDraftMetadata(job);
         }
-        try {
-            JsonNode root = objectMapper.readTree(planPath.toFile());
-            if (!(root instanceof ObjectNode plan)) {
-                throw new NativeEnhanceExecutionException(
-                        "PLAN", NativeEnhanceErrorCode.NATIVE_ENHANCE_PLAN_FAILED, "enhancement plan must be an object");
-            }
-            plan.put("status", "confirmed");
-            ObjectNode modules = plan.with("modules");
-            enableModule(modules, "notes", true);
-            enableModule(modules, "audio", false);
-            enableModule(modules, "timings", false);
-            enableModule(modules, "transitions", false);
-            objectMapper.writerWithDefaultPrettyPrinter().writeValue(planPath.toFile(), plan);
-        } catch (NativeEnhanceExecutionException ex) {
-            throw ex;
-        } catch (IOException | RuntimeException ex) {
-            throw new NativeEnhanceExecutionException(
-                    "PLAN", NativeEnhanceErrorCode.NATIVE_ENHANCE_PLAN_FAILED, "failed to confirm notes-only plan", ex);
-        }
-        recordCheckpoint(job, PptJobNode.ENHANCEMENT_PLAN_CONFIRMED, Map.of(
-                "enhancementPlanStatus", "confirmed",
-                "enabledModules", List.of("notes"),
-                "confirmationMode", "mvp-server-write",
-                "audioVoiceStatus", "skipped"));
+        Map<String, Object> contextData = NativeEnhanceConfirmationSummary.fromWorkspace(job, Map.of());
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("stage", "enhancement_plan_confirmation");
+        payload.put("message", "Confirm native-enhance module plan before notes/apply");
+        payload.put("contextData", contextData);
+        String confirmationId = UUID.randomUUID().toString();
+        job.requireConfirmation(confirmationId, payload);
+        repository.save(job);
+        events.record(job, PptJobEvent.of(PptJobEventType.CONFIRMATION_REQUIRED, "waiting for enhancement plan confirmation",
+                Map.of("confirmationId", confirmationId, "stage", "enhancement_plan_confirmation",
+                        "version", contextData.get("version"), "digest", contextData.get("digest"))));
     }
 
-    private static void enableModule(ObjectNode modules, String name, boolean enabled) {
-        ObjectNode module = modules.with(name);
-        module.put("enabled", enabled);
+    private void openAudioVoiceConfirmation(PptJob job) {
+        Map<String, Object> contextData = NativeEnhanceConfirmationSummary.audioVoiceContext(job, Map.of());
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("stage", "audio_voice_confirmation");
+        payload.put("message", "Confirm TTS voice before audio generation");
+        payload.put("contextData", contextData);
+        String confirmationId = UUID.randomUUID().toString();
+        job.requireConfirmation(confirmationId, payload);
+        repository.save(job);
+        events.record(job, PptJobEvent.of(PptJobEventType.CONFIRMATION_REQUIRED, "waiting for audio voice confirmation",
+                Map.of("confirmationId", confirmationId, "stage", "audio_voice_confirmation")));
     }
 
     private int injectMinimalNotes(PptJob job, Path project) throws IOException {
@@ -292,6 +341,22 @@ public class PptNativeEnhanceCommandExecutor {
     }
 
     private Path applyProject(PptJob job, Path project) throws IOException {
+        if (!nodeCompleted(job, PptJobNode.ENHANCEMENT_PLAN_CONFIRMED)) {
+            throw new NativeEnhanceExecutionException(
+                    "APPLY", NativeEnhanceErrorCode.NATIVE_ENHANCE_APPLY_FAILED,
+                    "enhancement plan must be confirmed before apply");
+        }
+        if (NativeEnhancePlanStore.audioEnabled(job) && !nodeCompleted(job, PptJobNode.AUDIO_VOICE_CONFIRMED)) {
+            throw new NativeEnhanceExecutionException(
+                    "APPLY", NativeEnhanceErrorCode.NATIVE_ENHANCE_APPLY_FAILED,
+                    "audio voice must be confirmed before apply");
+        }
+        NativeEnhancePlanStore.PlanMetadata plan = NativeEnhancePlanStore.read(job).orElse(null);
+        if (plan == null || !"confirmed".equals(plan.status())) {
+            throw new NativeEnhanceExecutionException(
+                    "APPLY", NativeEnhanceErrorCode.NATIVE_ENHANCE_APPLY_FAILED,
+                    "enhancement plan status must be confirmed");
+        }
         NativeEnhancePptxProperties limits = properties.nativeEnhancePptx();
         Path exportsDir = requireInside(project, project.resolve("exports"), "exports");
         Files.createDirectories(exportsDir);

@@ -38,6 +38,33 @@ public class PptNativeEnhanceAsyncRunner {
     }
 
     @Async("nativeEnhanceExecutor")
+    public void continueAfterPlanConfirmation(UUID jobId) {
+        try {
+            commandExecutor.continueAfterPlanConfirmation(jobId);
+        } catch (RuntimeException ex) {
+            // Job failure is already recorded by the executor.
+        }
+    }
+
+    @Async("nativeEnhanceExecutor")
+    public void continueAfterAudioVoiceConfirmation(UUID jobId) {
+        try {
+            commandExecutor.continueAfterAudioVoiceConfirmation(jobId);
+        } catch (RuntimeException ex) {
+            // Job failure is already recorded by the executor.
+        }
+    }
+
+    @Async("nativeEnhanceExecutor")
+    public void reopenEnhancementPlanConfirmation(UUID jobId) {
+        try {
+            commandExecutor.reopenEnhancementPlanConfirmation(jobId);
+        } catch (RuntimeException ex) {
+            // Job failure is already recorded by the executor.
+        }
+    }
+
+    @Async("nativeEnhanceExecutor")
     public void resumeFromCheckpoint(UUID jobId, PptJobNode checkpoint) {
         try {
             commandExecutor.resumeFromCheckpoint(jobId, checkpoint);

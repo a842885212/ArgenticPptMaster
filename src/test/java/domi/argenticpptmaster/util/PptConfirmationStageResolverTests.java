@@ -49,6 +49,16 @@ class PptConfirmationStageResolverTests {
                 .isEqualTo(PptJobNode.OUTLINE_CONFIRMED);
     }
 
+    @Test
+    void resolvesEnhancementPlanAndAudioVoiceStages() {
+        assertThat(PptConfirmationStageResolver.resolveConfirmedNode(
+                Map.of("stage", "enhancement_plan_confirmation")))
+                .isEqualTo(PptJobNode.ENHANCEMENT_PLAN_CONFIRMED);
+        assertThat(PptConfirmationStageResolver.resolveConfirmedNode(
+                Map.of("stage", "audio_voice_confirmation")))
+                .isEqualTo(PptJobNode.AUDIO_VOICE_CONFIRMED);
+    }
+
     /**
      * 验证图片重试决策 stage 不推进任何 checkpoint 节点，返回 null。
      */

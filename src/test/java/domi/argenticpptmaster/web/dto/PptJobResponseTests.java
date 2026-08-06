@@ -9,6 +9,7 @@ import domi.argenticpptmaster.domain.PptWorkflowMode;
 import domi.argenticpptmaster.domain.PptSourceFile;
 import domi.argenticpptmaster.domain.PptTemplateFile;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
@@ -329,6 +330,50 @@ class PptJobResponseTests {
                 .containsEntry("pageCountMatch", true)
                 .containsEntry("report", "validation/beautify-readback.json");
         assertThat(response.toString()).doesNotContain("/private/workspace");
+    }
+
+    @Test
+    void exposesNativeEnhanceSafeSummaryWithoutAbsolutePaths() {
+        PptJob job = new PptJob(UUID.randomUUID(), "enhance", "ppt169", null,
+                PptWorkflowMode.NATIVE_ENHANCE_PPTX, Path.of("/private/workspace/job"));
+        job.completeNode(PptJobNode.NATIVE_ENHANCE_INITIALIZED, Map.of(
+                "sourcePageCount", 2,
+                "schema", "native_pptx_enhancement_project.v1"));
+        job.completeNode(PptJobNode.ENHANCEMENT_PLAN_DRAFTED, Map.of(
+                "enhancementPlanStatus", "draft",
+                "enabledModules", List.of("notes"),
+                "sourcePageCount", 2));
+        job.completeNode(PptJobNode.ENHANCEMENT_PLAN_CONFIRMED, Map.of(
+                "enhancementPlanStatus", "confirmed",
+                "enabledModules", List.of("notes"),
+                "confirmationMode", "mvp-server-write",
+                "audioVoiceStatus", "skipped"));
+        job.completeNode(PptJobNode.NOTES_GENERATED, Map.of(
+                "notesCoverage", Map.of("ready", 2, "total", 2)));
+        job.completeNode(PptJobNode.NATIVE_ENHANCE_VALIDATED, Map.of(
+                "validateReportSummary", Map.of("plan_status", "confirmed", "missingNotes", 0)));
+        job.completeNode(PptJobNode.PPT_EXPORTED, Map.of("exportFileName", "source_enhanced.pptx"));
+        job.completeNode(PptJobNode.NATIVE_ENHANCE_OUTPUT_VALIDATED, Map.of(
+                "exportFileName", "source_enhanced.pptx",
+                "pageCountMatch", true,
+                "actualPageCount", 2,
+                "readbackPresent", true));
+        job.complete(Path.of("/private/workspace/job/exports/source_enhanced.pptx"));
+
+        PptJobResponse response = PptJobResponse.from(job);
+
+        assertThat(response.nativeEnhanceAnalysis()).isNotNull();
+        assertThat(response.nativeEnhanceAnalysis().sourcePageCount()).isEqualTo(2);
+        assertThat(response.nativeEnhanceAnalysis().enhancementPlanStatus()).isEqualTo("confirmed");
+        assertThat(response.nativeEnhanceAnalysis().enabledModules()).containsExactly("notes");
+        assertThat(response.nativeEnhanceAnalysis().audioVoiceStatus()).isEqualTo("skipped");
+        assertThat(response.nativeEnhanceAnalysis().exportFileName()).isEqualTo("source_enhanced.pptx");
+        assertThat(response.nativeEnhanceAnalysis().outputValidationSummary())
+                .containsEntry("status", "PASSED")
+                .containsEntry("pageCountMatch", true);
+        assertThat(response.beautifyAnalysis()).isNull();
+        assertThat(response.toString()).doesNotContain("/private/workspace");
+        assertThat(response.toString()).doesNotContain("notes/001.md");
     }
 
     @Test

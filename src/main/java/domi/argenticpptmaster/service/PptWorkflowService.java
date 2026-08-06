@@ -290,6 +290,7 @@ public class PptWorkflowService {
         validateBeautifyContract(mode, files, command.templateFile(), command.templateConstraintsJson());
         validateNativeEnhanceContract(mode, files, command.templateFile(), command.templateConstraintsJson());
         validateBeautifyUploadSize(mode, files);
+        validateNativeEnhanceUploadSize(mode, files);
         PptAccessContext access = null;
         if (mode == PptWorkflowMode.TEMPLATE_FILL) {
             access = accessContextResolver.resolve().orElse(null);
@@ -1094,7 +1095,7 @@ public class PptWorkflowService {
             }
             templateFillAsyncRunner.resumeFromCheckpoint(job.id(), checkpoint);
         } else if (job.workflowMode() == PptWorkflowMode.NATIVE_ENHANCE_PPTX) {
-            submitNativeEnhanceMvp(job.id());
+            submitNativeEnhanceResume(job.id(), checkpoint);
         } else if (job.workflowMode() == PptWorkflowMode.BEAUTIFY_PPTX
                 && checkpoint != PptJobNode.BEAUTIFY_ANALYZED) {
             if (beautifyTelemetry != null) {
@@ -1138,7 +1139,28 @@ public class PptWorkflowService {
             repository.save(job);
             return;
         }
-        nativeEnhanceAsyncRunner.runNotesOnlyMvp(jobId);
+        try {
+            nativeEnhanceAsyncRunner.runNotesOnlyMvp(jobId);
+        } catch (java.util.concurrent.RejectedExecutionException ex) {
+            nativeEnhanceAsyncRunner.rejectAdmission(jobId);
+        }
+    }
+
+    private void submitNativeEnhanceResume(UUID jobId, PptJobNode checkpoint) {
+        if (nativeEnhanceAsyncRunner == null) {
+            PptJob job = getJob(jobId);
+            job.fail(NativeEnhanceErrorCode.NATIVE_ENHANCE_INIT_FAILED.code()
+                    + ": native-enhance runner is unavailable");
+            events.record(job, PptJobEvent.of(PptJobEventType.JOB_FAILED, "native-enhance runner unavailable",
+                    Map.of("errorCode", NativeEnhanceErrorCode.NATIVE_ENHANCE_INIT_FAILED.code())));
+            repository.save(job);
+            return;
+        }
+        try {
+            nativeEnhanceAsyncRunner.resumeFromCheckpoint(jobId, checkpoint);
+        } catch (java.util.concurrent.RejectedExecutionException ex) {
+            nativeEnhanceAsyncRunner.rejectAdmission(jobId);
+        }
     }
 
     /** 任务终态时写入 beautify 生命周期保留截止时间（清单缺失时忽略）。 */
@@ -1168,10 +1190,16 @@ public class PptWorkflowService {
         if (job.workflowMode() == PptWorkflowMode.BEAUTIFY_PPTX && job.lastCompletedNode().isEmpty()) {
             return PptJobNode.PROJECT_READY;
         }
+        if (job.workflowMode() == PptWorkflowMode.NATIVE_ENHANCE_PPTX && job.lastCompletedNode().isEmpty()) {
+            return PptJobNode.PROJECT_READY;
+        }
         PptJobNode checkpoint = job.lastCompletedNode().orElseThrow(() ->
                 new PptJobResumeException(job.id(), "job has no completed node to resume from"));
         if (job.workflowMode() == PptWorkflowMode.TEMPLATE_FILL) {
             return resolveTemplateFillCheckpoint(job, checkpoint);
+        }
+        if (job.workflowMode() == PptWorkflowMode.NATIVE_ENHANCE_PPTX) {
+            return resolveNativeEnhanceCheckpoint(job, checkpoint);
         }
         if (checkpoint.ordinal() > PptJobNode.OUTLINE_CONFIRMED.ordinal()) {
             job.projectPath().ifPresent(path -> {
@@ -1202,6 +1230,24 @@ public class PptWorkflowService {
             }
             throw new PptJobResumeException(job.id(),
                     "template analysis artifacts are missing; re-prepare and analyze required");
+        }
+        return checkpoint;
+    }
+
+    /**
+     * Native-enhance 恢复时校验 init 产物；缺失时回退到可重新 init 的边界，不覆盖 uploads。
+     */
+    private PptJobNode resolveNativeEnhanceCheckpoint(PptJob job, PptJobNode checkpoint) {
+        if (checkpoint == PptJobNode.PROJECT_READY) {
+            return checkpoint;
+        }
+        Path project = job.projectPath().orElse(null);
+        boolean artifactsReady = project != null
+                && Files.isRegularFile(project.resolve("project.json"))
+                && Files.isRegularFile(project.resolve("analysis/slide_index.json"))
+                && Files.isRegularFile(project.resolve("analysis/enhancement_plan.json"));
+        if (checkpoint.ordinal() >= PptJobNode.NATIVE_ENHANCE_INITIALIZED.ordinal() && !artifactsReady) {
+            return PptJobNode.PROJECT_READY;
         }
         return checkpoint;
     }
@@ -1440,6 +1486,18 @@ public class PptWorkflowService {
                 .orElseThrow(() -> new PptJobStateException("beautify-pptx workflow requires exactly one source file"));
         if (source.getSize() > properties.beautifyPptx().maxSourceSize()) {
             throw new PptJobStateException("BEAUTIFY_UPLOAD_TOO_LARGE: source file exceeds size limit");
+        }
+    }
+
+    private void validateNativeEnhanceUploadSize(PptWorkflowMode mode, List<MultipartFile> files) {
+        if (mode != PptWorkflowMode.NATIVE_ENHANCE_PPTX) {
+            return;
+        }
+        MultipartFile source = files.stream().filter(file -> file != null && !file.isEmpty()).findFirst()
+                .orElseThrow(() -> new PptJobStateException(
+                        "native-enhance-pptx workflow requires exactly one source file"));
+        if (source.getSize() > properties.nativeEnhancePptx().maxSourceSize()) {
+            throw new PptJobStateException("NATIVE_ENHANCE_UPLOAD_TOO_LARGE: source file exceeds size limit");
         }
     }
 

@@ -3,12 +3,15 @@ package domi.argenticpptmaster.service;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import domi.argenticpptmaster.config.NativeEnhancePptxProperties;
 import domi.argenticpptmaster.config.PptMasterProperties;
 import domi.argenticpptmaster.domain.NativeEnhanceErrorCode;
 import domi.argenticpptmaster.domain.PptJob;
 import domi.argenticpptmaster.domain.PptJobEvent;
 import domi.argenticpptmaster.domain.PptJobEventType;
 import domi.argenticpptmaster.domain.PptJobNode;
+import domi.argenticpptmaster.domain.PptJobNodeStatus;
+import domi.argenticpptmaster.domain.PptNodeExecution;
 import domi.argenticpptmaster.domain.PptWorkflowMode;
 import domi.argenticpptmaster.infra.PptMasterCommandExecutor;
 import domi.argenticpptmaster.repository.PptJobRepository;
@@ -29,7 +32,7 @@ import java.util.zip.ZipFile;
 import org.springframework.stereotype.Component;
 
 /**
- * 原生增强受限命令编排器：仅允许 {@code native_enhance_pptx.py} 与只读 {@code ppt_to_md.py}，
+ * Native-enhance 受限命令编排：托管 init/draft plan、checkpoint 恢复与 notes-only MVP。
  * 永不传递 {@code --force}。
  */
 @Component
@@ -55,8 +58,13 @@ public class PptNativeEnhanceCommandExecutor {
         this.commands = commands;
     }
 
-    /** 阶段 1 notes-only MVP：init → confirmed plan → notes → validate → apply → 轻量输出校验。 */
+    /** 阶段 1/2 notes-only：从托管 init 起完整执行。 */
     public void runNotesOnlyMvp(UUID jobId) {
+        resumeFromCheckpoint(jobId, null);
+    }
+
+    /** 按 checkpoint 跳过已完成阶段继续 notes-only 路径。 */
+    public void resumeFromCheckpoint(UUID jobId, PptJobNode checkpoint) {
         PptJob job = repository.findById(jobId).orElseThrow();
         if (job.workflowMode() != PptWorkflowMode.NATIVE_ENHANCE_PPTX) {
             throw new IllegalArgumentException("native-enhance executor requires NATIVE_ENHANCE_PPTX");
@@ -64,12 +72,28 @@ public class PptNativeEnhanceCommandExecutor {
         Path workspace = job.workspacePath().toAbsolutePath().normalize();
         try {
             Path source = requireSourcePptx(job, workspace);
-            Path project = initProject(job, workspace, source);
-            confirmNotesOnlyPlan(job, project);
-            int slideCount = injectMinimalNotes(job, project);
-            validateProject(job, project);
-            Path export = applyProject(job, project);
-            lightOutputValidate(job, workspace, project, export, slideCount);
+            Path project = resolveOrInitProject(job, workspace, source, checkpoint);
+            if (!nodeCompleted(job, PptJobNode.ENHANCEMENT_PLAN_CONFIRMED)) {
+                confirmNotesOnlyPlan(job, project);
+            }
+            int slideCount;
+            if (nodeCompleted(job, PptJobNode.NOTES_GENERATED)) {
+                slideCount = readSlideCount(project);
+            } else {
+                slideCount = injectMinimalNotes(job, project);
+            }
+            if (!nodeCompleted(job, PptJobNode.NATIVE_ENHANCE_VALIDATED)) {
+                validateProject(job, project);
+            }
+            Path export;
+            if (nodeCompleted(job, PptJobNode.PPT_EXPORTED)) {
+                export = requireUniqueEnhancedExport(project.resolve("exports"));
+            } else {
+                export = applyProject(job, project);
+            }
+            if (!nodeCompleted(job, PptJobNode.NATIVE_ENHANCE_OUTPUT_VALIDATED)) {
+                lightOutputValidate(job, workspace, project, export, slideCount);
+            }
         } catch (NativeEnhanceExecutionException ex) {
             fail(job, ex);
             throw ex;
@@ -84,7 +108,39 @@ public class PptNativeEnhanceCommandExecutor {
         }
     }
 
+    private Path resolveOrInitProject(PptJob job, Path workspace, Path source, PptJobNode checkpoint) {
+        boolean skipInit = canSkipInit(job, checkpoint);
+        if (skipInit) {
+            Path existing = job.projectPath().orElse(null);
+            if (existing != null && initArtifactsReusable(existing)) {
+                return existing.toAbsolutePath().normalize();
+            }
+        }
+        return initProject(job, workspace, source);
+    }
+
+    private boolean canSkipInit(PptJob job, PptJobNode checkpoint) {
+        if (checkpoint == null) {
+            return nodeCompleted(job, PptJobNode.NATIVE_ENHANCE_INITIALIZED)
+                    || nodeCompleted(job, PptJobNode.ENHANCEMENT_PLAN_DRAFTED);
+        }
+        return switch (checkpoint) {
+            case NATIVE_ENHANCE_INITIALIZED, ENHANCEMENT_PLAN_DRAFTED, ENHANCEMENT_PLAN_CONFIRMED,
+                    NOTES_GENERATED, NATIVE_ENHANCE_VALIDATED, PPT_EXPORTED,
+                    NATIVE_ENHANCE_OUTPUT_VALIDATED -> true;
+            default -> false;
+        };
+    }
+
+    private boolean initArtifactsReusable(Path projectDir) {
+        return Files.isRegularFile(projectDir.resolve("project.json"))
+                && Files.isRegularFile(projectDir.resolve("analysis").resolve("slide_index.json"))
+                && Files.isRegularFile(projectDir.resolve("analysis").resolve("enhancement_plan.json"))
+                && !Files.exists(projectDir.resolve("svg_output"));
+    }
+
     private Path initProject(PptJob job, Path workspace, Path source) {
+        NativeEnhancePptxProperties limits = properties.nativeEnhancePptx();
         Path projectsRoot = requireInside(workspace, workspace.resolve("projects"), "projects root");
         Path projectDir = requireInside(workspace, projectsRoot.resolve(sanitizeSlug(job.projectName())), "project");
         try {
@@ -102,7 +158,7 @@ public class PptNativeEnhanceCommandExecutor {
         args.add(projectDir.toString());
         args.add("--projects-root");
         args.add(projectsRoot.toString());
-        run(job, "INIT", NATIVE_ENHANCE_SCRIPT, args, properties.commandTimeout(),
+        run(job, "INIT", NATIVE_ENHANCE_SCRIPT, args, limits.initTimeout(),
                 NativeEnhanceErrorCode.NATIVE_ENHANCE_INIT_FAILED);
         requireFile(projectDir.resolve("project.json"), "INIT");
         requireFile(projectDir.resolve("analysis").resolve("slide_index.json"), "INIT");
@@ -112,19 +168,36 @@ public class PptNativeEnhanceCommandExecutor {
                     "INIT", NativeEnhanceErrorCode.NATIVE_ENHANCE_INIT_FAILED, "svg_output must not be created");
         }
         job.prepareProject(projectDir);
-        recordCheckpoint(job, PptJobNode.PROJECT_READY, Map.of("projectReady", true));
         int slideCount = readSlideCount(projectDir);
+        List<String> draftModules = readEnabledModules(projectDir.resolve("analysis").resolve("enhancement_plan.json"));
+        if (draftModules.isEmpty()) {
+            draftModules = List.of("notes");
+        }
+        recordCheckpoint(job, PptJobNode.PROJECT_READY, Map.of(
+                "projectReady", true,
+                "sourcePageCount", slideCount));
         recordCheckpoint(job, PptJobNode.NATIVE_ENHANCE_INITIALIZED, Map.of(
                 "sourcePageCount", slideCount,
-                "schema", "native_pptx_enhancement_project.v1"));
+                "schema", "native_pptx_enhancement_project.v1",
+                "slideIndexReady", true,
+                "sourcesArchived", true));
         recordCheckpoint(job, PptJobNode.ENHANCEMENT_PLAN_DRAFTED, Map.of(
                 "enhancementPlanStatus", "draft",
-                "enabledModules", List.of("notes")));
+                "enabledModules", draftModules,
+                "sourcePageCount", slideCount));
         return projectDir;
     }
 
     private void confirmNotesOnlyPlan(PptJob job, Path project) {
         Path planPath = requireInside(project, project.resolve("analysis").resolve("enhancement_plan.json"), "plan");
+        // Ensure draft checkpoint exists before MVP server-write confirm (Phase 3 hook).
+        if (!nodeCompleted(job, PptJobNode.ENHANCEMENT_PLAN_DRAFTED)) {
+            int slideCount = readSlideCount(project);
+            recordCheckpoint(job, PptJobNode.ENHANCEMENT_PLAN_DRAFTED, Map.of(
+                    "enhancementPlanStatus", "draft",
+                    "enabledModules", List.of("notes"),
+                    "sourcePageCount", slideCount));
+        }
         try {
             JsonNode root = objectMapper.readTree(planPath.toFile());
             if (!(root instanceof ObjectNode plan)) {
@@ -147,7 +220,8 @@ public class PptNativeEnhanceCommandExecutor {
         recordCheckpoint(job, PptJobNode.ENHANCEMENT_PLAN_CONFIRMED, Map.of(
                 "enhancementPlanStatus", "confirmed",
                 "enabledModules", List.of("notes"),
-                "confirmationMode", "mvp-server-write"));
+                "confirmationMode", "mvp-server-write",
+                "audioVoiceStatus", "skipped"));
     }
 
     private static void enableModule(ObjectNode modules, String name, boolean enabled) {
@@ -180,30 +254,45 @@ public class PptNativeEnhanceCommandExecutor {
             count++;
         }
         recordCheckpoint(job, PptJobNode.NOTES_GENERATED, Map.of(
-                "notesCoverage", Map.of("ready", count, "total", count)));
+                "notesCoverage", Map.of("ready", count, "total", count),
+                "audioCoverage", Map.of("ready", 0, "total", 0),
+                "audioVoiceStatus", "skipped"));
         return count;
     }
 
     private void validateProject(PptJob job, Path project) {
+        NativeEnhancePptxProperties limits = properties.nativeEnhancePptx();
         run(job, "VALIDATE", NATIVE_ENHANCE_SCRIPT, List.of("validate", project.toString()),
-                properties.commandTimeout(), NativeEnhanceErrorCode.NATIVE_ENHANCE_VALIDATE_FAILED);
+                limits.validateTimeout(), NativeEnhanceErrorCode.NATIVE_ENHANCE_VALIDATE_FAILED);
         Path report = project.resolve("validation").resolve("report.json");
         Map<String, Object> summary = new LinkedHashMap<>();
         summary.put("validated", true);
+        Map<String, Object> reportSummary = new LinkedHashMap<>();
         if (Files.isRegularFile(report)) {
             try {
                 JsonNode node = objectMapper.readTree(report.toFile());
-                summary.put("planStatus", node.path("plan_status").asText(""));
-                summary.put("notesCount", node.path("notes_count").asInt(0));
-                summary.put("missingNotes", node.path("missing_notes").size());
+                String planStatus = node.path("plan_status").asText("");
+                int notesCount = node.path("notes_count").asInt(0);
+                int missingNotes = node.path("missing_notes").size();
+                int missingAudio = node.path("missing_audio").size();
+                summary.put("planStatus", planStatus);
+                summary.put("notesCount", notesCount);
+                summary.put("missingNotes", missingNotes);
+                reportSummary.put("plan_status", planStatus);
+                reportSummary.put("missingNotes", missingNotes);
+                reportSummary.put("missingAudio", missingAudio);
             } catch (IOException ignored) {
                 // keep minimal summary
             }
+        }
+        if (!reportSummary.isEmpty()) {
+            summary.put("validateReportSummary", reportSummary);
         }
         recordCheckpoint(job, PptJobNode.NATIVE_ENHANCE_VALIDATED, summary);
     }
 
     private Path applyProject(PptJob job, Path project) throws IOException {
+        NativeEnhancePptxProperties limits = properties.nativeEnhancePptx();
         Path exportsDir = requireInside(project, project.resolve("exports"), "exports");
         Files.createDirectories(exportsDir);
         job.startExport();
@@ -212,7 +301,7 @@ public class PptNativeEnhanceCommandExecutor {
         args.add("apply");
         args.add(project.toString());
         args.add("--overwrite");
-        run(job, "APPLY", NATIVE_ENHANCE_SCRIPT, args, properties.commandTimeout(),
+        run(job, "APPLY", NATIVE_ENHANCE_SCRIPT, args, limits.applyTimeout(),
                 NativeEnhanceErrorCode.NATIVE_ENHANCE_APPLY_FAILED);
         Path export = requireUniqueEnhancedExport(exportsDir);
         recordCheckpoint(job, PptJobNode.PPT_EXPORTED, Map.of(
@@ -222,6 +311,7 @@ public class PptNativeEnhanceCommandExecutor {
 
     private void lightOutputValidate(PptJob job, Path workspace, Path project, Path export, int expectedSlides)
             throws IOException {
+        NativeEnhancePptxProperties limits = properties.nativeEnhancePptx();
         int actualSlides = countSlides(export);
         if (expectedSlides > 0 && actualSlides != expectedSlides) {
             throw new NativeEnhanceExecutionException(
@@ -234,7 +324,7 @@ public class PptNativeEnhanceCommandExecutor {
         Path readback = validationDir.resolve("readback.md");
         run(job, "READBACK", PPT_TO_MD_SCRIPT,
                 List.of(export.toString(), "-o", readback.toString()),
-                properties.commandTimeout(),
+                limits.applyTimeout(),
                 NativeEnhanceErrorCode.NATIVE_ENHANCE_OUTPUT_INVALID);
         Path deliveryDir = requireInside(workspace, workspace.resolve("exports"), "delivery exports");
         Files.createDirectories(deliveryDir);
@@ -245,6 +335,7 @@ public class PptNativeEnhanceCommandExecutor {
         summary.put("sourcePageCount", expectedSlides);
         summary.put("actualPageCount", actualSlides);
         summary.put("readbackPresent", Files.isRegularFile(readback));
+        summary.put("pageCountMatch", expectedSlides <= 0 || expectedSlides == actualSlides);
         recordCheckpoint(job, PptJobNode.NATIVE_ENHANCE_OUTPUT_VALIDATED, summary);
         job.complete(delivery);
         repository.save(job);
@@ -269,6 +360,27 @@ public class PptNativeEnhanceCommandExecutor {
             return objectMapper.readTree(slideIndex.toFile()).path("slide_count").asInt(0);
         } catch (IOException ex) {
             return 0;
+        }
+    }
+
+    private List<String> readEnabledModules(Path planPath) {
+        if (!Files.isRegularFile(planPath)) {
+            return List.of();
+        }
+        try {
+            JsonNode modules = objectMapper.readTree(planPath.toFile()).path("modules");
+            if (!modules.isObject()) {
+                return List.of();
+            }
+            List<String> enabled = new ArrayList<>();
+            modules.fields().forEachRemaining(entry -> {
+                if (entry.getValue().path("enabled").asBoolean(false)) {
+                    enabled.add(entry.getKey());
+                }
+            });
+            return List.copyOf(enabled);
+        } catch (IOException ex) {
+            return List.of();
         }
     }
 
@@ -353,7 +465,7 @@ public class PptNativeEnhanceCommandExecutor {
         repository.save(job);
         events.record(job, PptJobEvent.of(PptJobEventType.NODE_COMPLETED,
                 "node completed: " + node.name(),
-                Map.of("node", node.name(), "summary", summary)));
+                Map.of("node", node.name(), "summary", sanitizeSummary(summary))));
     }
 
     private void fail(PptJob job, NativeEnhanceExecutionException ex) {
@@ -366,6 +478,29 @@ public class PptNativeEnhanceCommandExecutor {
         repository.save(job);
         events.record(job, PptJobEvent.of(PptJobEventType.JOB_FAILED, "native-enhance failed",
                 Map.of("stage", ex.stage(), "errorCode", ex.errorCode().code())));
+    }
+
+    private static Map<String, Object> sanitizeSummary(Map<String, Object> summary) {
+        Map<String, Object> safe = new LinkedHashMap<>();
+        summary.forEach((key, value) -> {
+            if (value instanceof Path path) {
+                safe.put(key, path.getFileName().toString());
+            } else if (value instanceof String text && looksLikeAbsolutePath(text)) {
+                safe.put(key, Path.of(text).getFileName().toString());
+            } else {
+                safe.put(key, value);
+            }
+        });
+        return Map.copyOf(safe);
+    }
+
+    private static boolean looksLikeAbsolutePath(String text) {
+        return text.startsWith("/") || text.matches("^[A-Za-z]:\\\\.*");
+    }
+
+    private static boolean nodeCompleted(PptJob job, PptJobNode node) {
+        PptNodeExecution execution = job.nodeExecution(node);
+        return execution != null && execution.status() == PptJobNodeStatus.COMPLETED;
     }
 
     private static Path requireInside(Path root, Path candidate, String label) {

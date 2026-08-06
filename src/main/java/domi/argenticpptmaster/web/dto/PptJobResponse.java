@@ -76,6 +76,7 @@ public record PptJobResponse(
         String fillPlanStatus,
         TemplateFillProgressResponse templateFillProgress,
         BeautifyAnalysisResponse beautifyAnalysis,
+        NativeEnhanceAnalysisResponse nativeEnhanceAnalysis,
         String errorMessage,
         List<PptJobEvent> events) {
 
@@ -122,8 +123,141 @@ public record PptJobResponse(
                 planStatus,
                 templateProgress,
                 buildBeautifyAnalysis(job),
+                buildNativeEnhanceAnalysis(job),
                 job.errorMessage().orElse(null),
                 job.events());
+    }
+
+    private static NativeEnhanceAnalysisResponse buildNativeEnhanceAnalysis(PptJob job) {
+        if (job.workflowMode() != PptWorkflowMode.NATIVE_ENHANCE_PPTX) {
+            return null;
+        }
+        PptNodeExecution initialized = job.nodeExecution(PptJobNode.NATIVE_ENHANCE_INITIALIZED);
+        PptNodeExecution drafted = job.nodeExecution(PptJobNode.ENHANCEMENT_PLAN_DRAFTED);
+        PptNodeExecution confirmed = job.nodeExecution(PptJobNode.ENHANCEMENT_PLAN_CONFIRMED);
+        PptNodeExecution notes = job.nodeExecution(PptJobNode.NOTES_GENERATED);
+        PptNodeExecution validated = job.nodeExecution(PptJobNode.NATIVE_ENHANCE_VALIDATED);
+        PptNodeExecution exported = job.nodeExecution(PptJobNode.PPT_EXPORTED);
+        PptNodeExecution outputValidated = job.nodeExecution(PptJobNode.NATIVE_ENHANCE_OUTPUT_VALIDATED);
+
+        Map<String, Object> initSummary = summaryOf(initialized);
+        Map<String, Object> draftSummary = summaryOf(drafted);
+        Map<String, Object> confirmedSummary = summaryOf(confirmed);
+        Map<String, Object> notesSummary = summaryOf(notes);
+        Map<String, Object> validateSummary = summaryOf(validated);
+        Map<String, Object> exportSummary = summaryOf(exported);
+        Map<String, Object> outputSummary = summaryOf(outputValidated);
+
+        Integer pageCount = firstNumber(initSummary.get("sourcePageCount"),
+                draftSummary.get("sourcePageCount"),
+                outputSummary.get("sourcePageCount"));
+
+        String planStatus = "none";
+        if (completed(confirmed)) {
+            planStatus = string(confirmedSummary.get("enhancementPlanStatus"), "confirmed");
+        } else if (completed(drafted)) {
+            planStatus = string(draftSummary.get("enhancementPlanStatus"), "draft");
+        }
+
+        List<String> enabledModules = firstStringList(
+                confirmedSummary.get("enabledModules"),
+                draftSummary.get("enabledModules"));
+
+        Map<String, Object> notesCoverage = map(notesSummary.get("notesCoverage"));
+        Map<String, Object> audioCoverage = map(notesSummary.get("audioCoverage"));
+        String audioVoiceStatus = string(confirmedSummary.get("audioVoiceStatus"),
+                string(notesSummary.get("audioVoiceStatus"),
+                        completed(confirmed) ? "skipped" : "none"));
+        Map<String, Object> transitionSummary = map(firstNonNull(
+                confirmedSummary.get("transitionSummary"),
+                draftSummary.get("transitionSummary")));
+        Map<String, Object> validateReportSummary = map(validateSummary.get("validateReportSummary"));
+        if (validateReportSummary.isEmpty() && completed(validated)) {
+            Map<String, Object> fallback = new LinkedHashMap<>();
+            if (validateSummary.get("planStatus") != null) {
+                fallback.put("plan_status", validateSummary.get("planStatus"));
+            }
+            if (validateSummary.get("missingNotes") != null) {
+                fallback.put("missingNotes", validateSummary.get("missingNotes"));
+            }
+            validateReportSummary = Map.copyOf(fallback);
+        }
+        Map<String, Object> outputValidationSummary = new LinkedHashMap<>();
+        if (completed(outputValidated)) {
+            outputValidationSummary.put("status", "PASSED");
+            Object pageMatch = outputSummary.get("pageCountMatch");
+            if (pageMatch != null) {
+                outputValidationSummary.put("pageCountMatch", pageMatch);
+            }
+            Object actual = outputSummary.get("actualPageCount");
+            if (actual != null) {
+                outputValidationSummary.put("actualPageCount", actual);
+            }
+            Object readback = outputSummary.get("readbackPresent");
+            if (readback != null) {
+                outputValidationSummary.put("readbackPresent", readback);
+            }
+        } else {
+            outputValidationSummary.put("status", "not-run");
+        }
+        String exportFileName = string(exportSummary.get("exportFileName"),
+                string(outputSummary.get("exportFileName"),
+                        job.exportPath().map(path -> path.getFileName().toString()).orElse(null)));
+
+        return new NativeEnhanceAnalysisResponse(
+                pageCount,
+                planStatus,
+                enabledModules,
+                notesCoverage.isEmpty() ? null : notesCoverage,
+                audioCoverage.isEmpty() ? null : audioCoverage,
+                audioVoiceStatus,
+                transitionSummary.isEmpty() ? null : transitionSummary,
+                validateReportSummary.isEmpty() ? null : validateReportSummary,
+                Map.copyOf(outputValidationSummary),
+                exportFileName);
+    }
+
+    private static Map<String, Object> summaryOf(PptNodeExecution execution) {
+        return execution == null || execution.summary() == null ? Map.of() : execution.summary();
+    }
+
+    private static boolean completed(PptNodeExecution execution) {
+        return execution != null && execution.status() == PptJobNodeStatus.COMPLETED;
+    }
+
+    private static Integer firstNumber(Object... values) {
+        for (Object value : values) {
+            Integer number = number(value);
+            if (number != null) {
+                return number;
+            }
+        }
+        return null;
+    }
+
+    private static Object firstNonNull(Object... values) {
+        for (Object value : values) {
+            if (value != null) {
+                return value;
+            }
+        }
+        return null;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static List<String> firstStringList(Object... values) {
+        for (Object value : values) {
+            if (value instanceof List<?> list) {
+                List<String> result = new java.util.ArrayList<>();
+                for (Object item : list) {
+                    if (item != null) {
+                        result.add(String.valueOf(item));
+                    }
+                }
+                return List.copyOf(result);
+            }
+        }
+        return List.of();
     }
 
     private static BeautifyAnalysisResponse buildBeautifyAnalysis(PptJob job) {

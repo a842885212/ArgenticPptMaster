@@ -27,6 +27,9 @@ class PptMasterPropertiesTests {
         assertThat(properties.beautifyPptx().maxSourceSize()).isEqualTo(104_857_600L);
         assertThat(properties.beautifyPptx().identityTimeout()).isEqualTo(Duration.ofMinutes(1));
         assertThat(properties.beautifyPptx().maxConcurrentAnalyses()).isEqualTo(2);
+        assertThat(properties.nativeEnhancePptx().maxSourceSize()).isEqualTo(104_857_600L);
+        assertThat(properties.nativeEnhancePptx().initTimeout()).isEqualTo(Duration.ofMinutes(3));
+        assertThat(properties.nativeEnhancePptx().maxConcurrentJobs()).isEqualTo(2);
         assertThat(properties.templateFillProduction().cleanupDeletionEnabled()).isFalse();
         assertThat(properties.templateFillProduction().cleanupDryRunEnabled()).isTrue();
         assertThat(properties.toString()).doesNotContain("debug");
@@ -44,6 +47,21 @@ class PptMasterPropertiesTests {
         assertThat(properties.beautifyPptx().inventoryTimeout()).isEqualTo(Duration.ofSeconds(40));
         assertThat(properties.beautifyPptx().maxConcurrentAnalyses()).isEqualTo(3);
         assertThat(properties.beautifyPptx().queueCapacity()).isEqualTo(4);
+    }
+
+    @Test
+    void acceptsNativeEnhanceResourceOverrides() {
+        PptMasterProperties properties = new PptMasterProperties(
+                Path.of("repo"), Path.of("workspace"), "python3", Duration.ofMinutes(1), null, 0,
+                0, 0, 0, 0, null, null, null, null, null, null,
+                NativeEnhancePptxProperties.forLimits(50L, Duration.ofSeconds(5), Duration.ofSeconds(6),
+                        Duration.ofSeconds(7), Duration.ofSeconds(8), 3, 9));
+
+        assertThat(properties.nativeEnhancePptx().maxSourceSize()).isEqualTo(50L);
+        assertThat(properties.nativeEnhancePptx().validateTimeout()).isEqualTo(Duration.ofSeconds(7));
+        assertThat(properties.nativeEnhancePptx().maxConcurrentJobs()).isEqualTo(3);
+        assertThat(properties.nativeEnhancePptx().queueCapacity()).isEqualTo(9);
+        assertThat(properties.toString()).contains("nativeEnhanceMaxSourceSize=50");
     }
 
     @Test

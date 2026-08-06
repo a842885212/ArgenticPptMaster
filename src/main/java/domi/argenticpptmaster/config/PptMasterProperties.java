@@ -30,6 +30,7 @@ import org.springframework.boot.context.properties.bind.ConstructorBinding;
  * @param templateFillAdminRole           管理员角色名；默认 ADMIN
  * @param templateFillProduction          保留/清理/诊断等生产化嵌套配置；null 时使用默认值
  * @param beautifyPptx                    beautify 服务端分析资源配置；null 时使用默认值
+ * @param nativeEnhancePptx               native-enhance 托管分析资源配置；null 时使用默认值
  */
 @ConfigurationProperties(prefix = "ppt-master")
 public record PptMasterProperties(
@@ -48,7 +49,8 @@ public record PptMasterProperties(
         List<String> templateFillAllowedTenants,
         String templateFillAdminRole,
         @NestedConfigurationProperty TemplateFillProductionProperties templateFillProduction,
-        @NestedConfigurationProperty BeautifyPptxProperties beautifyPptx) {
+        @NestedConfigurationProperty BeautifyPptxProperties beautifyPptx,
+        @NestedConfigurationProperty NativeEnhancePptxProperties nativeEnhancePptx) {
 
     private static final long DEFAULT_TEMPLATE_MAX_BYTES = 52_428_800L;
     private static final long DEFAULT_CONTENT_MAX_BYTES = 20_971_520L;
@@ -97,6 +99,7 @@ public record PptMasterProperties(
         templateFillAllowedTenants = templateFillProduction.allowedTenants();
         templateFillAdminRole = templateFillProduction.adminRole();
         beautifyPptx = beautifyPptx == null ? BeautifyPptxProperties.defaults() : beautifyPptx;
+        nativeEnhancePptx = nativeEnhancePptx == null ? NativeEnhancePptxProperties.defaults() : nativeEnhancePptx;
     }
 
     /** 保留旧测试与调用点的构造签名。 */
@@ -111,7 +114,23 @@ public record PptMasterProperties(
                 templateFillPlanMaxBytes, templateFillTemplateMaxBytes, templateFillContentMaxBytes,
                 templateFillTotalUploadMaxBytes, templateFillMaxConcurrentJobs, templateFillAnalyzeTimeout,
                 templateFillEnabled, templateFillAllowedTenants, templateFillAdminRole,
-                templateFillProduction, null);
+                templateFillProduction, null, null);
+    }
+
+    /** 保留含 beautify 嵌套配置、无 native-enhance 显式参数的构造签名。 */
+    public PptMasterProperties(
+            Path repoPath, Path workspacePath, String pythonCommand, Duration commandTimeout,
+            String templateFillDebugToken, long templateFillPlanMaxBytes, long templateFillTemplateMaxBytes,
+            long templateFillContentMaxBytes, long templateFillTotalUploadMaxBytes,
+            int templateFillMaxConcurrentJobs, Duration templateFillAnalyzeTimeout,
+            Boolean templateFillEnabled, List<String> templateFillAllowedTenants,
+            String templateFillAdminRole, TemplateFillProductionProperties templateFillProduction,
+            BeautifyPptxProperties beautifyPptx) {
+        this(repoPath, workspacePath, pythonCommand, commandTimeout, templateFillDebugToken,
+                templateFillPlanMaxBytes, templateFillTemplateMaxBytes, templateFillContentMaxBytes,
+                templateFillTotalUploadMaxBytes, templateFillMaxConcurrentJobs, templateFillAnalyzeTimeout,
+                templateFillEnabled, templateFillAllowedTenants, templateFillAdminRole,
+                templateFillProduction, beautifyPptx, null);
     }
 
     private static TemplateFillProductionProperties mergeProduction(
@@ -201,6 +220,8 @@ public record PptMasterProperties(
                 + ", beautifyCleanupDeletionEnabled=" + beautifyProduction.cleanupDeletionEnabled()
                 + ", beautifyDiagnosticsEnabled=" + beautifyProduction.diagnosticsEnabled()
                 + ", beautifyExecutionStopEnabled=" + beautifyProduction.executionStopEnabled()
+                + ", nativeEnhanceMaxSourceSize=" + nativeEnhancePptx.maxSourceSize()
+                + ", nativeEnhanceMaxConcurrentJobs=" + nativeEnhancePptx.maxConcurrentJobs()
                 + "]";
     }
 }

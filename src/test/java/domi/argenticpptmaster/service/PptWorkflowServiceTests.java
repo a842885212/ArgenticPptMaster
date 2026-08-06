@@ -76,6 +76,7 @@ class PptWorkflowServiceTests {
         registry.add("ppt-master.template-fill-enabled", () -> "true");
         registry.add("ppt-master.template-fill-allowed-tenants[0]", () -> "test-tenant");
         registry.add("ppt-master.local-access.enabled", () -> "false");
+        registry.add("ppt-master.native-enhance-pptx.max-source-size", () -> "16");
     }
 
     @BeforeEach
@@ -255,6 +256,18 @@ class PptWorkflowServiceTests {
                 List.of(source), null, "demo", "ppt169", null, "native-enhance-pptx", "{}")))
                 .isInstanceOf(PptJobStateException.class)
                 .hasMessageContaining("templateConstraints");
+    }
+
+    @Test
+    void rejectsOversizedNativeEnhanceSourceBeforeCreatingJob() {
+        byte[] payload = new byte[20];
+        MockMultipartFile source = new MockMultipartFile(
+                "files", "source.pptx", MediaType.APPLICATION_OCTET_STREAM_VALUE, payload);
+
+        assertThatThrownBy(() -> workflowService.createJob(
+                List.of(source), "demo", "ppt169", null, "native-enhance-pptx"))
+                .isInstanceOf(PptJobStateException.class)
+                .hasMessageContaining("NATIVE_ENHANCE_UPLOAD_TOO_LARGE");
     }
 
     @Test

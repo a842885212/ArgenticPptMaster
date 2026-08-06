@@ -26,6 +26,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
@@ -155,6 +156,10 @@ class PptNativeEnhanceCommandExecutorTests {
         assertThat(completed.exportPath().orElseThrow().getFileName().toString()).isEqualTo("source_enhanced.pptx");
         assertThat(completed.nodeExecution(PptJobNode.NATIVE_ENHANCE_INITIALIZED).status())
                 .isEqualTo(PptJobNodeStatus.COMPLETED);
+        assertThat(completed.nodeExecution(PptJobNode.ENHANCEMENT_PLAN_DRAFTED).status())
+                .isEqualTo(PptJobNodeStatus.COMPLETED);
+        assertThat(completed.nodeExecution(PptJobNode.ENHANCEMENT_PLAN_DRAFTED).summary())
+                .containsEntry("enhancementPlanStatus", "draft");
         assertThat(completed.nodeExecution(PptJobNode.ENHANCEMENT_PLAN_CONFIRMED).status())
                 .isEqualTo(PptJobNodeStatus.COMPLETED);
         assertThat(completed.nodeExecution(PptJobNode.NOTES_GENERATED).status())
@@ -179,6 +184,119 @@ class PptNativeEnhanceCommandExecutorTests {
                 .runPythonScript(eq(PptNativeEnhanceCommandExecutor.NATIVE_ENHANCE_SCRIPT), argsCaptor.capture(), any());
         assertThat(argsCaptor.getAllValues()).allSatisfy(args ->
                 assertThat(args).noneMatch(arg -> arg != null && arg.contains("--force")));
+    }
+
+    @Test
+    void resumeFromInitializedSkipsInitAndPreservesUploadBytes() throws Exception {
+        UUID jobId = UUID.randomUUID();
+        Path workspace = properties.workspacePath().resolve("jobs").resolve(jobId.toString());
+        Files.createDirectories(workspace.resolve("uploads"));
+        Path source = workspace.resolve("uploads/source.pptx");
+        byte[] original = new byte[] {0x50, 0x4b, 0x03, 0x04};
+        Files.write(source, original);
+
+        Path project = workspace.resolve("projects/phase0");
+        Files.createDirectories(project.resolve("analysis"));
+        Files.createDirectories(project.resolve("notes"));
+        Files.createDirectories(project.resolve("exports"));
+        Files.createDirectories(project.resolve("validation"));
+        Files.writeString(project.resolve("project.json"), """
+                {"schema":"native_pptx_enhancement_project.v1","kind":"native_pptx_enhancement","slide_count":1}
+                """);
+        ObjectNode index = objectMapper.createObjectNode();
+        index.put("schema", "native_pptx_enhancement_slide_index.v1");
+        index.put("slide_count", 1);
+        index.putArray("slides").addObject()
+                .put("index", 1).put("note_file", "001.md").put("slide_number", 1).put("title", "Cover");
+        objectMapper.writeValue(project.resolve("analysis/slide_index.json").toFile(), index);
+        ObjectNode plan = objectMapper.createObjectNode();
+        plan.put("schema", "native_pptx_enhancement_plan.v1");
+        plan.put("status", "draft");
+        ObjectNode modules = plan.putObject("modules");
+        modules.putObject("notes").put("enabled", true);
+        modules.putObject("audio").put("enabled", false);
+        modules.putObject("timings").put("enabled", false);
+        modules.putObject("transitions").put("enabled", false);
+        objectMapper.writeValue(project.resolve("analysis/enhancement_plan.json").toFile(), plan);
+
+        PptJob job = new PptJob(jobId, "phase0", "ppt169", "notes", PptWorkflowMode.NATIVE_ENHANCE_PPTX, workspace);
+        job.addSource(new PptSourceFile("source.pptx", "application/octet-stream", original.length, source));
+        job.prepareProject(project);
+        job.startNode(PptJobNode.PROJECT_READY);
+        job.completeNode(PptJobNode.PROJECT_READY, Map.of("projectReady", true));
+        job.startNode(PptJobNode.NATIVE_ENHANCE_INITIALIZED);
+        job.completeNode(PptJobNode.NATIVE_ENHANCE_INITIALIZED, Map.of("sourcePageCount", 1));
+        job.startNode(PptJobNode.ENHANCEMENT_PLAN_DRAFTED);
+        job.completeNode(PptJobNode.ENHANCEMENT_PLAN_DRAFTED, Map.of(
+                "enhancementPlanStatus", "draft", "enabledModules", List.of("notes")));
+        repository.save(job);
+
+        when(commands.runPythonScript(anyString(), anyList(), any(Duration.class))).thenAnswer(invocation -> {
+            String script = invocation.getArgument(0);
+            List<String> args = invocation.getArgument(1);
+            if (PptNativeEnhanceCommandExecutor.NATIVE_ENHANCE_SCRIPT.equals(script) && args.get(0).equals("init")) {
+                return new PptMasterCommandExecutor.CommandResult(1, "init should not run", false);
+            }
+            if (PptNativeEnhanceCommandExecutor.NATIVE_ENHANCE_SCRIPT.equals(script) && args.get(0).equals("validate")) {
+                Files.writeString(project.resolve("validation/report.json"), """
+                        {"schema":"native_pptx_enhancement_validation.v1","plan_status":"confirmed","notes_count":1,"missing_notes":[]}
+                        """);
+                return new PptMasterCommandExecutor.CommandResult(0, "ok", false);
+            }
+            if (PptNativeEnhanceCommandExecutor.NATIVE_ENHANCE_SCRIPT.equals(script) && args.get(0).equals("apply")) {
+                writeMinimalPptx(project.resolve("exports/source_enhanced.pptx"), 1);
+                return new PptMasterCommandExecutor.CommandResult(0, "ok", false);
+            }
+            if (PptNativeEnhanceCommandExecutor.PPT_TO_MD_SCRIPT.equals(script)) {
+                Path out = Path.of(args.get(args.indexOf("-o") + 1));
+                Files.writeString(out, "# readback\n");
+                return new PptMasterCommandExecutor.CommandResult(0, "ok", false);
+            }
+            return new PptMasterCommandExecutor.CommandResult(1, "unexpected", false);
+        });
+
+        executor.resumeFromCheckpoint(jobId, PptJobNode.NATIVE_ENHANCE_INITIALIZED);
+
+        PptJob completed = repository.findById(jobId).orElseThrow();
+        assertThat(completed.status()).isEqualTo(PptJobStatus.COMPLETED);
+        assertThat(Files.readAllBytes(source)).isEqualTo(original);
+        assertThat(completed.nodeExecution(PptJobNode.ENHANCEMENT_PLAN_CONFIRMED).status())
+                .isEqualTo(PptJobNodeStatus.COMPLETED);
+        org.mockito.Mockito.verify(commands, org.mockito.Mockito.never())
+                .runPythonScript(eq(PptNativeEnhanceCommandExecutor.NATIVE_ENHANCE_SCRIPT),
+                        org.mockito.ArgumentMatchers.argThat(args -> args != null && !args.isEmpty() && "init".equals(args.get(0))),
+                        any());
+    }
+
+    @Test
+    void initFailureRecordsStableErrorCode() {
+        UUID jobId = UUID.randomUUID();
+        Path workspace = properties.workspacePath().resolve("jobs").resolve(jobId.toString());
+        try {
+            Files.createDirectories(workspace.resolve("uploads"));
+            Path source = workspace.resolve("uploads/source.pptx");
+            Files.write(source, new byte[] {0x50, 0x4b});
+            PptJob job = new PptJob(jobId, "phase0", "ppt169", "notes", PptWorkflowMode.NATIVE_ENHANCE_PPTX, workspace);
+            job.addSource(new PptSourceFile("source.pptx", "application/octet-stream", 2, source));
+            repository.save(job);
+        } catch (Exception ex) {
+            throw new RuntimeException(ex);
+        }
+
+        when(commands.runPythonScript(anyString(), anyList(), any(Duration.class)))
+                .thenReturn(new PptMasterCommandExecutor.CommandResult(1, "boom", true));
+
+        assertThatThrownBy(() -> executor.runNotesOnlyMvp(jobId))
+                .isInstanceOf(NativeEnhanceExecutionException.class)
+                .satisfies(ex -> {
+                    NativeEnhanceExecutionException failure = (NativeEnhanceExecutionException) ex;
+                    assertThat(failure.errorCode().code()).isEqualTo("NATIVE_ENHANCE_INIT_FAILED");
+                    assertThat(failure.stage()).isEqualTo("INIT");
+                });
+
+        PptJob failed = repository.findById(jobId).orElseThrow();
+        assertThat(failed.status()).isEqualTo(PptJobStatus.FAILED);
+        assertThat(failed.errorMessage().orElse("")).contains("NATIVE_ENHANCE_INIT_FAILED");
     }
 
     private static void writeMinimalPptx(Path path, int slides) throws Exception {

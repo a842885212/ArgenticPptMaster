@@ -41,7 +41,7 @@ beautify_inventory.py … → beautify_inventory.json
 | **beautify-pptx（本规划）** | 「美化 / 重新排版，内容别动」 | 冻结 | 1:1 冻结 | 继承并确认后的身份；布局重做 | 独立模式 + **复用** Agent/SVG/finalize/export |
 | **template-fill-pptx** | 「用这份模板填新内容」 | 新内容填入模板槽位 | 由填充计划决定选页/顺序 | **保留**模板设计壳 | `TEMPLATE_FILL`，OOXML `analyze → apply`，**不**走 SVG |
 | **主流程（BASIC / IMAGE_ENHANCED）** | 资料成稿 / 允许重构故事线 | 可改写、可重大纲 | 可拆合重排 | 八确认或大纲确认后新建视觉 | 现有 markdown → SVG 主链路 |
-| **native-enhance-pptx** | 成品上加备注 / 旁白 / 切换等 | 基本不动 | 基本不动 | 布局保持稳定 | 直接 OOXML patch（本服务暂不接入） |
+| **native-enhance-pptx** | 成品上加备注 / 旁白 / 切换等 | 基本不动 | 基本不动 | 布局保持稳定 | 直接 OOXML patch（接入规划见 [`native-enhance-pptx-integration-plan.md`](./native-enhance-pptx-integration-plan.md)） |
 
 路由判定（对齐上游 `routing.md`）：若用户要求拆密页、合稀疏页、改页序或重写大纲 → **不是** beautify，应路由到主流程；仅当明确要保留原页切分与措辞时进入本模式。
 

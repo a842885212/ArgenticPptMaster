@@ -1,0 +1,45 @@
+{
+  "fixture": "phase0-baseline.pptx",
+  "slide_count": 6,
+  "slides": [
+    {
+      "index": 1,
+      "title": "Native Enhance Phase0",
+      "kind": "cover",
+      "had_source_notes": false
+    },
+    {
+      "index": 2,
+      "title": "Agenda",
+      "kind": "body",
+      "had_source_notes": true
+    },
+    {
+      "index": 3,
+      "title": "Metrics Table",
+      "kind": "table-like-text",
+      "had_source_notes": false
+    },
+    {
+      "index": 4,
+      "title": "Trend Chart",
+      "kind": "chart-like-text",
+      "had_source_notes": false
+    },
+    {
+      "index": 5,
+      "title": "Dense Content",
+      "kind": "dense",
+      "had_source_notes": false
+    },
+    {
+      "index": 6,
+      "title": "Closing",
+      "kind": "ending",
+      "had_source_notes": false
+    }
+  ],
+  "desensitized": true,
+  "synthetic": true,
+  "sensitive_content": false
+}

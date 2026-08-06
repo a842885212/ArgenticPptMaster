@@ -255,9 +255,9 @@ PROJECT_READY
 
 ## 5. 分阶段计划（由简单到复杂）
 
-> **文档状态**：以下各阶段均为规划项，**尚未开始**。不得将本文档解读为 Java 已实现。
+> **文档状态**：阶段 0 已完成（契约与基线文档已冻结）；阶段 1–5 仍为规划项。不得将本文档解读为 Java 已实现。
 
-### 阶段 0：可行性基线与契约冻结（未开始）
+### 阶段 0：可行性基线与契约冻结（已完成）
 
 目的：在改 Java 生产代码前，用固定样例手工跑通上游闭环，冻结脚本版本与产物 schema。
 
@@ -272,11 +272,12 @@ PROJECT_READY
 
 完成标准：端到端手工样例可导出且回读通过；形成兼容性/限制清单与上游契约文档；**不修改**生产 Java 代码。
 
-建议另立（阶段 0 产出，非本文件展开）：
+**阶段 0 完成记录**：上游 CLI 在配置的 `ppt-master.repo-path` 上对合成 fixture 实测通过（notes-only + edge 音频全链路）；OpenSpec change `native-enhance-pptx-phase-0` 已归档。产出：
 
-- `docs/native-enhance-pptx-upstream-contract.md`
-- `docs/native-enhance-pptx-compatibility-matrix.md`
-- （可选）`docs/native-enhance-pptx-phase0-baseline.md`
+- [`docs/native-enhance-pptx-upstream-contract.md`](./native-enhance-pptx-upstream-contract.md)
+- [`docs/native-enhance-pptx-compatibility-matrix.md`](./native-enhance-pptx-compatibility-matrix.md)
+- [`docs/native-enhance-pptx-phase0-baseline.md`](./native-enhance-pptx-phase0-baseline.md)
+- fixture：`src/test/resources/native-enhance-pptx/`
 
 ### 阶段 1：模式接入与备注-only MVP（未开始）
 
@@ -421,7 +422,7 @@ Agent / 服务包装器 **不得**用 `--force` 或改写确认状态绕过门�
 
 ## 9. 推荐里程碑
 
-1. **M0：可行性通过** — 阶段 0 完成，兼容矩阵与冻结契约已形成。（未开始）
+1. **M0：可行性通过** — 阶段 0 完成，兼容矩阵与冻结契约已形成。（**已完成**）
 2. **M1：备注 MVP** — 阶段 1 完成，notes-only 可创建、导出、回读。（未开始）
 3. **M2：可确认 Beta** — 阶段 2–3 完成，具备托管 init/plan、双确认门禁、恢复与观测。（未开始）
 4. **M3：V1 模块完整** — 阶段 4 完成，覆盖 audio/timings/transitions 与导出校验。（未开始）
@@ -472,14 +473,14 @@ Agent / 服务包装器 **不得**用 `--force` 或改写确认状态绕过门�
 
 | 项 | 状态 |
 | --- | --- |
-| 规划文档 | **本文档（PLAN only）** |
-| 阶段 0 | **未开始** |
+| 规划文档 | **本文档（PLAN；阶段 0 已落地契约）** |
+| 阶段 0 | **已完成**（上游契约 / 兼容矩阵 / 基线报告已冻结） |
 | 阶段 1 | **未开始** |
 | 阶段 2 | **未开始** |
 | 阶段 3 | **未开始** |
 | 阶段 4 | **未开始** |
 | 阶段 5 | **未开始** |
-| OpenSpec change | 尚未立项 |
+| OpenSpec change | `native-enhance-pptx-phase-0` 已归档（见 `openspec/changes/archive/`） |
 | Java 生产代码 | **未实现**；本文不声称任何服务端能力已落地 |
 
 本文档结构与分阶段深度对齐 [`beautify-pptx-integration-plan.md`](./beautify-pptx-integration-plan.md)，OOXML 模式先例参考 [`template-fill-pptx-integration-plan.md`](./template-fill-pptx-integration-plan.md)，语气参考 [`PPT_OUTLINE_INTEGRATION_PLAN.md`](./PPT_OUTLINE_INTEGRATION_PLAN.md)。上游行为以部署的 `ppt-master` 仓库中 `native-enhance-pptx` 工作流与脚本为准；若与本文冲突，先更新阶段 0 契约文档再改实现计划。

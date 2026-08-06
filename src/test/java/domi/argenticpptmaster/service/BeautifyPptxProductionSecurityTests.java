@@ -109,6 +109,7 @@ class BeautifyPptxProductionSecurityTests {
                 new BeautifyPptxRolloutPolicy(properties),
                 lifecycleStore,
                 new BeautifyPptxAuditSink(),
+                null,
                 null);
 
         access.set(PptAccessContext.user("intruder", "tenant-a", Set.of()));
@@ -154,6 +155,7 @@ class BeautifyPptxProductionSecurityTests {
                 new BeautifyPptxRolloutPolicy(properties),
                 new BeautifyPptxLifecycleStore(properties),
                 new BeautifyPptxAuditSink(),
+                null,
                 null);
     }
 

@@ -33,7 +33,12 @@ public enum PptWorkflowMode {
     /**
      * 现有 PPTX 的布局-only 重新排版流程（文本/图片/表格/常见图表）。
      */
-    BEAUTIFY_PPTX;
+    BEAUTIFY_PPTX,
+
+    /**
+     * 成品 PPTX 的原生增强流程：OOXML 追加备注/旁白/计时/切换，不改可见布局。
+     */
+    NATIVE_ENHANCE_PPTX;
 
     /**
      * 将字符串规范化为工作流模式枚举。
@@ -53,6 +58,7 @@ public enum PptWorkflowMode {
             case "image-enhanced", "image_enhanced", "enhanced" -> IMAGE_ENHANCED;
             case "template-fill", "template_fill" -> TEMPLATE_FILL;
             case "beautify-pptx", "beautify_pptx" -> BEAUTIFY_PPTX;
+            case "native-enhance-pptx", "native_enhance_pptx" -> NATIVE_ENHANCE_PPTX;
             case "basic", "default" -> BASIC;
             default -> throw new IllegalArgumentException("unsupported workflow mode: " + value);
         };

@@ -72,14 +72,14 @@ ppt_to_md.py <exports/*_enhanced.pptx> -o validation/readback.md
 
 | 组件 | 现状 |
 | --- | --- |
-| `PptWorkflowMode` | 已有 `BASIC`、`IMAGE_ENHANCED`、`TEMPLATE_FILL`、`BEAUTIFY_PPTX`；`from()` **尚不**识别 `native-enhance-pptx` |
-| `PptWorkflowService.createJob` | `TEMPLATE_FILL` 分角色存储并分析；`BEAUTIFY_PPTX` 走托管分析 + 灰度门禁；其余模式统一 `files` → `uploads/` 并启动 Agent |
-| `PptJobNode` | BASIC/IMAGE_ENHANCED 使用大纲 + SVG 节点；`TEMPLATE_FILL` 使用 `TEMPLATE_*` / `FILL_PLAN_*`；`BEAUTIFY_PPTX` 使用 `BEAUTIFY_*` + SVG 链；**尚无** native-enhance 专属节点 |
-| `DefaultAgentScopeWorkflowAgentFactory` | `TEMPLATE_FILL` / `BEAUTIFY_PPTX` 已有独立 prompt/工具；BASIC/IMAGE_ENHANCED 共用 SVG 工具；**尚无** native-enhance profile |
-| `PptConfirmationStagePolicy` / `PptConfirmationStageResolver` | 已支持 `outline_confirmation`、`plan_confirmation`、图片相关 stage、`template_fill_plan`、`beautify_plan_confirmation`；**尚无** `enhancement_plan_confirmation` / `audio_voice_confirmation` |
+| `PptWorkflowMode` | 已有 `BASIC`、`IMAGE_ENHANCED`、`TEMPLATE_FILL`、`BEAUTIFY_PPTX`、`NATIVE_ENHANCE_PPTX`；`from()` 识别 `native-enhance-pptx` / `native_enhance_pptx` |
+| `PptWorkflowService.createJob` | `TEMPLATE_FILL` 分角色存储并分析；`BEAUTIFY_PPTX` 走托管分析 + 灰度门禁；`NATIVE_ENHANCE_PPTX` 单文件校验后启动 notes-only MVP；其余模式统一 `files` → `uploads/` 并启动 Agent |
+| `PptJobNode` | BASIC/IMAGE_ENHANCED 使用大纲 + SVG 节点；`TEMPLATE_FILL` 使用 `TEMPLATE_*` / `FILL_PLAN_*`；`BEAUTIFY_PPTX` 使用 `BEAUTIFY_*` + SVG 链；`NATIVE_ENHANCE_PPTX` 使用 `NATIVE_ENHANCE_*` / `ENHANCEMENT_PLAN_*` / `NOTES_GENERATED` |
+| `DefaultAgentScopeWorkflowAgentFactory` | `TEMPLATE_FILL` / `BEAUTIFY_PPTX` 已有独立 prompt/工具；BASIC/IMAGE_ENHANCED 共用 SVG 工具；native-enhance Agent profile **仍待阶段 3** |
+| `PptConfirmationStagePolicy` / `PptConfirmationStageResolver` | 已支持 `outline_confirmation`、`plan_confirmation`、图片相关 stage、`template_fill_plan`、`beautify_plan_confirmation`；**尚无** `enhancement_plan_confirmation` / `audio_voice_confirmation`（阶段 3） |
 | 上游脚本可达性 | 依赖配置的 `ppt-master.repo-path`；需确认其中包含 `native_enhance_pptx.py`（包装）、`native_narration_pptx.py`（实现）、`notes_to_audio.py`、`ppt_to_md.py`，以及 `ffprobe`（音频时长计时） |
 
-当前即使上传 `.pptx`，在 `BASIC` / `BEAUTIFY_PPTX` / `TEMPLATE_FILL` 下也不会执行 native enhance 的 `init → plan → notes/audio → apply` 契约。beautify 规划文档此前将该能力标注为「本服务暂不接入」——本规划即为其正式接入蓝图；**Java 实现尚未开始**。
+当前即使上传 `.pptx`，在 `BASIC` / `BEAUTIFY_PPTX` / `TEMPLATE_FILL` 下也不会执行 native enhance 的 `init → plan → notes/audio → apply` 契约。beautify 规划文档此前将该能力标注为「本服务暂不接入」——本规划即为其正式接入蓝图；**阶段 1 已接入 notes-only MVP**，阶段 2+（完整确认门禁、音频、灰度）仍未完成。
 
 ### 2.2 设计结论
 
@@ -255,7 +255,7 @@ PROJECT_READY
 
 ## 5. 分阶段计划（由简单到复杂）
 
-> **文档状态**：阶段 0 已完成（契约与基线文档已冻结）；阶段 1–5 仍为规划项。不得将本文档解读为 Java 已实现。
+> **文档状态**：阶段 0–1 已完成；阶段 2–5 仍为规划项。阶段 1 已接入 `NATIVE_ENHANCE_PPTX` 与 notes-only MVP，不得将本文档解读为阶段 2+（托管分析、双确认、音频全链路、灰度）已完成。
 
 ### 阶段 0：可行性基线与契约冻结（已完成）
 
@@ -279,7 +279,7 @@ PROJECT_READY
 - [`docs/native-enhance-pptx-phase0-baseline.md`](./native-enhance-pptx-phase0-baseline.md)
 - fixture：`src/test/resources/native-enhance-pptx/`
 
-### 阶段 1：模式接入与备注-only MVP（未开始）
+### 阶段 1：模式接入与备注-only MVP（已完成）
 
 目的：新增模式与单 PPTX 校验，先跑通「仅 notes 模块」的 OOXML 增强闭环（可暂不启用 audio/timings）。
 
@@ -292,6 +292,8 @@ PROJECT_READY
 5. Agent 可后置；首版允许内部调试接口提交已确认计划（对齐 template-fill 早期做法），但生产路径不得暴露 `--force`。
 
 完成标准：API 可创建 `native-enhance-pptx` 任务，备注-only 样例可下载结果且页数一致、可见文本回读未改、目标页含备注；`basic` / `image-enhanced` / `template-fill` / `beautify-pptx` 回归通过。
+
+**阶段 1 完成记录**：OpenSpec change `native-enhance-pptx-phase-1` 已实现并归档。落地：`NATIVE_ENHANCE_PPTX` 模式与单文件契约、`PptNativeEnhanceCommandExecutor` notes-only MVP（服务端写入 confirmed plan，永不 `--force`）、相关节点骨架与单元/服务测试。
 
 ### 阶段 2：服务端托管分析、Checkpoint 与可观察性（未开始）
 
@@ -423,7 +425,7 @@ Agent / 服务包装器 **不得**用 `--force` 或改写确认状态绕过门�
 ## 9. 推荐里程碑
 
 1. **M0：可行性通过** — 阶段 0 完成，兼容矩阵与冻结契约已形成。（**已完成**）
-2. **M1：备注 MVP** — 阶段 1 完成，notes-only 可创建、导出、回读。（未开始）
+2. **M1：备注 MVP** — 阶段 1 完成，notes-only 可创建、导出、回读。（**已完成**）
 3. **M2：可确认 Beta** — 阶段 2–3 完成，具备托管 init/plan、双确认门禁、恢复与观测。（未开始）
 4. **M3：V1 模块完整** — 阶段 4 完成，覆盖 audio/timings/transitions 与导出校验。（未开始）
 5. **M4：生产发布** — 阶段 5 的灰度、权限、指标与运维条件达标。（未开始）
@@ -473,14 +475,14 @@ Agent / 服务包装器 **不得**用 `--force` 或改写确认状态绕过门�
 
 | 项 | 状态 |
 | --- | --- |
-| 规划文档 | **本文档（PLAN；阶段 0 已落地契约）** |
+| 规划文档 | **本文档（PLAN；阶段 0–1 已落地）** |
 | 阶段 0 | **已完成**（上游契约 / 兼容矩阵 / 基线报告已冻结） |
-| 阶段 1 | **未开始** |
+| 阶段 1 | **已完成**（模式接入 + notes-only MVP；计划确认仍为服务端调试写入） |
 | 阶段 2 | **未开始** |
 | 阶段 3 | **未开始** |
 | 阶段 4 | **未开始** |
 | 阶段 5 | **未开始** |
-| OpenSpec change | `native-enhance-pptx-phase-0` 已归档（见 `openspec/changes/archive/`） |
-| Java 生产代码 | **未实现**；本文不声称任何服务端能力已落地 |
+| OpenSpec change | `native-enhance-pptx-phase-0` / `native-enhance-pptx-phase-1` 已归档（见 `openspec/changes/archive/`） |
+| Java 生产代码 | **阶段 1 已落地 notes-only MVP**；双确认 / 音频 / 灰度仍属后续阶段 |
 
 本文档结构与分阶段深度对齐 [`beautify-pptx-integration-plan.md`](./beautify-pptx-integration-plan.md)，OOXML 模式先例参考 [`template-fill-pptx-integration-plan.md`](./template-fill-pptx-integration-plan.md)，语气参考 [`PPT_OUTLINE_INTEGRATION_PLAN.md`](./PPT_OUTLINE_INTEGRATION_PLAN.md)。上游行为以部署的 `ppt-master` 仓库中 `native-enhance-pptx` 工作流与脚本为准；若与本文冲突，先更新阶段 0 契约文档再改实现计划。

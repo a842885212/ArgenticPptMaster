@@ -29,7 +29,8 @@ public enum PptJobNode {
      * </p>
      */
     PROJECT_READY(List.of(PptWorkflowMode.BASIC, PptWorkflowMode.IMAGE_ENHANCED,
-            PptWorkflowMode.TEMPLATE_FILL, PptWorkflowMode.BEAUTIFY_PPTX), false),
+            PptWorkflowMode.TEMPLATE_FILL, PptWorkflowMode.BEAUTIFY_PPTX,
+            PptWorkflowMode.NATIVE_ENHANCE_PPTX), false),
 
     /** Beautify 源 PPTX 的 identity、intake 与 inventory 已完成。 */
     BEAUTIFY_ANALYZED(PptWorkflowMode.BEAUTIFY_PPTX, false),
@@ -162,13 +163,39 @@ public enum PptJobNode {
     FILL_PLAN_VALIDATED(PptWorkflowMode.TEMPLATE_FILL, false),
 
     /**
+     * 原生增强项目已 init（project.json / slide_index / draft plan 就绪）。
+     */
+    NATIVE_ENHANCE_INITIALIZED(PptWorkflowMode.NATIVE_ENHANCE_PPTX, false),
+
+    /**
+     * 增强计划草案已写入。
+     */
+    ENHANCEMENT_PLAN_DRAFTED(PptWorkflowMode.NATIVE_ENHANCE_PPTX, false),
+
+    /**
+     * 增强计划已确认（阶段 1 MVP 可由服务端调试写入 confirmed）。
+     */
+    ENHANCEMENT_PLAN_CONFIRMED(PptWorkflowMode.NATIVE_ENHANCE_PPTX, true),
+
+    /**
+     * 逐页 notes/*.md 已覆盖目标页。
+     */
+    NOTES_GENERATED(PptWorkflowMode.NATIVE_ENHANCE_PPTX, false),
+
+    /**
+     * native_enhance validate 覆盖校验已通过。
+     */
+    NATIVE_ENHANCE_VALIDATED(PptWorkflowMode.NATIVE_ENHANCE_PPTX, false),
+
+    /**
      * PPTX 成品已导出。
      * <p>
      * 证据：{@code export_project_pptx} 工具成功执行，且导出文件真实存在。
      * </p>
      */
     PPT_EXPORTED(List.of(PptWorkflowMode.BASIC, PptWorkflowMode.IMAGE_ENHANCED,
-            PptWorkflowMode.TEMPLATE_FILL, PptWorkflowMode.BEAUTIFY_PPTX), false),
+            PptWorkflowMode.TEMPLATE_FILL, PptWorkflowMode.BEAUTIFY_PPTX,
+            PptWorkflowMode.NATIVE_ENHANCE_PPTX), false),
 
     /**
      * Beautify 导出后的 read-back 校验保留节点。
@@ -176,6 +203,11 @@ public enum PptJobNode {
      * <p>阶段 2 只暴露 pending 状态；阶段 4 实现实际 read-back 前不得完成该节点。</p>
      */
     BEAUTIFY_OUTPUT_VALIDATED(PptWorkflowMode.BEAUTIFY_PPTX, false),
+
+    /**
+     * 原生增强导出后的轻量输出校验（页数/文件存在性；完整 read-back 深化在阶段 4）。
+     */
+    NATIVE_ENHANCE_OUTPUT_VALIDATED(PptWorkflowMode.NATIVE_ENHANCE_PPTX, false),
 
     /**
      * 模板填充导出已通过 validate 且交付文件已复制（仅模板填充流程）。

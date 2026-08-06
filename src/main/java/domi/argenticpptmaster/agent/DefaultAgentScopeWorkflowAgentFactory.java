@@ -1057,6 +1057,13 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                 case BEAUTIFY_ANALYZED -> Files.isRegularFile(projectPath.resolve("analysis/beautify_inventory.json"));
                 case BEAUTIFY_PLAN_DRAFTED, BEAUTIFY_PLAN_CONFIRMED ->
                         Files.isRegularFile(projectPath.resolve("analysis/beautify_plan.draft.json"));
+                case NATIVE_ENHANCE_INITIALIZED -> Files.isRegularFile(projectPath.resolve("project.json"))
+                        && Files.isRegularFile(projectPath.resolve("analysis/slide_index.json"));
+                case ENHANCEMENT_PLAN_DRAFTED, ENHANCEMENT_PLAN_CONFIRMED ->
+                        Files.isRegularFile(projectPath.resolve("analysis/enhancement_plan.json"));
+                case NOTES_GENERATED -> hasAnyFile(files.get("notes"));
+                case NATIVE_ENHANCE_VALIDATED -> Files.isRegularFile(projectPath.resolve("validation/report.json"));
+                case NATIVE_ENHANCE_OUTPUT_VALIDATED -> hasAnyFile(files.get("exports"));
                 case OUTPUT_VALIDATED -> hasAnyFile(files.get("exports"));
             };
         }

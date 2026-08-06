@@ -45,6 +45,13 @@ class PptWorkflowModeTests {
     }
 
     @Test
+    void nativeEnhanceVariantsResolveToNativeEnhancePptx() {
+        assertThat(PptWorkflowMode.from("native-enhance-pptx")).isEqualTo(PptWorkflowMode.NATIVE_ENHANCE_PPTX);
+        assertThat(PptWorkflowMode.from("NATIVE_ENHANCE_PPTX")).isEqualTo(PptWorkflowMode.NATIVE_ENHANCE_PPTX);
+        assertThat(PptWorkflowMode.from("native_enhance_pptx")).isEqualTo(PptWorkflowMode.NATIVE_ENHANCE_PPTX);
+    }
+
+    @Test
     void unknownNonBlankModeIsRejected() {
         assertThatThrownBy(() -> PptWorkflowMode.from("unsupported"))
                 .isInstanceOf(IllegalArgumentException.class)

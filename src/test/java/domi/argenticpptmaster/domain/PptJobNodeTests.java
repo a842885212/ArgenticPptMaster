@@ -71,4 +71,23 @@ class PptJobNodeTests {
         assertThat(PptJobNode.TEMPLATE_ANALYZED.applicableTo(PptWorkflowMode.BEAUTIFY_PPTX)).isFalse();
         assertThat(PptJobNode.OUTPUT_VALIDATED.applicableTo(PptWorkflowMode.BEAUTIFY_PPTX)).isFalse();
     }
+
+    @Test
+    void nativeEnhanceNodesAreIsolatedFromOtherWorkflowNodes() {
+        assertThat(PptJobNode.PROJECT_READY.applicableTo(PptWorkflowMode.NATIVE_ENHANCE_PPTX)).isTrue();
+        assertThat(PptJobNode.PPT_EXPORTED.applicableTo(PptWorkflowMode.NATIVE_ENHANCE_PPTX)).isTrue();
+        assertThat(PptJobNode.NATIVE_ENHANCE_INITIALIZED.applicableTo(PptWorkflowMode.NATIVE_ENHANCE_PPTX)).isTrue();
+        assertThat(PptJobNode.ENHANCEMENT_PLAN_DRAFTED.applicableTo(PptWorkflowMode.NATIVE_ENHANCE_PPTX)).isTrue();
+        assertThat(PptJobNode.ENHANCEMENT_PLAN_CONFIRMED.applicableTo(PptWorkflowMode.NATIVE_ENHANCE_PPTX)).isTrue();
+        assertThat(PptJobNode.ENHANCEMENT_PLAN_CONFIRMED.requiresConfirmation()).isTrue();
+        assertThat(PptJobNode.NOTES_GENERATED.applicableTo(PptWorkflowMode.NATIVE_ENHANCE_PPTX)).isTrue();
+        assertThat(PptJobNode.NATIVE_ENHANCE_VALIDATED.applicableTo(PptWorkflowMode.NATIVE_ENHANCE_PPTX)).isTrue();
+        assertThat(PptJobNode.NATIVE_ENHANCE_OUTPUT_VALIDATED.applicableTo(PptWorkflowMode.NATIVE_ENHANCE_PPTX)).isTrue();
+
+        assertThat(PptJobNode.OUTLINE_DRAFTED.applicableTo(PptWorkflowMode.NATIVE_ENHANCE_PPTX)).isFalse();
+        assertThat(PptJobNode.TEMPLATE_ANALYZED.applicableTo(PptWorkflowMode.NATIVE_ENHANCE_PPTX)).isFalse();
+        assertThat(PptJobNode.BEAUTIFY_ANALYZED.applicableTo(PptWorkflowMode.NATIVE_ENHANCE_PPTX)).isFalse();
+        assertThat(PptJobNode.SVG_OUTPUT_VALIDATED.applicableTo(PptWorkflowMode.NATIVE_ENHANCE_PPTX)).isFalse();
+        assertThat(PptJobNode.OUTPUT_VALIDATED.applicableTo(PptWorkflowMode.NATIVE_ENHANCE_PPTX)).isFalse();
+    }
 }

@@ -209,6 +209,55 @@ class PptWorkflowServiceTests {
     }
 
     @Test
+    void createsNativeEnhanceJobForExactlyOnePptxSource() {
+        MockMultipartFile source = new MockMultipartFile(
+                "files", "source.PPTX", MediaType.APPLICATION_OCTET_STREAM_VALUE, "pptx".getBytes());
+
+        PptJob job = workflowService.createJob(
+                List.of(source), "demo", "ppt169", "notes only", "native_enhance_pptx");
+
+        assertThat(job.workflowMode()).isEqualTo(PptWorkflowMode.NATIVE_ENHANCE_PPTX);
+        assertThat(job.sourceFiles()).singleElement().satisfies(file ->
+                assertThat(file.storedPath().getParent().getFileName().toString()).isEqualTo("uploads"));
+    }
+
+    @Test
+    void rejectsInvalidNativeEnhanceSourcesBeforeCreatingJob() {
+        MockMultipartFile first = new MockMultipartFile(
+                "files", "first.pptx", MediaType.APPLICATION_OCTET_STREAM_VALUE, "pptx".getBytes());
+        MockMultipartFile second = new MockMultipartFile(
+                "files", "second.pptx", MediaType.APPLICATION_OCTET_STREAM_VALUE, "pptx".getBytes());
+        MockMultipartFile legacy = new MockMultipartFile(
+                "files", "legacy.ppt", MediaType.APPLICATION_OCTET_STREAM_VALUE, "ppt".getBytes());
+
+        assertThatThrownBy(() -> workflowService.createJob(
+                List.of(first, second), "demo", "ppt169", null, "native-enhance-pptx"))
+                .isInstanceOf(PptJobStateException.class)
+                .hasMessageContaining("exactly one");
+        assertThatThrownBy(() -> workflowService.createJob(
+                List.of(legacy), "demo", "ppt169", null, "native-enhance-pptx"))
+                .isInstanceOf(PptJobStateException.class)
+                .hasMessageContaining(".pptx");
+    }
+
+    @Test
+    void rejectsNativeEnhanceTemplateFields() {
+        MockMultipartFile source = new MockMultipartFile(
+                "files", "source.pptx", MediaType.APPLICATION_OCTET_STREAM_VALUE, "pptx".getBytes());
+        MockMultipartFile template = new MockMultipartFile(
+                "templateFile", "template.pptx", MediaType.APPLICATION_OCTET_STREAM_VALUE, "pptx".getBytes());
+
+        assertThatThrownBy(() -> workflowService.createJob(new PptJobCreateCommand(
+                List.of(source), template, "demo", "ppt169", null, "native-enhance-pptx", null)))
+                .isInstanceOf(PptJobStateException.class)
+                .hasMessageContaining("templateFile");
+        assertThatThrownBy(() -> workflowService.createJob(new PptJobCreateCommand(
+                List.of(source), null, "demo", "ppt169", null, "native-enhance-pptx", "{}")))
+                .isInstanceOf(PptJobStateException.class)
+                .hasMessageContaining("templateConstraints");
+    }
+
+    @Test
     void createsTemplateFillJobWithRoleIsolatedUploadsAndStartsPrepareFlow() {
         MockMultipartFile template = new MockMultipartFile(
                 "templateFile", "brand.PPTX", MediaType.APPLICATION_OCTET_STREAM_VALUE, "pptx".getBytes());

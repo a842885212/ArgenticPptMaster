@@ -2,6 +2,7 @@ package domi.argenticpptmaster.service;
 
 import domi.argenticpptmaster.config.PptMasterProperties;
 import domi.argenticpptmaster.domain.BeautifyPptxErrorCode;
+import domi.argenticpptmaster.domain.NativeEnhanceErrorCode;
 import domi.argenticpptmaster.domain.PptConfirmation;
 import domi.argenticpptmaster.domain.PptConfirmationAction;
 import domi.argenticpptmaster.domain.PptJob;
@@ -104,6 +105,7 @@ public class PptWorkflowService {
     private final BeautifyPptxAuditSink beautifyAuditSink;
     private final TemplateFillTelemetry telemetry;
     private final BeautifyPptxTelemetry beautifyTelemetry;
+    private final PptNativeEnhanceAsyncRunner nativeEnhanceAsyncRunner;
     private final PptOutlineStore outlineStore = new PptOutlineStore();
     private final PptArtifactRegistry artifactRegistry = new PptArtifactRegistry();
     private final Map<String, PptRevisionImpactPreview> revisionImpactPreviews = new ConcurrentHashMap<>();
@@ -122,7 +124,7 @@ public class PptWorkflowService {
                 templateFillPlanningOrchestrator, templateFillPlanStore, templateFillConstraintsParser,
                 new TemplateFillRolloutPolicy(properties),
                 new FailClosedPptAccessContextResolver(),
-                null, null, null, null, null, null, null, null);
+                null, null, null, null, null, null, null, null, null);
     }
 
     public PptWorkflowService(
@@ -138,7 +140,8 @@ public class PptWorkflowService {
             PptAccessContextResolver accessContextResolver) {
         this(properties, repository, events, asyncRunner, templateFillAsyncRunner,
                 templateFillPlanningOrchestrator, templateFillPlanStore, templateFillConstraintsParser,
-                templateFillRolloutPolicy, accessContextResolver, null, null, null, null, null, null, null, null);
+                templateFillRolloutPolicy, accessContextResolver, null, null, null, null, null, null, null, null,
+                null);
     }
 
     public PptWorkflowService(
@@ -156,7 +159,7 @@ public class PptWorkflowService {
         this(properties, repository, events, asyncRunner, templateFillAsyncRunner,
                 templateFillPlanningOrchestrator, templateFillPlanStore, templateFillConstraintsParser,
                 templateFillRolloutPolicy, accessContextResolver, jobAccessAuthorizer,
-                null, null, null, null, null, null, null);
+                null, null, null, null, null, null, null, null);
     }
 
     public PptWorkflowService(
@@ -177,7 +180,7 @@ public class PptWorkflowService {
         this(properties, repository, events, asyncRunner, templateFillAsyncRunner,
                 templateFillPlanningOrchestrator, templateFillPlanStore, templateFillConstraintsParser,
                 templateFillRolloutPolicy, accessContextResolver, jobAccessAuthorizer,
-                lifecycleStore, templateFillAuditSink, telemetry, null, null, null, null);
+                lifecycleStore, templateFillAuditSink, telemetry, null, null, null, null, null);
     }
 
     @org.springframework.beans.factory.annotation.Autowired
@@ -199,7 +202,8 @@ public class PptWorkflowService {
             BeautifyPptxRolloutPolicy beautifyRolloutPolicy,
             BeautifyPptxLifecycleStore beautifyLifecycleStore,
             BeautifyPptxAuditSink beautifyAuditSink,
-            BeautifyPptxTelemetry beautifyTelemetry) {
+            BeautifyPptxTelemetry beautifyTelemetry,
+            PptNativeEnhanceAsyncRunner nativeEnhanceAsyncRunner) {
         this.properties = properties;
         this.repository = repository;
         this.events = events;
@@ -236,6 +240,7 @@ public class PptWorkflowService {
                 : beautifyAuditSink;
         this.telemetry = telemetry;
         this.beautifyTelemetry = beautifyTelemetry;
+        this.nativeEnhanceAsyncRunner = nativeEnhanceAsyncRunner;
     }
 
     /**
@@ -283,6 +288,7 @@ public class PptWorkflowService {
             throw new PptJobStateException(ex.getMessage());
         }
         validateBeautifyContract(mode, files, command.templateFile(), command.templateConstraintsJson());
+        validateNativeEnhanceContract(mode, files, command.templateFile(), command.templateConstraintsJson());
         validateBeautifyUploadSize(mode, files);
         PptAccessContext access = null;
         if (mode == PptWorkflowMode.TEMPLATE_FILL) {
@@ -331,6 +337,8 @@ public class PptWorkflowService {
             if (beautifyTelemetry != null) {
                 beautifyTelemetry.recordCreation(BeautifyPptxTelemetry.CreationOutcome.ACCEPTED);
             }
+        } else if (mode == PptWorkflowMode.NATIVE_ENHANCE_PPTX) {
+            submitNativeEnhanceMvp(job.id());
         } else if (mode != PptWorkflowMode.TEMPLATE_FILL) {
             asyncRunner.startAgent(job.id());
         } else {
@@ -1085,6 +1093,8 @@ public class PptWorkflowService {
                 telemetry.recordRecovery(true);
             }
             templateFillAsyncRunner.resumeFromCheckpoint(job.id(), checkpoint);
+        } else if (job.workflowMode() == PptWorkflowMode.NATIVE_ENHANCE_PPTX) {
+            submitNativeEnhanceMvp(job.id());
         } else if (job.workflowMode() == PptWorkflowMode.BEAUTIFY_PPTX
                 && checkpoint != PptJobNode.BEAUTIFY_ANALYZED) {
             if (beautifyTelemetry != null) {
@@ -1116,6 +1126,19 @@ public class PptWorkflowService {
         } catch (java.util.concurrent.RejectedExecutionException ex) {
             asyncRunner.rejectBeautifyAdmission(jobId);
         }
+    }
+
+    private void submitNativeEnhanceMvp(UUID jobId) {
+        if (nativeEnhanceAsyncRunner == null) {
+            PptJob job = getJob(jobId);
+            job.fail(NativeEnhanceErrorCode.NATIVE_ENHANCE_INIT_FAILED.code()
+                    + ": native-enhance runner is unavailable");
+            events.record(job, PptJobEvent.of(PptJobEventType.JOB_FAILED, "native-enhance runner unavailable",
+                    Map.of("errorCode", NativeEnhanceErrorCode.NATIVE_ENHANCE_INIT_FAILED.code())));
+            repository.save(job);
+            return;
+        }
+        nativeEnhanceAsyncRunner.runNotesOnlyMvp(jobId);
     }
 
     /** 任务终态时写入 beautify 生命周期保留截止时间（清单缺失时忽略）。 */
@@ -1380,6 +1403,32 @@ public class PptWorkflowService {
                 ? "" : source.getOriginalFilename());
         if (!name.toLowerCase().endsWith(".pptx")) {
             throw new PptJobStateException("beautify-pptx source file must have .pptx extension");
+        }
+    }
+
+    private void validateNativeEnhanceContract(
+            PptWorkflowMode mode, List<MultipartFile> files, MultipartFile templateFile, String templateConstraintsJson) {
+        if (mode != PptWorkflowMode.NATIVE_ENHANCE_PPTX) {
+            return;
+        }
+        if (templateFile != null) {
+            throw new PptJobStateException("templateFile is not supported for native-enhance-pptx workflow");
+        }
+        if (templateConstraintsJson != null && !templateConstraintsJson.isBlank()) {
+            throw new PptJobStateException("templateConstraints is not supported for native-enhance-pptx workflow");
+        }
+        List<MultipartFile> nonEmptyFiles = files == null ? List.of() : files.stream()
+                .filter(file -> file != null && !file.isEmpty())
+                .toList();
+        if (nonEmptyFiles.size() != 1) {
+            throw new PptJobStateException(
+                    "native-enhance-pptx workflow requires exactly one non-empty .pptx source file");
+        }
+        MultipartFile source = nonEmptyFiles.get(0);
+        String name = StringUtils.cleanPath(source.getOriginalFilename() == null
+                ? "" : source.getOriginalFilename());
+        if (!name.toLowerCase().endsWith(".pptx")) {
+            throw new PptJobStateException("native-enhance-pptx source file must have .pptx extension");
         }
     }
 

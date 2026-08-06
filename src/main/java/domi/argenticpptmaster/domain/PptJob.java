@@ -738,7 +738,9 @@ public class PptJob {
     public synchronized void startNewResumeAttempt() {
         this.resumeCount++;
         this.activeAttemptSessionId = buildAttemptSessionId(resumeCount);
-        this.status = workflowMode == PptWorkflowMode.TEMPLATE_FILL || workflowMode == PptWorkflowMode.BEAUTIFY_PPTX
+        this.status = workflowMode == PptWorkflowMode.TEMPLATE_FILL
+                || workflowMode == PptWorkflowMode.BEAUTIFY_PPTX
+                || workflowMode == PptWorkflowMode.NATIVE_ENHANCE_PPTX
                 ? PptJobStatus.PREPARING
                 : PptJobStatus.RUNNING_AGENT;
         this.lastFailureNode = null;

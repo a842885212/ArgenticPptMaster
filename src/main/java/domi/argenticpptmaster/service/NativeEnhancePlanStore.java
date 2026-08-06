@@ -144,9 +144,58 @@ public final class NativeEnhancePlanStore {
     }
 
     public static boolean audioEnabled(PptJob job) {
+        return moduleEnabled(job, "audio");
+    }
+
+    public static boolean timingsEnabled(PptJob job) {
+        return moduleEnabled(job, "timings");
+    }
+
+    public static boolean transitionsEnabled(PptJob job) {
+        return moduleEnabled(job, "transitions");
+    }
+
+    public static boolean moduleEnabled(PptJob job, String module) {
         return readPlan(job)
-                .map(plan -> plan.path("modules").path("audio").path("enabled").asBoolean(false))
+                .map(plan -> plan.path("modules").path(module).path("enabled").asBoolean(false))
                 .orElse(false);
+    }
+
+    public static boolean isAllowedTransitionEffect(String effect) {
+        return effect != null && TRANSITION_EFFECTS.contains(effect);
+    }
+
+    /**
+     * Reads apply-relevant settings from the confirmed plan (defaults match upstream V1).
+     */
+    public static ApplySettings applySettings(PptJob job) {
+        ObjectNode plan = readPlan(job).orElse(null);
+        if (plan == null) {
+            return ApplySettings.defaults();
+        }
+        JsonNode modules = plan.path("modules");
+        JsonNode transitions = modules.path("transitions");
+        JsonNode timings = modules.path("timings");
+        String effect = transitions.path("effect").asText("fade");
+        boolean transitionsEnabled = modules.path("transitions").path("enabled").asBoolean(false);
+        if (transitionsEnabled && !isAllowedTransitionEffect(effect)) {
+            throw new PptJobStateException("unsupported transition effect: " + effect);
+        }
+        if (!isAllowedTransitionEffect(effect)) {
+            effect = "fade";
+        }
+        double duration = transitions.path("duration").asDouble(0.5);
+        boolean applyWithoutAudio = transitions.path("apply_without_audio").asBoolean(false);
+        double narrationPadding = timings.path("narration_padding").asDouble(0.4);
+        return new ApplySettings(
+                modules.path("notes").path("enabled").asBoolean(false),
+                modules.path("audio").path("enabled").asBoolean(false),
+                modules.path("timings").path("enabled").asBoolean(false),
+                transitionsEnabled,
+                effect,
+                duration,
+                applyWithoutAudio,
+                narrationPadding);
     }
 
     public static void writeProjectAudio(PptJob job, Map<String, Object> answers) {
@@ -176,6 +225,32 @@ public final class NativeEnhancePlanStore {
             throw ex;
         } catch (IOException ex) {
             throw new PptJobStateException("failed to write project.json audio");
+        }
+    }
+
+    public static Map<String, String> readProjectAudio(PptJob job) {
+        Path projectJson = projectJsonPath(job);
+        if (!Files.isRegularFile(projectJson)) {
+            throw new PptJobStateException("project.json is missing");
+        }
+        try {
+            JsonNode root = OBJECT_MAPPER.readTree(projectJson.toFile());
+            JsonNode audio = root.path("audio");
+            String provider = audio.path("provider").asText("edge");
+            String voice = audio.path("voice").asText("zh-CN-YunjianNeural");
+            String rate = audio.path("rate").asText("+0%");
+            if (provider.isBlank() || voice.isBlank()) {
+                throw new PptJobStateException("project.json audio provider/voice is missing");
+            }
+            Map<String, String> result = new LinkedHashMap<>();
+            result.put("provider", provider);
+            result.put("voice", voice);
+            result.put("rate", rate.isBlank() ? "+0%" : rate);
+            return Map.copyOf(result);
+        } catch (PptJobStateException ex) {
+            throw ex;
+        } catch (IOException ex) {
+            throw new PptJobStateException("failed to read project.json audio");
         }
     }
 
@@ -340,5 +415,20 @@ public final class NativeEnhancePlanStore {
     }
 
     public record PlanMetadata(int version, String digest, String status) {
+    }
+
+    public record ApplySettings(
+            boolean notesEnabled,
+            boolean audioEnabled,
+            boolean timingsEnabled,
+            boolean transitionsEnabled,
+            String transitionEffect,
+            double transitionDuration,
+            boolean applyWithoutAudio,
+            double narrationPadding) {
+
+        public static ApplySettings defaults() {
+            return new ApplySettings(true, false, false, false, "fade", 0.5, false, 0.4);
+        }
     }
 }

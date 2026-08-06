@@ -6,9 +6,11 @@ package domi.argenticpptmaster.domain;
 public enum NativeEnhanceErrorCode {
     NATIVE_ENHANCE_INIT_FAILED,
     NATIVE_ENHANCE_PLAN_FAILED,
+    NATIVE_ENHANCE_AUDIO_FAILED,
     NATIVE_ENHANCE_VALIDATE_FAILED,
     NATIVE_ENHANCE_APPLY_FAILED,
-    NATIVE_ENHANCE_OUTPUT_INVALID;
+    NATIVE_ENHANCE_OUTPUT_INVALID,
+    NATIVE_ENHANCE_FFPROBE_UNAVAILABLE;
 
     public String code() {
         return name();

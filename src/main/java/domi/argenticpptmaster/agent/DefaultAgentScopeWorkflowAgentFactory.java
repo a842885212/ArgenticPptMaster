@@ -1157,10 +1157,23 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                         Files.isRegularFile(projectPath.resolve("analysis/enhancement_plan.json"));
                 case NOTES_GENERATED -> hasAnyFile(files.get("notes"));
                 case AUDIO_VOICE_CONFIRMED -> Files.isRegularFile(projectPath.resolve("project.json"));
+                case AUDIO_GENERATED -> Files.isDirectory(projectPath.resolve("audio"))
+                        && hasAnyAudioMp3(projectPath.resolve("audio"));
                 case NATIVE_ENHANCE_VALIDATED -> Files.isRegularFile(projectPath.resolve("validation/report.json"));
-                case NATIVE_ENHANCE_OUTPUT_VALIDATED -> hasAnyFile(files.get("exports"));
+                case NATIVE_ENHANCE_OUTPUT_VALIDATED ->
+                        Files.isRegularFile(projectPath.resolve("validation/native-enhance-readback.json"))
+                                || hasAnyFile(files.get("exports"));
                 case OUTPUT_VALIDATED -> hasAnyFile(files.get("exports"));
             };
+        }
+
+        private boolean hasAnyAudioMp3(Path audioDir) {
+            try (Stream<Path> stream = Files.list(audioDir)) {
+                return stream.anyMatch(path -> Files.isRegularFile(path)
+                        && path.getFileName().toString().endsWith(".mp3"));
+            } catch (IOException ex) {
+                return false;
+            }
         }
 
         private boolean hasGeneratedImages(Path projectPath) {

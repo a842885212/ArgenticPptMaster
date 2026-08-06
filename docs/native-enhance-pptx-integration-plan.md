@@ -79,7 +79,7 @@ ppt_to_md.py <exports/*_enhanced.pptx> -o validation/readback.md
 | `PptConfirmationStagePolicy` / `PptConfirmationStageResolver` | 已支持 `outline_confirmation`、`plan_confirmation`、图片相关 stage、`template_fill_plan`、`beautify_plan_confirmation`、`enhancement_plan_confirmation`、`audio_voice_confirmation` |
 | 上游脚本可达性 | 依赖配置的 `ppt-master.repo-path`；需确认其中包含 `native_enhance_pptx.py`（包装）、`native_narration_pptx.py`（实现）、`notes_to_audio.py`、`ppt_to_md.py`，以及 `ffprobe`（音频时长计时） |
 
-当前即使上传 `.pptx`，在 `BASIC` / `BEAUTIFY_PPTX` / `TEMPLATE_FILL` 下也不会执行 native enhance 的 `init → plan → notes/audio → apply` 契约。beautify 规划文档此前将该能力标注为「本服务暂不接入」——本规划即为其正式接入蓝图；**阶段 1–3 已接入 notes-only、托管分析与双确认门禁**，阶段 4–5（完整音频链路、灰度生产化）仍未完成。
+当前即使上传 `.pptx`，在 `BASIC` / `BEAUTIFY_PPTX` / `TEMPLATE_FILL` 下也不会执行 native enhance 的 `init → plan → notes/audio → apply` 契约。beautify 规划文档此前将该能力标注为「本服务暂不接入」——本规划即为其正式接入蓝图；**阶段 1–4 已接入 notes-only、托管分析、双确认门禁与完整 V1 旁白模块（audio/timings/transitions + read-back）**，阶段 5（灰度生产化）仍未完成。
 
 ### 2.2 设计结论
 
@@ -255,7 +255,7 @@ PROJECT_READY
 
 ## 5. 分阶段计划（由简单到复杂）
 
-> **文档状态**：阶段 0–3 已完成；阶段 4–5 仍为规划项。阶段 3 已落地 enhancement plan / audio voice 确认门禁、受限 Agent profile，并移除生产路径 draft 后自动 confirmed。
+> **文档状态**：阶段 0–4 已完成；阶段 5 仍为规划项。阶段 4 已落地 `notes_to_audio`、受控 timings/transitions apply、`ffprobe` readiness、结构化 `native-enhance-readback.json`；M3 已完成。
 
 ### 阶段 0：可行性基线与契约冻结（已完成）
 
@@ -328,7 +328,7 @@ PROJECT_READY
 
 **阶段 3 完成记录**：OpenSpec change `native-enhance-pptx-phase-3` 已实现。落地：停止 draft 后自动 confirmed；服务端打开 `enhancement_plan_confirmation`；`/confirm` 批准后 notes→validate→apply；`audio_voice_confirmation` → `AUDIO_VOICE_CONFIRMED` 与 `project.json.audio` 写入；受限 Agent profile；永不 `--force`。完整 TTS 仍属阶段 4。
 
-### 阶段 4：音频、计时、切换与导出校验（未开始）
+### 阶段 4：音频、计时、切换与导出校验（已完成）
 
 目的：覆盖完整 V1 narration 模块，并做导出后 read-back。
 
@@ -343,6 +343,7 @@ PROJECT_READY
 
 完成标准：notes/audio/timings/transitions 均有明确支持或明确失败；校验报告可被前端/运维读取。
 
+**阶段 4 完成记录**：OpenSpec change `native-enhance-pptx-phase-4` 已实现。落地：`AUDIO_GENERATED` + `notes_to_audio` 包装（语音确认后）、受控 apply 参数、`NativeEnhanceReadinessContributor`（ffprobe）、`NativeEnhanceOutputVerifier` → `validation/native-enhance-readback.json`；notes-only 路径保持可用。
 ### 阶段 5：生产化、灰度与运维（未开始）
 
 目的：可安全灰度并可长期维护。
@@ -431,7 +432,7 @@ Agent / 服务包装器 **不得**用 `--force` 或改写确认状态绕过门�
 1. **M0：可行性通过** — 阶段 0 完成，兼容矩阵与冻结契约已形成。（**已完成**）
 2. **M1：备注 MVP** — 阶段 1 完成，notes-only 可创建、导出、回读。（**已完成**）
 3. **M2：可确认 Beta** — 阶段 2–3 完成，具备托管 init/plan、双确认门禁、恢复与观测。（**已完成**）
-4. **M3：V1 模块完整** — 阶段 4 完成，覆盖 audio/timings/transitions 与导出校验。（未开始）
+4. **M3：V1 模块完整** — 阶段 4 完成，覆盖 audio/timings/transitions 与导出校验。（**已完成**）
 5. **M4：生产发布** — 阶段 5 的灰度、权限、指标与运维条件达标。（未开始）
 
 实施时每个阶段应独立提交、独立测试和独立审查；涉及 API/任务状态变化时，按项目约定在改动前后执行文档同步流程。

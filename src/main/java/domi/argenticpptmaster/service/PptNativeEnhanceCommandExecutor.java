@@ -27,12 +27,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.stream.Stream;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipFile;
 import org.springframework.stereotype.Component;
 
 /**
- * Native-enhance 受限命令编排：托管 init/draft plan、checkpoint 恢复与 notes-only MVP。
+ * Native-enhance 受限命令编排：托管 init/draft plan、checkpoint 恢复、音频生成与受控 apply。
  * 永不传递 {@code --force}。
  */
 @Component
@@ -40,22 +38,29 @@ public class PptNativeEnhanceCommandExecutor {
 
     static final String NATIVE_ENHANCE_SCRIPT = "skills/ppt-master/scripts/native_enhance_pptx.py";
     static final String PPT_TO_MD_SCRIPT = "skills/ppt-master/scripts/source_to_md/ppt_to_md.py";
+    static final String NOTES_TO_AUDIO_SCRIPT = "skills/ppt-master/scripts/notes_to_audio.py";
 
     private final PptMasterProperties properties;
     private final PptJobRepository repository;
     private final PptWorkflowEvents events;
     private final PptMasterCommandExecutor commands;
+    private final NativeEnhanceReadinessContributor readiness;
+    private final NativeEnhanceOutputVerifier outputVerifier;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     public PptNativeEnhanceCommandExecutor(
             PptMasterProperties properties,
             PptJobRepository repository,
             PptWorkflowEvents events,
-            PptMasterCommandExecutor commands) {
+            PptMasterCommandExecutor commands,
+            NativeEnhanceReadinessContributor readiness,
+            NativeEnhanceOutputVerifier outputVerifier) {
         this.properties = properties;
         this.repository = repository;
         this.events = events;
         this.commands = commands;
+        this.readiness = readiness;
+        this.outputVerifier = outputVerifier;
     }
 
     /** 阶段 3：托管 init/draft 后打开确认门禁；已确认则继续 notes-only。 */
@@ -68,7 +73,7 @@ public class PptNativeEnhanceCommandExecutor {
         resumeFromCheckpoint(jobId, PptJobNode.ENHANCEMENT_PLAN_CONFIRMED);
     }
 
-    /** 确认语音配置后继续（Phase 3 无 TTS；notes-only 且 audio 关闭时通常不会走到这里）。 */
+    /** 确认语音配置后继续 audio→validate→apply→read-back。 */
     public void continueAfterAudioVoiceConfirmation(UUID jobId) {
         resumeFromCheckpoint(jobId, PptJobNode.AUDIO_VOICE_CONFIRMED);
     }
@@ -98,6 +103,11 @@ public class PptNativeEnhanceCommandExecutor {
                 openAudioVoiceConfirmation(job);
                 return;
             }
+            if (NativeEnhancePlanStore.audioEnabled(job)
+                    && !nodeCompleted(job, PptJobNode.AUDIO_GENERATED)) {
+                generateAudio(job, project);
+            }
+            requireFfprobeIfTimingsEnabled(job);
             if (!nodeCompleted(job, PptJobNode.NATIVE_ENHANCE_VALIDATED)) {
                 validateProject(job, project);
             }
@@ -108,7 +118,7 @@ public class PptNativeEnhanceCommandExecutor {
                 export = applyProject(job, project);
             }
             if (!nodeCompleted(job, PptJobNode.NATIVE_ENHANCE_OUTPUT_VALIDATED)) {
-                lightOutputValidate(job, workspace, project, export, slideCount);
+                structuredOutputValidate(job, workspace, project, export, slideCount);
             }
         } catch (NativeEnhanceExecutionException ex) {
             fail(job, ex);
@@ -174,7 +184,7 @@ public class PptNativeEnhanceCommandExecutor {
         }
         return switch (checkpoint) {
             case NATIVE_ENHANCE_INITIALIZED, ENHANCEMENT_PLAN_DRAFTED, ENHANCEMENT_PLAN_CONFIRMED,
-                    NOTES_GENERATED, AUDIO_VOICE_CONFIRMED, NATIVE_ENHANCE_VALIDATED, PPT_EXPORTED,
+                    NOTES_GENERATED, AUDIO_VOICE_CONFIRMED, AUDIO_GENERATED, NATIVE_ENHANCE_VALIDATED, PPT_EXPORTED,
                     NATIVE_ENHANCE_OUTPUT_VALIDATED -> true;
             default -> false;
         };
@@ -340,6 +350,51 @@ public class PptNativeEnhanceCommandExecutor {
         recordCheckpoint(job, PptJobNode.NATIVE_ENHANCE_VALIDATED, summary);
     }
 
+    private void generateAudio(PptJob job, Path project) throws IOException {
+        if (!nodeCompleted(job, PptJobNode.AUDIO_VOICE_CONFIRMED)) {
+            throw new NativeEnhanceExecutionException(
+                    "AUDIO", NativeEnhanceErrorCode.NATIVE_ENHANCE_AUDIO_FAILED,
+                    "audio voice must be confirmed before notes_to_audio");
+        }
+        Map<String, String> audio = NativeEnhancePlanStore.readProjectAudio(job);
+        NativeEnhancePptxProperties limits = properties.nativeEnhancePptx();
+        Path audioDir = requireInside(project, project.resolve("audio"), "audio");
+        Files.createDirectories(audioDir);
+        List<String> args = buildNotesToAudioArguments(project, audio);
+        run(job, "AUDIO", NOTES_TO_AUDIO_SCRIPT, args, limits.audioTimeout(),
+                NativeEnhanceErrorCode.NATIVE_ENHANCE_AUDIO_FAILED);
+        int notesReady = NativeEnhanceOutputVerifier.countNotesFiles(project);
+        int audioReady = NativeEnhanceOutputVerifier.countAudioFiles(project);
+        recordCheckpoint(job, PptJobNode.AUDIO_GENERATED, Map.of(
+                "audioCoverage", Map.of("ready", audioReady, "total", notesReady),
+                "provider", audio.get("provider"),
+                "voice", audio.get("voice")));
+    }
+
+    static List<String> buildNotesToAudioArguments(Path project, Map<String, String> audio) {
+        List<String> args = new ArrayList<>();
+        args.add(project.toString());
+        args.add("--voice");
+        args.add(audio.get("voice"));
+        args.add("--rate");
+        args.add(audio.getOrDefault("rate", "+0%"));
+        args.add("--provider");
+        args.add(audio.getOrDefault("provider", "edge"));
+        return List.copyOf(args);
+    }
+
+    private void requireFfprobeIfTimingsEnabled(PptJob job) {
+        if (!NativeEnhancePlanStore.timingsEnabled(job)) {
+            return;
+        }
+        if (!readiness.isFfprobeAvailable()) {
+            throw new NativeEnhanceExecutionException(
+                    "TIMINGS",
+                    NativeEnhanceErrorCode.NATIVE_ENHANCE_FFPROBE_UNAVAILABLE,
+                    "ffprobe is required when timings are enabled");
+        }
+    }
+
     private Path applyProject(PptJob job, Path project) throws IOException {
         if (!nodeCompleted(job, PptJobNode.ENHANCEMENT_PLAN_CONFIRMED)) {
             throw new NativeEnhanceExecutionException(
@@ -351,21 +406,24 @@ public class PptNativeEnhanceCommandExecutor {
                     "APPLY", NativeEnhanceErrorCode.NATIVE_ENHANCE_APPLY_FAILED,
                     "audio voice must be confirmed before apply");
         }
+        if (NativeEnhancePlanStore.audioEnabled(job) && !nodeCompleted(job, PptJobNode.AUDIO_GENERATED)) {
+            throw new NativeEnhanceExecutionException(
+                    "APPLY", NativeEnhanceErrorCode.NATIVE_ENHANCE_APPLY_FAILED,
+                    "audio must be generated before apply");
+        }
         NativeEnhancePlanStore.PlanMetadata plan = NativeEnhancePlanStore.read(job).orElse(null);
         if (plan == null || !"confirmed".equals(plan.status())) {
             throw new NativeEnhanceExecutionException(
                     "APPLY", NativeEnhanceErrorCode.NATIVE_ENHANCE_APPLY_FAILED,
                     "enhancement plan status must be confirmed");
         }
+        NativeEnhancePlanStore.ApplySettings settings = NativeEnhancePlanStore.applySettings(job);
         NativeEnhancePptxProperties limits = properties.nativeEnhancePptx();
         Path exportsDir = requireInside(project, project.resolve("exports"), "exports");
         Files.createDirectories(exportsDir);
         job.startExport();
         repository.save(job);
-        List<String> args = new ArrayList<>();
-        args.add("apply");
-        args.add(project.toString());
-        args.add("--overwrite");
+        List<String> args = buildApplyArguments(project, settings);
         run(job, "APPLY", NATIVE_ENHANCE_SCRIPT, args, limits.applyTimeout(),
                 NativeEnhanceErrorCode.NATIVE_ENHANCE_APPLY_FAILED);
         Path export = requireUniqueEnhancedExport(exportsDir);
@@ -374,23 +432,56 @@ public class PptNativeEnhanceCommandExecutor {
         return export;
     }
 
-    private void lightOutputValidate(PptJob job, Path workspace, Path project, Path export, int expectedSlides)
+    static List<String> buildApplyArguments(Path project, NativeEnhancePlanStore.ApplySettings settings) {
+        List<String> args = new ArrayList<>();
+        args.add("apply");
+        args.add(project.toString());
+        args.add("--overwrite");
+        if (settings.transitionsEnabled()) {
+            if (!NativeEnhancePlanStore.isAllowedTransitionEffect(settings.transitionEffect())) {
+                throw new NativeEnhanceExecutionException(
+                        "APPLY", NativeEnhanceErrorCode.NATIVE_ENHANCE_APPLY_FAILED,
+                        "unsupported transition effect: " + settings.transitionEffect());
+            }
+            args.add("--transition");
+            args.add(settings.transitionEffect());
+            args.add("--transition-duration");
+            args.add(Double.toString(settings.transitionDuration()));
+            if (settings.applyWithoutAudio()) {
+                args.add("--apply-transition-without-audio");
+            }
+        }
+        if (settings.timingsEnabled()) {
+            args.add("--narration-padding");
+            args.add(Double.toString(settings.narrationPadding()));
+        }
+        return List.copyOf(args);
+    }
+
+    private void structuredOutputValidate(PptJob job, Path workspace, Path project, Path export, int expectedSlides)
             throws IOException {
         NativeEnhancePptxProperties limits = properties.nativeEnhancePptx();
-        int actualSlides = countSlides(export);
-        if (expectedSlides > 0 && actualSlides != expectedSlides) {
+        Path validationDir = requireInside(project, project.resolve("validation"), "validation");
+        Files.createDirectories(validationDir);
+        Path readbackMd = validationDir.resolve("readback.md");
+        run(job, "READBACK", PPT_TO_MD_SCRIPT,
+                List.of(export.toString(), "-o", readbackMd.toString()),
+                limits.applyTimeout(),
+                NativeEnhanceErrorCode.NATIVE_ENHANCE_OUTPUT_INVALID);
+
+        NativeEnhancePlanStore.ApplySettings settings = NativeEnhancePlanStore.applySettings(job);
+        int notesFiles = NativeEnhanceOutputVerifier.countNotesFiles(project);
+        int audioFiles = NativeEnhanceOutputVerifier.countAudioFiles(project);
+        NativeEnhanceOutputVerifier.ReadbackResult result = outputVerifier.verify(
+                export, validationDir, expectedSlides, settings, notesFiles, audioFiles);
+        if (!result.passed()) {
             throw new NativeEnhanceExecutionException(
                     "OUTPUT",
                     NativeEnhanceErrorCode.NATIVE_ENHANCE_OUTPUT_INVALID,
-                    "slide count mismatch: expected=" + expectedSlides + ", actual=" + actualSlides);
+                    "native-enhance readback failed: status=" + result.status()
+                            + ", errors=" + result.errorCount());
         }
-        Path validationDir = requireInside(project, project.resolve("validation"), "validation");
-        Files.createDirectories(validationDir);
-        Path readback = validationDir.resolve("readback.md");
-        run(job, "READBACK", PPT_TO_MD_SCRIPT,
-                List.of(export.toString(), "-o", readback.toString()),
-                limits.applyTimeout(),
-                NativeEnhanceErrorCode.NATIVE_ENHANCE_OUTPUT_INVALID);
+
         Path deliveryDir = requireInside(workspace, workspace.resolve("exports"), "delivery exports");
         Files.createDirectories(deliveryDir);
         Path delivery = requireInside(workspace, deliveryDir.resolve(export.getFileName().toString()), "delivery");
@@ -398,14 +489,20 @@ public class PptNativeEnhanceCommandExecutor {
         Map<String, Object> summary = new LinkedHashMap<>();
         summary.put("exportFileName", delivery.getFileName().toString());
         summary.put("sourcePageCount", expectedSlides);
-        summary.put("actualPageCount", actualSlides);
-        summary.put("readbackPresent", Files.isRegularFile(readback));
-        summary.put("pageCountMatch", expectedSlides <= 0 || expectedSlides == actualSlides);
+        summary.put("actualPageCount", result.actualPageCount());
+        summary.put("readbackPresent", Files.isRegularFile(readbackMd));
+        summary.put("readbackReport", NativeEnhanceOutputVerifier.REPORT_FILE);
+        summary.put("pageCountMatch", expectedSlides <= 0 || expectedSlides == result.actualPageCount());
+        summary.put("outputValidationSummary", Map.of(
+                "status", result.status(),
+                "warningCount", result.warningCount(),
+                "errorCount", result.errorCount()));
         recordCheckpoint(job, PptJobNode.NATIVE_ENHANCE_OUTPUT_VALIDATED, summary);
         job.complete(delivery);
         repository.save(job);
         events.record(job, PptJobEvent.of(PptJobEventType.EXPORT_READY, "native-enhance export ready",
-                Map.of("fileName", delivery.getFileName().toString(), "sourcePageCount", expectedSlides)));
+                Map.of("fileName", delivery.getFileName().toString(), "sourcePageCount", expectedSlides,
+                        "outputValidationStatus", result.status())));
     }
 
     private Path requireSourcePptx(PptJob job, Path workspace) {
@@ -471,21 +568,6 @@ public class PptNativeEnhanceCommandExecutor {
         return exports.get(0);
     }
 
-    private static int countSlides(Path exportPptx) throws IOException {
-        int count = 0;
-        try (ZipFile zip = new ZipFile(exportPptx.toFile())) {
-            var entries = zip.entries();
-            while (entries.hasMoreElements()) {
-                ZipEntry entry = entries.nextElement();
-                String name = entry.getName();
-                if (name.startsWith("ppt/slides/slide") && name.endsWith(".xml") && !name.contains("_rels")) {
-                    count++;
-                }
-            }
-        }
-        return count;
-    }
-
     private void run(
             PptJob job,
             String stage,
@@ -508,7 +590,9 @@ public class PptNativeEnhanceCommandExecutor {
     }
 
     static void rejectUnsafeCommand(String stage, String script, List<String> arguments) {
-        if (!NATIVE_ENHANCE_SCRIPT.equals(script) && !PPT_TO_MD_SCRIPT.equals(script)) {
+        if (!NATIVE_ENHANCE_SCRIPT.equals(script)
+                && !PPT_TO_MD_SCRIPT.equals(script)
+                && !NOTES_TO_AUDIO_SCRIPT.equals(script)) {
             throw new NativeEnhanceExecutionException(
                     stage, NativeEnhanceErrorCode.NATIVE_ENHANCE_INIT_FAILED, "script is not allowed: " + script);
         }

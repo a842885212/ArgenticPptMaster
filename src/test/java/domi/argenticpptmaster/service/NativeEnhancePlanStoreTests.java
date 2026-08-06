@@ -74,6 +74,39 @@ class NativeEnhancePlanStoreTests {
         assertThat(json).contains("zh-CN-XiaoxiaoNeural").contains("+5%");
     }
 
+    @Test
+    void rejectUnsupportedTransitionEffectOnConfirm() throws Exception {
+        PptJob job = jobWithDraftPlan(false);
+        NativeEnhancePlanStore.PlanMetadata draft = NativeEnhancePlanStore.ensureDraftMetadata(job);
+        assertThatThrownBy(() -> NativeEnhancePlanStore.confirmDraft(
+                job, draft.version(), draft.digest(), Map.of(
+                        "transitionsEnabled", true,
+                        "transitionEffect", "explode")))
+                .isInstanceOf(PptJobStateException.class)
+                .hasMessageContaining("transition");
+    }
+
+    @Test
+    void applySettingsReadsConfirmedModules() throws Exception {
+        PptJob job = jobWithDraftPlan(false);
+        NativeEnhancePlanStore.PlanMetadata draft = NativeEnhancePlanStore.ensureDraftMetadata(job);
+        NativeEnhancePlanStore.confirmDraft(job, draft.version(), draft.digest(), Map.of(
+                "notesEnabled", true,
+                "audioEnabled", false,
+                "timingsEnabled", true,
+                "transitionsEnabled", true,
+                "transitionEffect", "wipe",
+                "transitionDuration", 0.8,
+                "narrationPadding", 0.3,
+                "applyWithoutAudio", true));
+        NativeEnhancePlanStore.ApplySettings settings = NativeEnhancePlanStore.applySettings(job);
+        assertThat(settings.timingsEnabled()).isTrue();
+        assertThat(settings.transitionsEnabled()).isTrue();
+        assertThat(settings.transitionEffect()).isEqualTo("wipe");
+        assertThat(settings.applyWithoutAudio()).isTrue();
+        assertThat(settings.narrationPadding()).isEqualTo(0.3);
+    }
+
     private PptJob jobWithDraftPlan(boolean withProjectJson) throws Exception {
         Path project = tempDir.resolve("proj-" + UUID.randomUUID());
         Files.createDirectories(project.resolve("analysis"));

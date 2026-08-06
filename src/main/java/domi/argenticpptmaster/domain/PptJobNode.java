@@ -188,6 +188,11 @@ public enum PptJobNode {
     AUDIO_VOICE_CONFIRMED(PptWorkflowMode.NATIVE_ENHANCE_PPTX, true),
 
     /**
+     * notes_to_audio 已生成与 notes stem 对齐的 audio/*.mp3（仅 audio 启用时）。
+     */
+    AUDIO_GENERATED(PptWorkflowMode.NATIVE_ENHANCE_PPTX, false),
+
+    /**
      * native_enhance validate 覆盖校验已通过。
      */
     NATIVE_ENHANCE_VALIDATED(PptWorkflowMode.NATIVE_ENHANCE_PPTX, false),
@@ -210,7 +215,7 @@ public enum PptJobNode {
     BEAUTIFY_OUTPUT_VALIDATED(PptWorkflowMode.BEAUTIFY_PPTX, false),
 
     /**
-     * 原生增强导出后的轻量输出校验（页数/文件存在性；完整 read-back 深化在阶段 4）。
+     * 原生增强导出后的结构化 read-back 校验（native-enhance-readback.json）。
      */
     NATIVE_ENHANCE_OUTPUT_VALIDATED(PptWorkflowMode.NATIVE_ENHANCE_PPTX, false),
 

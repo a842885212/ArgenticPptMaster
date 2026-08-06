@@ -59,6 +59,7 @@ class PptMasterPropertiesTests {
 
         assertThat(properties.nativeEnhancePptx().maxSourceSize()).isEqualTo(50L);
         assertThat(properties.nativeEnhancePptx().validateTimeout()).isEqualTo(Duration.ofSeconds(7));
+        assertThat(properties.nativeEnhancePptx().audioTimeout()).isEqualTo(Duration.ofMinutes(10));
         assertThat(properties.nativeEnhancePptx().maxConcurrentJobs()).isEqualTo(3);
         assertThat(properties.nativeEnhancePptx().queueCapacity()).isEqualTo(9);
         assertThat(properties.toString()).contains("nativeEnhanceMaxSourceSize=50");

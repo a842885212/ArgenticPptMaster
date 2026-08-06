@@ -13,6 +13,7 @@ public record NativeEnhancePptxProperties(
         Duration planTimeout,
         Duration validateTimeout,
         Duration applyTimeout,
+        Duration audioTimeout,
         int maxConcurrentJobs,
         int queueCapacity) {
 
@@ -36,6 +37,9 @@ public record NativeEnhancePptxProperties(
         if (applyTimeout == null || applyTimeout.isZero() || applyTimeout.isNegative()) {
             applyTimeout = Duration.ofMinutes(5);
         }
+        if (audioTimeout == null || audioTimeout.isZero() || audioTimeout.isNegative()) {
+            audioTimeout = Duration.ofMinutes(10);
+        }
         if (maxConcurrentJobs <= 0) {
             maxConcurrentJobs = DEFAULT_MAX_CONCURRENT_JOBS;
         }
@@ -45,7 +49,7 @@ public record NativeEnhancePptxProperties(
     }
 
     public static NativeEnhancePptxProperties defaults() {
-        return new NativeEnhancePptxProperties(0, null, null, null, null, 0, 0);
+        return new NativeEnhancePptxProperties(0, null, null, null, null, null, 0, 0);
     }
 
     /** 测试/手工构造：覆盖资源边界。 */
@@ -57,8 +61,21 @@ public record NativeEnhancePptxProperties(
             Duration applyTimeout,
             int maxConcurrentJobs,
             int queueCapacity) {
+        return forLimits(maxSourceSize, initTimeout, planTimeout, validateTimeout, applyTimeout,
+                null, maxConcurrentJobs, queueCapacity);
+    }
+
+    public static NativeEnhancePptxProperties forLimits(
+            long maxSourceSize,
+            Duration initTimeout,
+            Duration planTimeout,
+            Duration validateTimeout,
+            Duration applyTimeout,
+            Duration audioTimeout,
+            int maxConcurrentJobs,
+            int queueCapacity) {
         return new NativeEnhancePptxProperties(
-                maxSourceSize, initTimeout, planTimeout, validateTimeout, applyTimeout,
+                maxSourceSize, initTimeout, planTimeout, validateTimeout, applyTimeout, audioTimeout,
                 maxConcurrentJobs, queueCapacity);
     }
 }

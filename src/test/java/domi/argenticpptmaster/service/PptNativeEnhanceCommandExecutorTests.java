@@ -58,7 +58,10 @@ class PptNativeEnhanceCommandExecutorTests {
         repository = new InMemoryPptJobRepository();
         events = mock(PptWorkflowEvents.class);
         commands = mock(PptMasterCommandExecutor.class);
-        executor = new PptNativeEnhanceCommandExecutor(properties, repository, events, commands);
+        executor = new PptNativeEnhanceCommandExecutor(
+                properties, repository, events, commands,
+                new NativeEnhanceReadinessContributor(),
+                new NativeEnhanceOutputVerifier());
     }
 
     @Test
@@ -195,6 +198,9 @@ class PptNativeEnhanceCommandExecutorTests {
                 .contains("\"enabled\" : false");
         assertThat(Files.isRegularFile(project.resolve("notes/001.md"))).isTrue();
         assertThat(Files.isRegularFile(project.resolve("notes/002.md"))).isTrue();
+        assertThat(Files.isRegularFile(project.resolve("validation/native-enhance-readback.json"))).isTrue();
+        assertThat(Files.readString(project.resolve("validation/native-enhance-readback.json")))
+                .contains("\"status\" : \"PASSED\"");
 
         @SuppressWarnings("unchecked")
         ArgumentCaptor<List<String>> argsCaptor = ArgumentCaptor.forClass(List.class);
@@ -202,6 +208,44 @@ class PptNativeEnhanceCommandExecutorTests {
                 .runPythonScript(eq(PptNativeEnhanceCommandExecutor.NATIVE_ENHANCE_SCRIPT), argsCaptor.capture(), any());
         assertThat(argsCaptor.getAllValues()).allSatisfy(args ->
                 assertThat(args).noneMatch(arg -> arg != null && arg.contains("--force")));
+    }
+
+    @Test
+    void buildApplyArgumentsIncludesControlledFlagsWithoutForce() {
+        Path project = Path.of("/tmp/proj");
+        NativeEnhancePlanStore.ApplySettings settings = new NativeEnhancePlanStore.ApplySettings(
+                true, true, true, true, "fade", 0.5, true, 0.4);
+        List<String> args = PptNativeEnhanceCommandExecutor.buildApplyArguments(project, settings);
+        assertThat(args).contains("apply", "--overwrite", "--transition", "fade",
+                "--transition-duration", "0.5", "--narration-padding", "0.4",
+                "--apply-transition-without-audio");
+        assertThat(args).noneMatch(a -> a.contains("--force"));
+    }
+
+    @Test
+    void buildApplyArgumentsSkipsTransitionFlagsWhenDisabled() {
+        List<String> args = PptNativeEnhanceCommandExecutor.buildApplyArguments(
+                Path.of("/tmp/proj"),
+                new NativeEnhancePlanStore.ApplySettings(true, false, false, false, "fade", 0.5, false, 0.4));
+        assertThat(args).containsExactly("apply", "/tmp/proj", "--overwrite");
+    }
+
+    @Test
+    void buildNotesToAudioArgumentsUsesConfirmedVoice() {
+        List<String> args = PptNativeEnhanceCommandExecutor.buildNotesToAudioArguments(
+                Path.of("/tmp/proj"),
+                Map.of("provider", "edge", "voice", "zh-CN-YunjianNeural", "rate", "+10%"));
+        assertThat(args).containsExactly(
+                "/tmp/proj", "--voice", "zh-CN-YunjianNeural", "--rate", "+10%", "--provider", "edge");
+        assertThat(args).noneMatch(a -> a.contains("--force"));
+    }
+
+    @Test
+    void rejectUnsafeCommandAllowsNotesToAudioScript() {
+        PptNativeEnhanceCommandExecutor.rejectUnsafeCommand(
+                "AUDIO",
+                PptNativeEnhanceCommandExecutor.NOTES_TO_AUDIO_SCRIPT,
+                List.of("/tmp/proj", "--voice", "x"));
     }
 
     @Test
@@ -366,15 +410,88 @@ class PptNativeEnhanceCommandExecutorTests {
         assertThat(failed.errorMessage().orElse("")).contains("NATIVE_ENHANCE_INIT_FAILED");
     }
 
+    @Test
+    void timingsEnabledFailsClosedWhenFfprobeMissing() throws Exception {
+        UUID jobId = UUID.randomUUID();
+        Path workspace = properties.workspacePath().resolve("jobs").resolve(jobId.toString());
+        Files.createDirectories(workspace.resolve("uploads"));
+        Path source = workspace.resolve("uploads/source.pptx");
+        Files.write(source, new byte[] {0x50, 0x4b});
+
+        Path project = workspace.resolve("projects/phase0");
+        Files.createDirectories(project.resolve("analysis"));
+        Files.createDirectories(project.resolve("notes"));
+        Files.createDirectories(project.resolve("exports"));
+        Files.createDirectories(project.resolve("validation"));
+        Files.writeString(project.resolve("project.json"), """
+                {"schema":"native_pptx_enhancement_project.v1","kind":"native_pptx_enhancement","slide_count":1,"audio":{"provider":"edge","voice":"zh-CN-YunjianNeural","rate":"+0%"}}
+                """);
+        ObjectNode index = objectMapper.createObjectNode();
+        index.put("schema", "native_pptx_enhancement_slide_index.v1");
+        index.put("slide_count", 1);
+        index.putArray("slides").addObject()
+                .put("index", 1).put("note_file", "001.md").put("slide_number", 1).put("title", "Cover");
+        objectMapper.writeValue(project.resolve("analysis/slide_index.json").toFile(), index);
+
+        PptJob job = new PptJob(jobId, "phase0", "ppt169", "notes", PptWorkflowMode.NATIVE_ENHANCE_PPTX, workspace);
+        job.addSource(new PptSourceFile("source.pptx", "application/octet-stream", 2, source));
+        job.prepareProject(project);
+        job.completeNode(PptJobNode.PROJECT_READY, Map.of());
+        job.completeNode(PptJobNode.NATIVE_ENHANCE_INITIALIZED, Map.of());
+        ObjectNode plan = objectMapper.createObjectNode();
+        plan.put("schema", "native_pptx_enhancement_plan.v1");
+        plan.put("status", "draft");
+        plan.put("slide_count", 1);
+        ObjectNode modules = plan.putObject("modules");
+        modules.putObject("notes").put("enabled", true);
+        modules.putObject("audio").put("enabled", false);
+        modules.putObject("timings").put("enabled", true).put("narration_padding", 0.4);
+        modules.putObject("transitions").put("enabled", false);
+        objectMapper.writeValue(project.resolve("analysis/enhancement_plan.json").toFile(), plan);
+        NativeEnhancePlanStore.PlanMetadata draft = NativeEnhancePlanStore.ensureDraftMetadata(job);
+        NativeEnhancePlanStore.confirmDraft(job, draft.version(), draft.digest(), Map.of(
+                "notesEnabled", true,
+                "timingsEnabled", true,
+                "audioEnabled", false,
+                "transitionsEnabled", false));
+        job.completeNode(PptJobNode.ENHANCEMENT_PLAN_DRAFTED, Map.of());
+        job.completeNode(PptJobNode.ENHANCEMENT_PLAN_CONFIRMED, Map.of());
+        repository.save(job);
+
+        PptNativeEnhanceCommandExecutor failingExecutor = new PptNativeEnhanceCommandExecutor(
+                properties, repository, events, commands,
+                new NativeEnhanceReadinessContributor(tempDir.resolve("no-ffprobe").toString()),
+                new NativeEnhanceOutputVerifier());
+
+        assertThatThrownBy(() -> failingExecutor.continueAfterPlanConfirmation(jobId))
+                .isInstanceOf(NativeEnhanceExecutionException.class)
+                .satisfies(ex -> {
+                    NativeEnhanceExecutionException failure = (NativeEnhanceExecutionException) ex;
+                    assertThat(failure.errorCode().code()).isEqualTo("NATIVE_ENHANCE_FFPROBE_UNAVAILABLE");
+                });
+    }
+
     private static void writeMinimalPptx(Path path, int slides) throws Exception {
         Files.createDirectories(path.getParent());
         try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(path))) {
             zip.putNextEntry(new ZipEntry("[Content_Types].xml"));
             zip.write("<Types></Types>".getBytes(StandardCharsets.UTF_8));
             zip.closeEntry();
+            StringBuilder presentation = new StringBuilder(
+                    "<p:presentation xmlns:p=\"http://schemas.openxmlformats.org/presentationml/2006/main\">");
+            for (int i = 1; i <= slides; i++) {
+                presentation.append("<p:sldId id=\"").append(i).append("\"/>");
+            }
+            presentation.append("</p:presentation>");
+            zip.putNextEntry(new ZipEntry("ppt/presentation.xml"));
+            zip.write(presentation.toString().getBytes(StandardCharsets.UTF_8));
+            zip.closeEntry();
             for (int i = 1; i <= slides; i++) {
                 zip.putNextEntry(new ZipEntry("ppt/slides/slide" + i + ".xml"));
-                zip.write(("<s" + i + "/>").getBytes(StandardCharsets.UTF_8));
+                zip.write(("<p:sld><p:cSld/></p:sld>").getBytes(StandardCharsets.UTF_8));
+                zip.closeEntry();
+                zip.putNextEntry(new ZipEntry("ppt/notesSlides/notesSlide" + i + ".xml"));
+                zip.write("<p:notes></p:notes>".getBytes(StandardCharsets.UTF_8));
                 zip.closeEntry();
             }
         }

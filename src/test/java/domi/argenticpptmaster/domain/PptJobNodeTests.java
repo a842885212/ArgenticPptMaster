@@ -83,6 +83,8 @@ class PptJobNodeTests {
         assertThat(PptJobNode.NOTES_GENERATED.applicableTo(PptWorkflowMode.NATIVE_ENHANCE_PPTX)).isTrue();
         assertThat(PptJobNode.AUDIO_VOICE_CONFIRMED.applicableTo(PptWorkflowMode.NATIVE_ENHANCE_PPTX)).isTrue();
         assertThat(PptJobNode.AUDIO_VOICE_CONFIRMED.requiresConfirmation()).isTrue();
+        assertThat(PptJobNode.AUDIO_GENERATED.applicableTo(PptWorkflowMode.NATIVE_ENHANCE_PPTX)).isTrue();
+        assertThat(PptJobNode.AUDIO_GENERATED.requiresConfirmation()).isFalse();
         assertThat(PptJobNode.NATIVE_ENHANCE_VALIDATED.applicableTo(PptWorkflowMode.NATIVE_ENHANCE_PPTX)).isTrue();
         assertThat(PptJobNode.NATIVE_ENHANCE_OUTPUT_VALIDATED.applicableTo(PptWorkflowMode.NATIVE_ENHANCE_PPTX)).isTrue();
 

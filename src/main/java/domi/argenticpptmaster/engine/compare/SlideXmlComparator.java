@@ -29,7 +29,8 @@ public final class SlideXmlComparator {
     }
 
     public record Result(boolean equal, List<Diff> diffs) {
-        public static Result equal() {
+        /** Factory for a successful comparison (avoids clashing with the {@code equal} accessor). */
+        public static Result identical() {
             return new Result(true, List.of());
         }
     }
@@ -57,7 +58,7 @@ public final class SlideXmlComparator {
             }
         }
         diffs.sort(Comparator.comparing(Diff::partName));
-        return diffs.isEmpty() ? Result.equal() : new Result(false, List.copyOf(diffs));
+        return diffs.isEmpty() ? Result.identical() : new Result(false, List.copyOf(diffs));
     }
 
     static String normalize(String xml) {

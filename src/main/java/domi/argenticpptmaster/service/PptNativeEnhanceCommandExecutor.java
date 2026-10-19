@@ -13,8 +13,15 @@ import domi.argenticpptmaster.domain.PptJobNode;
 import domi.argenticpptmaster.domain.PptJobNodeStatus;
 import domi.argenticpptmaster.domain.PptNodeExecution;
 import domi.argenticpptmaster.domain.PptWorkflowMode;
-import domi.argenticpptmaster.infra.PptMasterCommandExecutor;
+import domi.argenticpptmaster.engine.EngineResult;
+import domi.argenticpptmaster.engine.NativeEnhanceEngine;
+import domi.argenticpptmaster.engine.NotesAudioGateway;
+import domi.argenticpptmaster.engine.PptxMarkdownReadback;
+import domi.argenticpptmaster.engine.python.PythonNativeEnhanceEngine;
+import domi.argenticpptmaster.engine.python.PythonNotesAudioGateway;
+import domi.argenticpptmaster.engine.python.PythonPptxMarkdownReadback;
 import domi.argenticpptmaster.repository.PptJobRepository;
+import org.springframework.beans.factory.annotation.Qualifier;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -36,14 +43,16 @@ import org.springframework.stereotype.Component;
 @Component
 public class PptNativeEnhanceCommandExecutor {
 
-    static final String NATIVE_ENHANCE_SCRIPT = "skills/ppt-master/scripts/native_enhance_pptx.py";
-    static final String PPT_TO_MD_SCRIPT = "skills/ppt-master/scripts/source_to_md/ppt_to_md.py";
-    static final String NOTES_TO_AUDIO_SCRIPT = "skills/ppt-master/scripts/notes_to_audio.py";
+    static final String NATIVE_ENHANCE_SCRIPT = PythonNativeEnhanceEngine.SCRIPT;
+    static final String PPT_TO_MD_SCRIPT = PythonPptxMarkdownReadback.NATIVE_ENHANCE_SCRIPT;
+    static final String NOTES_TO_AUDIO_SCRIPT = PythonNotesAudioGateway.SCRIPT;
 
     private final PptMasterProperties properties;
     private final PptJobRepository repository;
     private final PptWorkflowEvents events;
-    private final PptMasterCommandExecutor commands;
+    private final NativeEnhanceEngine nativeEnhanceEngine;
+    private final NotesAudioGateway notesAudioGateway;
+    private final PptxMarkdownReadback pptxMarkdownReadback;
     private final NativeEnhanceReadinessContributor readiness;
     private final NativeEnhanceOutputVerifier outputVerifier;
     private final NativeEnhancePptxLifecycleStore lifecycleStore;
@@ -54,10 +63,13 @@ public class PptNativeEnhanceCommandExecutor {
             PptMasterProperties properties,
             PptJobRepository repository,
             PptWorkflowEvents events,
-            PptMasterCommandExecutor commands,
+            NativeEnhanceEngine nativeEnhanceEngine,
+            NotesAudioGateway notesAudioGateway,
+            PptxMarkdownReadback pptxMarkdownReadback,
             NativeEnhanceReadinessContributor readiness,
             NativeEnhanceOutputVerifier outputVerifier) {
-        this(properties, repository, events, commands, readiness, outputVerifier, null, null);
+        this(properties, repository, events, nativeEnhanceEngine, notesAudioGateway, pptxMarkdownReadback,
+                readiness, outputVerifier, null, null);
     }
 
     @org.springframework.beans.factory.annotation.Autowired
@@ -65,7 +77,9 @@ public class PptNativeEnhanceCommandExecutor {
             PptMasterProperties properties,
             PptJobRepository repository,
             PptWorkflowEvents events,
-            PptMasterCommandExecutor commands,
+            NativeEnhanceEngine nativeEnhanceEngine,
+            NotesAudioGateway notesAudioGateway,
+            @Qualifier("nativeEnhancePptxMarkdownReadback") PptxMarkdownReadback pptxMarkdownReadback,
             NativeEnhanceReadinessContributor readiness,
             NativeEnhanceOutputVerifier outputVerifier,
             NativeEnhancePptxLifecycleStore lifecycleStore,
@@ -73,7 +87,9 @@ public class PptNativeEnhanceCommandExecutor {
         this.properties = properties;
         this.repository = repository;
         this.events = events;
-        this.commands = commands;
+        this.nativeEnhanceEngine = nativeEnhanceEngine;
+        this.notesAudioGateway = notesAudioGateway;
+        this.pptxMarkdownReadback = pptxMarkdownReadback;
         this.readiness = readiness;
         this.outputVerifier = outputVerifier;
         this.lifecycleStore = lifecycleStore;
@@ -242,7 +258,13 @@ public class PptNativeEnhanceCommandExecutor {
         args.add("--projects-root");
         args.add(projectsRoot.toString());
         run(job, "INIT", NATIVE_ENHANCE_SCRIPT, args, limits.initTimeout(),
-                NativeEnhanceErrorCode.NATIVE_ENHANCE_INIT_FAILED);
+                NativeEnhanceErrorCode.NATIVE_ENHANCE_INIT_FAILED,
+                () -> nativeEnhanceEngine.init(
+                        source,
+                        sanitizeSlug(job.projectName()),
+                        projectDir,
+                        projectsRoot,
+                        limits.initTimeout()));
         requireFile(projectDir.resolve("project.json"), "INIT");
         requireFile(projectDir.resolve("analysis").resolve("slide_index.json"), "INIT");
         requireFile(projectDir.resolve("analysis").resolve("enhancement_plan.json"), "INIT");
@@ -346,8 +368,10 @@ public class PptNativeEnhanceCommandExecutor {
 
     private void validateProject(PptJob job, Path project) {
         NativeEnhancePptxProperties limits = properties.nativeEnhancePptx();
-        run(job, "VALIDATE", NATIVE_ENHANCE_SCRIPT, List.of("validate", project.toString()),
-                limits.validateTimeout(), NativeEnhanceErrorCode.NATIVE_ENHANCE_VALIDATE_FAILED);
+        List<String> args = List.of("validate", project.toString());
+        run(job, "VALIDATE", NATIVE_ENHANCE_SCRIPT, args, limits.validateTimeout(),
+                NativeEnhanceErrorCode.NATIVE_ENHANCE_VALIDATE_FAILED,
+                () -> nativeEnhanceEngine.validate(project, limits.validateTimeout()));
         Path report = project.resolve("validation").resolve("report.json");
         Map<String, Object> summary = new LinkedHashMap<>();
         summary.put("validated", true);
@@ -387,7 +411,8 @@ public class PptNativeEnhanceCommandExecutor {
         Files.createDirectories(audioDir);
         List<String> args = buildNotesToAudioArguments(project, audio);
         run(job, "AUDIO", NOTES_TO_AUDIO_SCRIPT, args, limits.audioTimeout(),
-                NativeEnhanceErrorCode.NATIVE_ENHANCE_AUDIO_FAILED);
+                NativeEnhanceErrorCode.NATIVE_ENHANCE_AUDIO_FAILED,
+                () -> notesAudioGateway.synthesize(args, limits.audioTimeout()));
         int notesReady = NativeEnhanceOutputVerifier.countNotesFiles(project);
         int audioReady = NativeEnhanceOutputVerifier.countAudioFiles(project);
         recordCheckpoint(job, PptJobNode.AUDIO_GENERATED, Map.of(
@@ -450,7 +475,8 @@ public class PptNativeEnhanceCommandExecutor {
         repository.save(job);
         List<String> args = buildApplyArguments(project, settings);
         run(job, "APPLY", NATIVE_ENHANCE_SCRIPT, args, limits.applyTimeout(),
-                NativeEnhanceErrorCode.NATIVE_ENHANCE_APPLY_FAILED);
+                NativeEnhanceErrorCode.NATIVE_ENHANCE_APPLY_FAILED,
+                () -> nativeEnhanceEngine.apply(args, limits.applyTimeout()));
         Path export = requireUniqueEnhancedExport(exportsDir);
         recordCheckpoint(job, PptJobNode.PPT_EXPORTED, Map.of(
                 "exportFileName", export.getFileName().toString()));
@@ -489,10 +515,10 @@ public class PptNativeEnhanceCommandExecutor {
         Path validationDir = requireInside(project, project.resolve("validation"), "validation");
         Files.createDirectories(validationDir);
         Path readbackMd = validationDir.resolve("readback.md");
-        run(job, "READBACK", PPT_TO_MD_SCRIPT,
-                List.of(export.toString(), "-o", readbackMd.toString()),
-                limits.applyTimeout(),
-                NativeEnhanceErrorCode.NATIVE_ENHANCE_OUTPUT_INVALID);
+        List<String> readbackArgs = List.of(export.toString(), "-o", readbackMd.toString());
+        run(job, "READBACK", PPT_TO_MD_SCRIPT, readbackArgs, limits.applyTimeout(),
+                NativeEnhanceErrorCode.NATIVE_ENHANCE_OUTPUT_INVALID,
+                () -> pptxMarkdownReadback.toMarkdown(export, readbackMd, limits.applyTimeout()));
 
         NativeEnhancePlanStore.ApplySettings settings = NativeEnhancePlanStore.applySettings(job);
         int notesFiles = NativeEnhanceOutputVerifier.countNotesFiles(project);
@@ -600,12 +626,12 @@ public class PptNativeEnhanceCommandExecutor {
             String script,
             List<String> arguments,
             Duration timeout,
-            NativeEnhanceErrorCode errorCode) {
+            NativeEnhanceErrorCode errorCode,
+            java.util.function.Supplier<EngineResult> action) {
         rejectUnsafeCommand(stage, script, arguments);
         events.record(job, PptJobEvent.of(PptJobEventType.NODE_STARTED,
                 "native-enhance stage started", Map.of("stage", stage)));
-        PptMasterCommandExecutor.CommandResult result =
-                commands.runPythonScript(script, List.copyOf(arguments), timeout);
+        EngineResult result = action.get();
         if (!result.successful()) {
             throw new NativeEnhanceExecutionException(
                     stage,

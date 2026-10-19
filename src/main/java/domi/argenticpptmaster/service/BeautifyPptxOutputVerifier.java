@@ -11,7 +11,8 @@ import domi.argenticpptmaster.domain.PptJobEvent;
 import domi.argenticpptmaster.domain.PptJobEventType;
 import domi.argenticpptmaster.domain.PptJobNode;
 import domi.argenticpptmaster.domain.PptJobNodeStatus;
-import domi.argenticpptmaster.infra.PptMasterCommandExecutor;
+import domi.argenticpptmaster.engine.EngineResult;
+import domi.argenticpptmaster.engine.PptxMarkdownReadback;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
@@ -41,15 +42,14 @@ import org.w3c.dom.NodeList;
 public class BeautifyPptxOutputVerifier {
 
     public static final String REPORT_FILE = "beautify-readback.json";
-    private static final String READBACK_SCRIPT = "skills/ppt-master/scripts/ppt_to_md.py";
     private static final Pattern SLIDE_HEADER = Pattern.compile("^##\\s+Slide\\s+(\\d+)\\s*$", Pattern.MULTILINE);
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
-    private final PptMasterCommandExecutor commands;
+    private final PptxMarkdownReadback readback;
     private final PptWorkflowEvents events;
 
-    public BeautifyPptxOutputVerifier(PptMasterCommandExecutor commands, PptWorkflowEvents events) {
-        this.commands = commands;
+    public BeautifyPptxOutputVerifier(PptxMarkdownReadback readback, PptWorkflowEvents events) {
+        this.readback = readback;
         this.events = events;
     }
 
@@ -186,10 +186,7 @@ public class BeautifyPptxOutputVerifier {
     }
 
     private void runReadback(Path exportPptx, Path markdown, Duration timeout, ArrayNode errors) {
-        PptMasterCommandExecutor.CommandResult result = commands.runPythonScript(
-                READBACK_SCRIPT,
-                List.of(exportPptx.toString(), "-o", markdown.toString()),
-                timeout);
+        EngineResult result = readback.toMarkdown(exportPptx, markdown, timeout);
         if (!result.successful()) {
             errors.add(error("readback_command_failed", "ppt_to_md failed"));
             throw new BeautifyPptxAnalysisException("readback", BeautifyPptxErrorCode.BEAUTIFY_READBACK_FAILED,

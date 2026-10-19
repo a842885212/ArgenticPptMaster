@@ -654,7 +654,7 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
         }
 
         @Override
-        public CommandResult runPythonScript(String scriptRelativePath, List<String> arguments) {
+        public CommandResult runPythonScript(String scriptRelativePath, List<String> arguments, Duration timeout) {
             calledScripts.add(scriptRelativePath);
             argumentsByScript.put(scriptRelativePath, List.copyOf(arguments));
             return new CommandResult(0, "ok", false);

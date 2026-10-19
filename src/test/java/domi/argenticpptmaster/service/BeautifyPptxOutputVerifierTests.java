@@ -13,6 +13,7 @@ import domi.argenticpptmaster.domain.PptJob;
 import domi.argenticpptmaster.domain.PptJobNode;
 import domi.argenticpptmaster.domain.PptJobNodeStatus;
 import domi.argenticpptmaster.domain.PptWorkflowMode;
+import domi.argenticpptmaster.engine.python.PythonPptxMarkdownReadback;
 import domi.argenticpptmaster.infra.PptMasterCommandExecutor;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -57,7 +58,8 @@ class BeautifyPptxOutputVerifierTests {
                 });
 
         BeautifyPptxOutputVerifier.ReadbackResult result = new BeautifyPptxOutputVerifier(
-                commands, mock(PptWorkflowEvents.class))
+                new PythonPptxMarkdownReadback(commands, PythonPptxMarkdownReadback.BEAUTIFY_SCRIPT),
+                mock(PptWorkflowEvents.class))
                 .verify(job, export, project, Duration.ofSeconds(5));
 
         assertThat(result.passed()).isTrue();
@@ -89,7 +91,8 @@ class BeautifyPptxOutputVerifierTests {
         });
 
         BeautifyPptxOutputVerifier.ReadbackResult result = new BeautifyPptxOutputVerifier(
-                commands, mock(PptWorkflowEvents.class))
+                new PythonPptxMarkdownReadback(commands, PythonPptxMarkdownReadback.BEAUTIFY_SCRIPT),
+                mock(PptWorkflowEvents.class))
                 .verify(job, export, project, Duration.ofSeconds(5));
 
         assertThat(result.passed()).isFalse();
@@ -113,7 +116,9 @@ class BeautifyPptxOutputVerifierTests {
         when(commands.runPythonScript(any(), anyList(), any(Duration.class)))
                 .thenReturn(new PptMasterCommandExecutor.CommandResult(1, "boom", false));
 
-        assertThatThrownBy(() -> new BeautifyPptxOutputVerifier(commands, mock(PptWorkflowEvents.class))
+        assertThatThrownBy(() -> new BeautifyPptxOutputVerifier(
+                new PythonPptxMarkdownReadback(commands, PythonPptxMarkdownReadback.BEAUTIFY_SCRIPT),
+                mock(PptWorkflowEvents.class))
                 .verify(job, export, project, Duration.ofSeconds(5)))
                 .isInstanceOf(BeautifyPptxAnalysisException.class)
                 .extracting(ex -> ((BeautifyPptxAnalysisException) ex).errorCode())

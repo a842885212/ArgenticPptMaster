@@ -9,6 +9,7 @@ import domi.argenticpptmaster.domain.PptJobNode;
 import domi.argenticpptmaster.domain.PptJobNodeStatus;
 import domi.argenticpptmaster.domain.PptSourceFile;
 import domi.argenticpptmaster.domain.PptWorkflowMode;
+import domi.argenticpptmaster.engine.PptEngineTestSupport;
 import domi.argenticpptmaster.infra.PptMasterCommandExecutor;
 import domi.argenticpptmaster.service.PptJobEventPublisher;
 import domi.argenticpptmaster.service.PptTemplateFillAnalysisReader;
@@ -64,7 +65,9 @@ class TemplateFillAgentToolsTests {
         job.addSource(new PptSourceFile("notes.exe", "application/octet-stream", 6L, exe));
         job.completeNode(PptJobNode.TEMPLATE_ANALYZED, Map.of());
         runtime = new PptAgentToolRuntime(
-                job, properties, new PptMasterCommandExecutor(properties),
+                job,
+                properties,
+                PptEngineTestSupport.pythonBundle(new PptMasterCommandExecutor(properties)),
                 new PptWorkflowEvents(new PptJobEventPublisher()));
     }
 

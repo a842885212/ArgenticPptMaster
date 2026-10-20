@@ -17,6 +17,8 @@ import domi.argenticpptmaster.domain.PptJobNodeStatus;
 import domi.argenticpptmaster.domain.PptSourceFile;
 import domi.argenticpptmaster.domain.PptTemplateFile;
 import domi.argenticpptmaster.domain.PptWorkflowMode;
+import domi.argenticpptmaster.engine.RoutingTemplateFillEngine;
+import domi.argenticpptmaster.engine.file.JavaTemplateFillEngine;
 import domi.argenticpptmaster.engine.python.PythonProjectWorkspace;
 import domi.argenticpptmaster.engine.python.PythonTemplateFillEngine;
 import domi.argenticpptmaster.infra.PptMasterCommandExecutor;
@@ -57,7 +59,7 @@ class PptTemplateFillCommandExecutorTests {
                 repository,
                 events,
                 new PythonProjectWorkspace(commands),
-                new PythonTemplateFillEngine(commands),
+                new RoutingTemplateFillEngine(new JavaTemplateFillEngine(), new PythonTemplateFillEngine(commands)),
                 analysisReader,
                 concurrencyLimiter,
                 new TemplateFillCapabilityIndexLoader(),

@@ -52,6 +52,20 @@ Java 服务只编排任务。脚本通过 `PptMasterCommandExecutor.runPythonScr
 
 模板填充和 native enhance 在已有 PPTX 上克隆页、改文字、表、图、备注。这条路线不经过 SVG。用 JDK 的 ZIP 加 StAX/DOM 直接写 OOXML。Apache POI 适合读文本和页数，上游很多形状、动画、图表 XML 超出 POI 的写入模型，POI 不作为 DrawingML 写入器。
 
+**第 3 步完成状态（当前分支，3a）**
+
+| 能力 | 生产 Bean | 状态 |
+| --- | --- | --- |
+| 共享 OOXML 包工具（ZIP / Content Types / relationships / notes XML） | `engine.ooxml.*` | 已落地（够 notes 写入） |
+| `native_enhance` notes 材料路径（apply / notes-only validate） | `RoutingNativeEnhanceEngine`：`JavaNativeEnhanceEngine` 子集 dual-run + **`PythonNativeEnhanceEngine` 权威门禁** | 部分移植；**禁止**把 Java 子集单独当生产门禁 |
+| `native_enhance` init / audio·timings·transitions apply | 直委 Python | 未移植 |
+| `template_fill` notes + 简单 text replacements（apply） | `RoutingTemplateFillEngine`：`JavaTemplateFillEngine` 子集 dual-run + **`PythonTemplateFillEngine` 权威门禁** | 部分移植；table/chart/clone 深拷贝 / analyze·check-plan·validate 仍 Python |
+| `template_fill` analyze / check-plan / validate | 直委 Python | 未移植 |
+
+`JavaNativeEnhanceEngine` 已覆盖服务路径上的 notes-only apply（解包 → 写 notesSlide / notesMaster / Content Types → 重打包）与 notes 材料就绪校验。`JavaTemplateFillEngine` 可在无 table/chart/per-slide transition 的 plan 上做 slide 克隆 + text replacements + notes。
+
+仍由 Python 权威门禁覆盖：audio / timings / transitions、delivery 审计、template-fill 全量 JSON（table/chart/深克隆私有部件）、analyze / check-plan / validate。完成定义：Java apply 产物的 slide（及 notes）XML 与 pin `cc535363` 对齐后，才可把 Bean 切成纯 Java。
+
 ### 4. 换美化分析
 
 `beautify_identity.py`、`beautify_inventory.py`、`pptx_intake.py` 读取 PPTX 并输出 JSON。Java 读 OPC 包即可，这一阶段仍不必实现 SVG 编译器。

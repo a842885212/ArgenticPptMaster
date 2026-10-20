@@ -19,6 +19,8 @@ import domi.argenticpptmaster.domain.PptJobNodeStatus;
 import domi.argenticpptmaster.domain.PptJobStatus;
 import domi.argenticpptmaster.domain.PptSourceFile;
 import domi.argenticpptmaster.domain.PptWorkflowMode;
+import domi.argenticpptmaster.engine.RoutingNativeEnhanceEngine;
+import domi.argenticpptmaster.engine.file.JavaNativeEnhanceEngine;
 import domi.argenticpptmaster.engine.python.PythonNativeEnhanceEngine;
 import domi.argenticpptmaster.engine.python.PythonNotesAudioGateway;
 import domi.argenticpptmaster.engine.python.PythonPptxMarkdownReadback;
@@ -65,7 +67,7 @@ class PptNativeEnhanceCommandExecutorTests {
                 properties,
                 repository,
                 events,
-                new PythonNativeEnhanceEngine(commands),
+                new RoutingNativeEnhanceEngine(new JavaNativeEnhanceEngine(), new PythonNativeEnhanceEngine(commands)),
                 new PythonNotesAudioGateway(commands),
                 new PythonPptxMarkdownReadback(commands, PythonPptxMarkdownReadback.NATIVE_ENHANCE_SCRIPT),
                 new NativeEnhanceReadinessContributor(),
@@ -470,7 +472,7 @@ class PptNativeEnhanceCommandExecutorTests {
                 properties,
                 repository,
                 events,
-                new PythonNativeEnhanceEngine(commands),
+                new RoutingNativeEnhanceEngine(new JavaNativeEnhanceEngine(), new PythonNativeEnhanceEngine(commands)),
                 new PythonNotesAudioGateway(commands),
                 new PythonPptxMarkdownReadback(commands, PythonPptxMarkdownReadback.NATIVE_ENHANCE_SCRIPT),
                 new NativeEnhanceReadinessContributor(tempDir.resolve("no-ffprobe").toString()),

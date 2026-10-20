@@ -7,8 +7,10 @@ import domi.argenticpptmaster.engine.NotesAudioGateway;
 import domi.argenticpptmaster.engine.PptEngineBundle;
 import domi.argenticpptmaster.engine.PptxMarkdownReadback;
 import domi.argenticpptmaster.engine.ProjectWorkspace;
+import domi.argenticpptmaster.engine.RoutingNativeEnhanceEngine;
 import domi.argenticpptmaster.engine.RoutingProjectWorkspace;
 import domi.argenticpptmaster.engine.RoutingSvgQualityChecker;
+import domi.argenticpptmaster.engine.RoutingTemplateFillEngine;
 import domi.argenticpptmaster.engine.SpeakerNotesSplitter;
 import domi.argenticpptmaster.engine.SvgFinalizer;
 import domi.argenticpptmaster.engine.SvgQualityChecker;
@@ -21,8 +23,10 @@ import domi.argenticpptmaster.engine.python.PythonImageGenerationGateway;
 import domi.argenticpptmaster.engine.python.PythonNativeEnhanceEngine;
 import domi.argenticpptmaster.engine.python.PythonNotesAudioGateway;
 import domi.argenticpptmaster.engine.python.PythonPptxMarkdownReadback;
+import domi.argenticpptmaster.engine.file.JavaNativeEnhanceEngine;
 import domi.argenticpptmaster.engine.file.JavaProjectWorkspace;
 import domi.argenticpptmaster.engine.file.JavaSpeakerNotesSplitter;
+import domi.argenticpptmaster.engine.file.JavaTemplateFillEngine;
 import domi.argenticpptmaster.engine.file.svgquality.JavaSvgQualityChecker;
 import domi.argenticpptmaster.engine.python.PythonProjectWorkspace;
 import domi.argenticpptmaster.engine.python.PythonSvgFinalizer;
@@ -74,12 +78,16 @@ public class PptEngineConfiguration {
 
     @Bean
     TemplateFillEngine templateFillEngine(PptMasterCommandExecutor commands) {
-        return new PythonTemplateFillEngine(commands);
+        // Java notes+text subset dual-runs; Python remains the production authority until parity.
+        return new RoutingTemplateFillEngine(
+                new JavaTemplateFillEngine(), new PythonTemplateFillEngine(commands));
     }
 
     @Bean
     NativeEnhanceEngine nativeEnhanceEngine(PptMasterCommandExecutor commands) {
-        return new PythonNativeEnhanceEngine(commands);
+        // Java notes subset dual-runs; Python remains the production authority until parity.
+        return new RoutingNativeEnhanceEngine(
+                new JavaNativeEnhanceEngine(), new PythonNativeEnhanceEngine(commands));
     }
 
     @Bean

@@ -7,6 +7,7 @@ import domi.argenticpptmaster.engine.NotesAudioGateway;
 import domi.argenticpptmaster.engine.PptEngineBundle;
 import domi.argenticpptmaster.engine.PptxMarkdownReadback;
 import domi.argenticpptmaster.engine.ProjectWorkspace;
+import domi.argenticpptmaster.engine.RoutingProjectWorkspace;
 import domi.argenticpptmaster.engine.SpeakerNotesSplitter;
 import domi.argenticpptmaster.engine.SvgFinalizer;
 import domi.argenticpptmaster.engine.SvgQualityChecker;
@@ -19,8 +20,9 @@ import domi.argenticpptmaster.engine.python.PythonImageGenerationGateway;
 import domi.argenticpptmaster.engine.python.PythonNativeEnhanceEngine;
 import domi.argenticpptmaster.engine.python.PythonNotesAudioGateway;
 import domi.argenticpptmaster.engine.python.PythonPptxMarkdownReadback;
+import domi.argenticpptmaster.engine.file.JavaProjectWorkspace;
+import domi.argenticpptmaster.engine.file.JavaSpeakerNotesSplitter;
 import domi.argenticpptmaster.engine.python.PythonProjectWorkspace;
-import domi.argenticpptmaster.engine.python.PythonSpeakerNotesSplitter;
 import domi.argenticpptmaster.engine.python.PythonSvgFinalizer;
 import domi.argenticpptmaster.engine.python.PythonSvgQualityChecker;
 import domi.argenticpptmaster.engine.python.PythonSvgToPptxExporter;
@@ -38,7 +40,7 @@ public class PptEngineConfiguration {
 
     @Bean
     ProjectWorkspace projectWorkspace(PptMasterCommandExecutor commands) {
-        return new PythonProjectWorkspace(commands);
+        return new RoutingProjectWorkspace(new JavaProjectWorkspace(), new PythonProjectWorkspace(commands));
     }
 
     @Bean
@@ -47,8 +49,8 @@ public class PptEngineConfiguration {
     }
 
     @Bean
-    SpeakerNotesSplitter speakerNotesSplitter(PptMasterCommandExecutor commands) {
-        return new PythonSpeakerNotesSplitter(commands);
+    SpeakerNotesSplitter speakerNotesSplitter() {
+        return new JavaSpeakerNotesSplitter();
     }
 
     @Bean

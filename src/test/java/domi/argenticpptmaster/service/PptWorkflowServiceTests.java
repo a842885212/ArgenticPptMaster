@@ -53,6 +53,7 @@ import reactor.core.publisher.Flux;
  */
 @SpringBootTest
 @org.springframework.test.context.TestPropertySource(properties = {
+        "spring.main.allow-bean-definition-overriding=true",
         "ppt-master.beautify-pptx.enabled=true",
         "ppt-master.beautify-pptx.allowed-tenants[0]=test-tenant",
         "ppt-master.native-enhance-pptx.enabled=true",

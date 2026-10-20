@@ -10,6 +10,7 @@ import domi.argenticpptmaster.engine.ProjectWorkspace;
 import domi.argenticpptmaster.engine.RoutingBeautifyAnalysisEngine;
 import domi.argenticpptmaster.engine.RoutingNativeEnhanceEngine;
 import domi.argenticpptmaster.engine.RoutingProjectWorkspace;
+import domi.argenticpptmaster.engine.RoutingSvgFinalizer;
 import domi.argenticpptmaster.engine.RoutingSvgQualityChecker;
 import domi.argenticpptmaster.engine.RoutingTemplateFillEngine;
 import domi.argenticpptmaster.engine.SpeakerNotesSplitter;
@@ -28,6 +29,7 @@ import domi.argenticpptmaster.engine.file.JavaBeautifyAnalysisEngine;
 import domi.argenticpptmaster.engine.file.JavaNativeEnhanceEngine;
 import domi.argenticpptmaster.engine.file.JavaProjectWorkspace;
 import domi.argenticpptmaster.engine.file.JavaSpeakerNotesSplitter;
+import domi.argenticpptmaster.engine.file.JavaSvgFinalizer;
 import domi.argenticpptmaster.engine.file.JavaTemplateFillEngine;
 import domi.argenticpptmaster.engine.file.svgquality.JavaSvgQualityChecker;
 import domi.argenticpptmaster.engine.python.PythonProjectWorkspace;
@@ -71,8 +73,10 @@ public class PptEngineConfiguration {
     }
 
     @Bean
-    SvgFinalizer svgFinalizer(PptMasterCommandExecutor commands) {
-        return new PythonSvgFinalizer(commands);
+    SvgFinalizer svgFinalizer(PptMasterCommandExecutor commands, PptEngineProperties engineProperties) {
+        // Java is the production authority. Optional dual-run keeps Python as secondary diagnostics only.
+        return new RoutingSvgFinalizer(
+                new JavaSvgFinalizer(), new PythonSvgFinalizer(commands), engineProperties);
     }
 
     @Bean

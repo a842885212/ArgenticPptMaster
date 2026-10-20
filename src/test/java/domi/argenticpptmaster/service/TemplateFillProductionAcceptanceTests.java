@@ -14,6 +14,8 @@ import domi.argenticpptmaster.domain.PptJobNode;
 import domi.argenticpptmaster.domain.PptJobStatus;
 import domi.argenticpptmaster.domain.TemplateFillPlanMetadata;
 import domi.argenticpptmaster.engine.python.PythonProjectWorkspace;
+import domi.argenticpptmaster.engine.RoutingTemplateFillEngine;
+import domi.argenticpptmaster.engine.file.JavaTemplateFillEngine;
 import domi.argenticpptmaster.engine.python.PythonTemplateFillEngine;
 import domi.argenticpptmaster.infra.PptMasterCommandExecutor;
 import domi.argenticpptmaster.repository.InMemoryPptJobRepository;
@@ -134,7 +136,7 @@ class TemplateFillProductionAcceptanceTests {
                 repository,
                 events,
                 new PythonProjectWorkspace(commands),
-                new PythonTemplateFillEngine(commands),
+                new RoutingTemplateFillEngine(new JavaTemplateFillEngine(), new PythonTemplateFillEngine(commands)),
                 new PptTemplateFillAnalysisReader(),
                 new PptTemplateFillConcurrencyLimiter(properties),
                 new TemplateFillCapabilityIndexLoader(),

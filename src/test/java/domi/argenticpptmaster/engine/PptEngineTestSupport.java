@@ -1,5 +1,6 @@
 package domi.argenticpptmaster.engine;
 
+import domi.argenticpptmaster.engine.file.JavaBeautifyAnalysisEngine;
 import domi.argenticpptmaster.engine.file.JavaNativeEnhanceEngine;
 import domi.argenticpptmaster.engine.file.JavaTemplateFillEngine;
 import domi.argenticpptmaster.engine.file.svgquality.JavaSvgQualityChecker;
@@ -19,8 +20,8 @@ import domi.argenticpptmaster.infra.PptMasterCommandExecutor;
 /**
  * Builds a capability-engine {@link PptEngineBundle} over a (often mocked) command executor.
  *
- * <p>Template-fill and native-enhance use Java authority (dual-run off by default). Svg-quality
- * still routes with Python as the authority gate.</p>
+ * <p>Template-fill, native-enhance, and beautify-analysis use Java authority (dual-run off by
+ * default). Svg-quality still routes with Python as the authority gate.</p>
  */
 public final class PptEngineTestSupport {
 
@@ -30,7 +31,8 @@ public final class PptEngineTestSupport {
     public static PptEngineBundle pythonBundle(PptMasterCommandExecutor commands) {
         return new PptEngineBundle(
                 new PythonProjectWorkspace(commands),
-                new PythonBeautifyAnalysisEngine(commands),
+                new RoutingBeautifyAnalysisEngine(
+                        new JavaBeautifyAnalysisEngine(), new PythonBeautifyAnalysisEngine(commands)),
                 new PythonSpeakerNotesSplitter(commands),
                 new RoutingSvgQualityChecker(
                         new JavaSvgQualityChecker(), new PythonSvgQualityChecker(commands)),

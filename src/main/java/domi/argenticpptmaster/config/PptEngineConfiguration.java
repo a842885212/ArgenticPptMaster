@@ -7,6 +7,7 @@ import domi.argenticpptmaster.engine.NotesAudioGateway;
 import domi.argenticpptmaster.engine.PptEngineBundle;
 import domi.argenticpptmaster.engine.PptxMarkdownReadback;
 import domi.argenticpptmaster.engine.ProjectWorkspace;
+import domi.argenticpptmaster.engine.RoutingBeautifyAnalysisEngine;
 import domi.argenticpptmaster.engine.RoutingNativeEnhanceEngine;
 import domi.argenticpptmaster.engine.RoutingProjectWorkspace;
 import domi.argenticpptmaster.engine.RoutingSvgQualityChecker;
@@ -23,6 +24,7 @@ import domi.argenticpptmaster.engine.python.PythonImageGenerationGateway;
 import domi.argenticpptmaster.engine.python.PythonNativeEnhanceEngine;
 import domi.argenticpptmaster.engine.python.PythonNotesAudioGateway;
 import domi.argenticpptmaster.engine.python.PythonPptxMarkdownReadback;
+import domi.argenticpptmaster.engine.file.JavaBeautifyAnalysisEngine;
 import domi.argenticpptmaster.engine.file.JavaNativeEnhanceEngine;
 import domi.argenticpptmaster.engine.file.JavaProjectWorkspace;
 import domi.argenticpptmaster.engine.file.JavaSpeakerNotesSplitter;
@@ -50,8 +52,10 @@ public class PptEngineConfiguration {
     }
 
     @Bean
-    BeautifyAnalysisEngine beautifyAnalysisEngine(PptMasterCommandExecutor commands) {
-        return new PythonBeautifyAnalysisEngine(commands);
+    BeautifyAnalysisEngine beautifyAnalysisEngine(PptMasterCommandExecutor commands, PptEngineProperties engineProperties) {
+        // Java is the production authority. Optional dual-run keeps Python as secondary diagnostics only.
+        return new RoutingBeautifyAnalysisEngine(
+                new JavaBeautifyAnalysisEngine(), new PythonBeautifyAnalysisEngine(commands), engineProperties);
     }
 
     @Bean

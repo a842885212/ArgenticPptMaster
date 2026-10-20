@@ -89,6 +89,23 @@ Java 服务只编排任务。脚本通过 `PptMasterCommandExecutor.runPythonScr
 
 这一步做图标嵌入、`<use>` 展开、`<tspan>` 压平。输入是本服务生成的那种子集 SVG，用 XML DOM 处理。
 
+**第 5 步整体完成（当前分支）**
+
+按文档范围，`finalize_svg` 默认全量管线的生产权威已切到 Java；`svg_to_pptx` 仍属后续步骤。
+
+| 能力 | 生产 Bean | 状态 |
+| --- | --- | --- |
+| 共享 finalize 助手（geometry / icons / local use / align-embed / flatten） | `engine.file.svgfinalize.*` | 已落地 |
+| Geometry materialize（inline `style` → XML 几何属性） | `RoutingSvgFinalizer` → **`JavaSvgFinalizer` 权威**；可选 dual-run 时 Python 仅诊断（默认关） | **已完成（Java 权威）** |
+| Icon embed（`project/icons/` 命名空间 `library/name`；不读 templates/icons；拒绝裸名） | 同上 Java 权威 | **已完成（Java 权威）** |
+| Local `<use>` expand（同文档 `#id` / `<symbol>` viewBox） | 同上 Java 权威 | **已完成（Java 权威）** |
+| Align + embed images（meet/slice；Base64；EMF/WMF 外链保留） | 同上 Java 权威；ImageIO 编码不必与 PIL 逐字节一致（测试对 data URI 做 MIME stub 比较） | **已完成（Java 权威）** |
+| Flatten text（定位 `<tspan>` → 独立 `<text>`；默认 split，不启用 merge-paragraphs） | 同上 Java 权威 | **已完成（Java 权威）** |
+| Atomic publish（失败不留下残缺 `svg_final`） | `SvgFinalizeOps` | **已完成** |
+| 契约测试 | fixtures `finalize-svg/{text-tspan,icons-use,images-meet-slice}` + pin gold | **已完成** |
+
+`JavaSvgFinalizer` 委托 `SvgFinalizeOps`：候选目录处理成功后再原子发布到 `svg_final/`。成功/失败与产物以 Java 为准。
+
 ### 6. 移植 `svg_to_pptx`
 
 按现有 Python 包的边界搬：坐标（1 SVG px = 9525 EMU）、形状、文本、图片、表格、图表、公式、动画。每搬一块，就用固定的 `svg_output/` 让 Python 和 Java 各导出一次，忽略时间戳和关系 ID 后比较 slide XML。

@@ -71,6 +71,20 @@ Java 服务只编排任务。脚本通过 `PptMasterCommandExecutor.runPythonScr
 
 `beautify_identity.py`、`beautify_inventory.py`、`pptx_intake.py` 读取 PPTX 并输出 JSON。Java 读 OPC 包即可，这一阶段仍不必实现 SVG 编译器。
 
+**第 4 步整体完成（当前分支）**
+
+按文档范围，美化分析路径的生产权威已切到 Java；SVG / finalize / image_gen / notes_to_audio 仍属后续或不移植。
+
+| 能力 | 生产 Bean | 状态 |
+| --- | --- | --- |
+| 共享 OOXML 读工具（theme clrMap / clrScheme 最小解析） | `engine.ooxml.beautify.*` | 已落地 |
+| `beautify_identity` identify（canvas / theme / observed / layout_sizes） | `RoutingBeautifyAnalysisEngine` → **`JavaBeautifyAnalysisEngine` 权威**；可选 dual-run 时 Python 仅诊断（默认关） | **已完成（Java 权威）**；`identify()` 将 JSON 放在 `EngineResult.output` stdout 供 `resolveFormat` |
+| `pptx_intake`（`<stem>.identity.json` + `<stem>.slide_library.json` + `source_profile.json` upsert） | 同上 Java 权威；`slide_library` 复用 `TfAnalyzer.analyzePptx`；NIO `FileChannel.lock` 序列化索引 | **已完成（Java 权威）** |
+| `beautify_inventory` builder（per-slide text/tables/charts/diagrams/images；`ignored` / `needs_confirmation` 空数组） | 同上 Java 权威；不移植 `--summary` / `--page` 视图模式 | **已完成（Java 权威）** |
+| 服务门禁 `BeautifyPptxAnalysisExecutor.validateAnalysisArtifacts` | 现有 executor；fixtures `pure-text-mvp.pptx` / `phase0-baseline.pptx` 的 Java 产物通过契约 | **已完成** |
+
+`JavaBeautifyAnalysisEngine` 委托 `BeautifyIdentityExtractor` / `BeautifyIntakeOps` / `BeautifyInventoryBuilder`：JDK ZIP + DOM，不用 POI 写 DrawingML；theme 仅移植 identity 所需的 scheme 解析（srgb/sys lastClr + clrMap），不移植完整 `pptx_to_svg` 渲染器。成功/失败与产物以 Java 为准。
+
 ### 5. 换 `finalize_svg`
 
 这一步做图标嵌入、`<use>` 展开、`<tspan>` 压平。输入是本服务生成的那种子集 SVG，用 XML DOM 处理。

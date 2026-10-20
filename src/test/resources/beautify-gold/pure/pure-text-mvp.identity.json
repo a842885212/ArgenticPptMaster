@@ -1,0 +1,69 @@
+{
+  "source": "/workspace/src/test/resources/beautify-pptx/pure-text-mvp.pptx",
+  "slide_count": 4,
+  "canvas": {
+    "width_px": 960,
+    "height_px": 720,
+    "aspect": 1.3333
+  },
+  "theme": {
+    "palette": {
+      "background": "#FFFFFF",
+      "background_alt": "#EEECE1",
+      "text": "#000000",
+      "text_alt": "#1F497D",
+      "hyperlink": "#0000FF",
+      "accent1": "#4F81BD",
+      "accent2": "#C0504D",
+      "accent3": "#9BBB59",
+      "accent4": "#8064A2",
+      "accent5": "#4BACC6",
+      "accent6": "#F79646",
+      "primary": "#4F81BD"
+    },
+    "fonts": {
+      "title": {
+        "latin": "Calibri",
+        "scripts": {
+          "Jpan": "ＭＳ Ｐゴシック",
+          "Hang": "맑은 고딕",
+          "Hans": "宋体",
+          "Hant": "新細明體"
+        }
+      },
+      "body": {
+        "latin": "Calibri",
+        "scripts": {
+          "Jpan": "ＭＳ Ｐゴシック",
+          "Hang": "맑은 고딕",
+          "Hans": "宋体",
+          "Hant": "新細明體"
+        }
+      }
+    },
+    "sizes": {
+      "title": 44.0,
+      "body": 32.0,
+      "body_levels": [
+        32.0,
+        28.0,
+        24.0,
+        20.0,
+        20.0,
+        20.0,
+        20.0,
+        20.0,
+        20.0
+      ]
+    }
+  },
+  "observed": {
+    "fonts": {
+      "latin": [],
+      "ea": []
+    },
+    "sizes_pt": [],
+    "colors": []
+  },
+  "layout_sizes_pt": []
+}

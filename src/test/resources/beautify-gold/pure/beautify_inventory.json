@@ -1,0 +1,107 @@
+{
+  "schema": "beautify_inventory.v1",
+  "source": "/workspace/src/test/resources/beautify-pptx/pure-text-mvp.pptx",
+  "slide_count": 4,
+  "canvas_px": {
+    "width": 960,
+    "height": 720
+  },
+  "slides": [
+    {
+      "slide_index": 1,
+      "page_type": "cover_candidate",
+      "text_blocks": [
+        {
+          "slot_id": "s01_sh2",
+          "role": "title_candidate",
+          "text": "Pure Text Beautify\nEvery slide remains in order.",
+          "paragraph_count": 2,
+          "geometry": {
+            "x": 77,
+            "y": 77,
+            "width": 1104,
+            "height": 557
+          }
+        }
+      ],
+      "tables": [],
+      "charts": [],
+      "diagrams": [],
+      "images": [],
+      "ignored": [],
+      "needs_confirmation": []
+    },
+    {
+      "slide_index": 2,
+      "page_type": "chapter_candidate",
+      "text_blocks": [
+        {
+          "slot_id": "s02_sh2",
+          "role": "title_candidate",
+          "text": "Repeated text\nKeep me\nKeep me\nDense page starts here",
+          "paragraph_count": 4,
+          "geometry": {
+            "x": 77,
+            "y": 77,
+            "width": 1104,
+            "height": 557
+          }
+        }
+      ],
+      "tables": [],
+      "charts": [],
+      "diagrams": [],
+      "images": [],
+      "ignored": [],
+      "needs_confirmation": []
+    },
+    {
+      "slide_index": 3,
+      "page_type": "chapter_candidate",
+      "text_blocks": [
+        {
+          "slot_id": "s03_sh2",
+          "role": "title_candidate",
+          "text": "Dense page\nOne\nTwo\nThree\nFour\nFive\nSix\nSeven\nEight",
+          "paragraph_count": 9,
+          "geometry": {
+            "x": 77,
+            "y": 77,
+            "width": 1104,
+            "height": 557
+          }
+        }
+      ],
+      "tables": [],
+      "charts": [],
+      "diagrams": [],
+      "images": [],
+      "ignored": [],
+      "needs_confirmation": []
+    },
+    {
+      "slide_index": 4,
+      "page_type": "ending_candidate",
+      "text_blocks": [
+        {
+          "slot_id": "s04_sh2",
+          "role": "title_candidate",
+          "text": "Pause",
+          "paragraph_count": 1,
+          "geometry": {
+            "x": 77,
+            "y": 77,
+            "width": 1104,
+            "height": 557
+          }
+        }
+      ],
+      "tables": [],
+      "charts": [],
+      "diagrams": [],
+      "images": [],
+      "ignored": [],
+      "needs_confirmation": []
+    }
+  ]
+}

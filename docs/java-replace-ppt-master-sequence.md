@@ -52,19 +52,20 @@ Java 服务只编排任务。脚本通过 `PptMasterCommandExecutor.runPythonScr
 
 模板填充和 native enhance 在已有 PPTX 上克隆页、改文字、表、图、备注。这条路线不经过 SVG。用 JDK 的 ZIP 加 StAX/DOM 直接写 OOXML。Apache POI 适合读文本和页数，上游很多形状、动画、图表 XML 超出 POI 的写入模型，POI 不作为 DrawingML 写入器。
 
-**第 3 步完成状态（当前分支，3a）**
+**第 3 步整体完成（当前分支）**
+
+按文档范围，OOXML 改写路径的生产权威已切到 Java；`notes_to_audio.py` / `image_gen.py` 仍属「不移植」。
 
 | 能力 | 生产 Bean | 状态 |
 | --- | --- | --- |
-| 共享 OOXML 包工具（ZIP / Content Types / relationships / notes XML） | `engine.ooxml.*` | 已落地（够 notes 写入） |
-| `native_enhance` notes 材料路径（apply / notes-only validate） | `RoutingNativeEnhanceEngine`：`JavaNativeEnhanceEngine` 子集 dual-run + **`PythonNativeEnhanceEngine` 权威门禁** | 部分移植；**禁止**把 Java 子集单独当生产门禁 |
-| `native_enhance` init / audio·timings·transitions apply | 直委 Python | 未移植 |
-| `template_fill` notes + 简单 text replacements（apply） | `RoutingTemplateFillEngine`：`JavaTemplateFillEngine` 子集 dual-run + **`PythonTemplateFillEngine` 权威门禁** | 部分移植；table/chart/clone 深拷贝 / analyze·check-plan·validate 仍 Python |
-| `template_fill` analyze / check-plan / validate | 直委 Python | 未移植 |
+| 共享 OOXML 包工具（ZIP / Content Types / relationships / notes XML / slide motion） | `engine.ooxml.*`（含 `nativeenhance.*`，供 NE / template-fill 复用） | 已落地 |
+| `native_enhance` init / validate / apply（notes·audio 嵌入·timings·transitions） | `RoutingNativeEnhanceEngine` → **`JavaNativeEnhanceEngine` 权威**；可选 dual-run 时 Python 仅诊断（默认关） | **已完成（Java 权威）** |
+| `native_enhance` delivery 审计 | Java lite（ZIP 打开 + slide 计数 / 隐藏页占位） | 完整 `pptx_delivery_check` 未全量移植（非阻断） |
+| `native_enhance` TTS（`notes_to_audio.py`） | `NotesAudioGateway` / Python | **不移植**（见下文）；音频文件假定已落在项目 `audio/` |
+| `template_fill` analyze / check-plan / apply / validate | `RoutingTemplateFillEngine` → **`JavaTemplateFillEngine` 权威**；可选 dual-run 时 Python 仅诊断（默认关） | **已完成（Java 权威）**；slide 克隆 + text/table/chart/notes/transitions |
+| `template_fill` SmartArt 编辑 / `ppt_to_md` 读回 | 不移植；validate 用 OOXML 文本读回 | SmartArt 仅 inventory |
 
-`JavaNativeEnhanceEngine` 已覆盖服务路径上的 notes-only apply（解包 → 写 notesSlide / notesMaster / Content Types → 重打包）与 notes 材料就绪校验。`JavaTemplateFillEngine` 可在无 table/chart/per-slide transition 的 plan 上做 slide 克隆 + text replacements + notes。
-
-仍由 Python 权威门禁覆盖：audio / timings / transitions、delivery 审计、template-fill 全量 JSON（table/chart/深克隆私有部件）、analyze / check-plan / validate。完成定义：Java apply 产物的 slide（及 notes）XML 与 pin `cc535363` 对齐后，才可把 Bean 切成纯 Java。
+`JavaNativeEnhanceEngine` 委托 `engine.ooxml.nativeenhance.NativeEnhanceOps`：init（解包/归档/`slide_index`/`project.json`/draft plan）、validate（notes+audio 材料就绪与 plan/transition 校验）、apply（notes、OOXML 音频嵌入、timings、服务白名单 transitions）。`JavaTemplateFillEngine` 已实现 analyze / check-plan / apply / validate 全接口（JDK ZIP + DOM，不用 POI 写 DrawingML）；成功/失败与产物以 Java 为准。
 
 ### 4. 换美化分析
 

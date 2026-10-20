@@ -77,17 +77,17 @@ public class PptEngineConfiguration {
     }
 
     @Bean
-    TemplateFillEngine templateFillEngine(PptMasterCommandExecutor commands) {
-        // Java notes+text subset dual-runs; Python remains the production authority until parity.
+    TemplateFillEngine templateFillEngine(PptMasterCommandExecutor commands, PptEngineProperties engineProperties) {
+        // Java is the production authority. Optional dual-run keeps Python as secondary diagnostics only.
         return new RoutingTemplateFillEngine(
-                new JavaTemplateFillEngine(), new PythonTemplateFillEngine(commands));
+                new JavaTemplateFillEngine(), new PythonTemplateFillEngine(commands), engineProperties);
     }
 
     @Bean
-    NativeEnhanceEngine nativeEnhanceEngine(PptMasterCommandExecutor commands) {
-        // Java notes subset dual-runs; Python remains the production authority until parity.
+    NativeEnhanceEngine nativeEnhanceEngine(PptMasterCommandExecutor commands, PptEngineProperties engineProperties) {
+        // Java is the production authority. Optional dual-run keeps Python as secondary diagnostics only.
         return new RoutingNativeEnhanceEngine(
-                new JavaNativeEnhanceEngine(), new PythonNativeEnhanceEngine(commands));
+                new JavaNativeEnhanceEngine(), new PythonNativeEnhanceEngine(commands), engineProperties);
     }
 
     @Bean

@@ -1,8 +1,11 @@
+// Copyright (c) 2025-2026 Hugo He
+// Ported from ppt-master (MIT) commit cc535363b8cf6e3abd0543d578d32b4f4cc3cf98.
+
 package domi.argenticpptmaster.engine;
 
+import domi.argenticpptmaster.config.PptEngineProperties;
 import domi.argenticpptmaster.engine.compare.PackageXmlComparator;
 import domi.argenticpptmaster.engine.compare.SlideXmlComparator;
-import domi.argenticpptmaster.engine.file.JavaTemplateFillEngine;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -11,12 +14,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Dual-runs the Java template-fill notes+text subset beside Python, returning the Python
- * result as the production authority.
+ * Template-fill routing with {@code JavaTemplateFillEngine} as the production authority.
  *
- * <p>analyze / check-plan / validate are not ported and go straight to Python.
- * Java apply dual-runs only when it produces an output; mismatches warn and never
- * change the production result.</p>
+ * <p>When dual-run is enabled, Python runs as a secondary diagnostic only; mismatches are
+ * logged (or thrown when fail-on-mismatch is set) and never replace the Java result or
+ * artifact.</p>
  */
 public final class RoutingTemplateFillEngine implements TemplateFillEngine {
 
@@ -24,84 +26,134 @@ public final class RoutingTemplateFillEngine implements TemplateFillEngine {
 
     private final TemplateFillEngine javaEngine;
     private final TemplateFillEngine pythonEngine;
+    private final PptEngineProperties properties;
     private final PackageXmlComparator packageComparator;
     private final SlideXmlComparator slideComparator;
 
     public RoutingTemplateFillEngine(TemplateFillEngine javaEngine, TemplateFillEngine pythonEngine) {
-        this(javaEngine, pythonEngine, new PackageXmlComparator(), new SlideXmlComparator());
+        this(javaEngine, pythonEngine, PptEngineProperties.defaults());
+    }
+
+    public RoutingTemplateFillEngine(
+            TemplateFillEngine javaEngine, TemplateFillEngine pythonEngine, PptEngineProperties properties) {
+        this(javaEngine, pythonEngine, properties, new PackageXmlComparator(), new SlideXmlComparator());
     }
 
     public RoutingTemplateFillEngine(
             TemplateFillEngine javaEngine,
             TemplateFillEngine pythonEngine,
+            PptEngineProperties properties,
             PackageXmlComparator packageComparator,
             SlideXmlComparator slideComparator) {
         this.javaEngine = Objects.requireNonNull(javaEngine, "javaEngine");
         this.pythonEngine = Objects.requireNonNull(pythonEngine, "pythonEngine");
+        this.properties = Objects.requireNonNull(properties, "properties");
         this.packageComparator = Objects.requireNonNull(packageComparator, "packageComparator");
         this.slideComparator = Objects.requireNonNull(slideComparator, "slideComparator");
     }
 
     @Override
     public EngineResult analyze(Path templatePptx, Path slideLibraryOut, Duration timeout) {
-        return pythonEngine.analyze(templatePptx, slideLibraryOut, timeout);
+        EngineResult javaResult = javaEngine.analyze(templatePptx, slideLibraryOut, timeout);
+        if (properties.isDualRunEnabled()) {
+            dualRunDiagnose("analyze", () -> {
+                Path dualOut = Files.createTempFile("dual-python-library-", ".json");
+                EngineResult pythonResult = pythonEngine.analyze(templatePptx, dualOut, timeout);
+                log.info(
+                        "template-fill dual-run analyze javaExit={} pythonExit={}",
+                        javaResult.exitCode(),
+                        pythonResult.exitCode());
+                Files.deleteIfExists(dualOut);
+            });
+        }
+        return javaResult;
     }
 
     @Override
     public EngineResult checkPlan(Path slideLibrary, Path fillPlan, Path checkReportOut, Duration timeout) {
-        return pythonEngine.checkPlan(slideLibrary, fillPlan, checkReportOut, timeout);
+        EngineResult javaResult = javaEngine.checkPlan(slideLibrary, fillPlan, checkReportOut, timeout);
+        if (properties.isDualRunEnabled()) {
+            dualRunDiagnose("check-plan", () -> {
+                Path dualOut = Files.createTempFile("dual-python-check-", ".json");
+                EngineResult pythonResult = pythonEngine.checkPlan(slideLibrary, fillPlan, dualOut, timeout);
+                log.info(
+                        "template-fill dual-run check-plan javaExit={} pythonExit={}",
+                        javaResult.exitCode(),
+                        pythonResult.exitCode());
+                Files.deleteIfExists(dualOut);
+            });
+        }
+        return javaResult;
     }
 
     @Override
     public EngineResult validate(Path project, Duration timeout) {
-        return pythonEngine.validate(project, timeout);
+        EngineResult javaResult = javaEngine.validate(project, timeout);
+        if (properties.isDualRunEnabled()) {
+            dualRunDiagnose("validate", () -> {
+                EngineResult pythonResult = pythonEngine.validate(project, timeout);
+                log.info(
+                        "template-fill dual-run validate javaExit={} pythonExit={}",
+                        javaResult.exitCode(),
+                        pythonResult.exitCode());
+            });
+        }
+        return javaResult;
     }
 
     @Override
     public EngineResult apply(Path templatePptx, Path fillPlan, Path exportOut, Duration timeout) {
-        EngineResult pythonResult = pythonEngine.apply(templatePptx, fillPlan, exportOut, timeout);
-        if (!pythonResult.successful()) {
-            return pythonResult;
+        EngineResult javaResult = javaEngine.apply(templatePptx, fillPlan, exportOut, timeout);
+        if (!javaResult.successful() || !properties.isDualRunEnabled()) {
+            return javaResult;
         }
-        Path pythonPptx = resolvePythonExport(exportOut);
-        if (pythonPptx == null) {
-            log.info("template-fill dual-run skipped: python export not found near {}", exportOut);
-            return pythonResult;
+        Path javaPptx = resolveExport(exportOut);
+        if (javaPptx == null) {
+            log.info("template-fill dual-run skipped: java export not found near {}", exportOut);
+            return javaResult;
         }
         try {
-            Path dualDir = Files.createTempDirectory(pythonPptx.getParent(), "dual-run-java-template-");
-            Path javaOut = dualDir.resolve(pythonPptx.getFileName().toString());
-            EngineResult javaResult =
-                    runSafely(() -> javaEngine.apply(templatePptx, fillPlan, javaOut, timeout), "java-apply");
-            if (JavaTemplateFillEngine.isSkip(javaResult)) {
-                log.info("template-fill dual-run java skipped for {}: {}", fillPlan, javaResult.output());
-                return pythonResult;
-            }
-            if (!javaResult.successful() || !Files.isRegularFile(javaOut)) {
+            Path dualDir = Files.createTempDirectory(javaPptx.getParent(), "dual-run-python-template-");
+            Path pythonOut = dualDir.resolve(javaPptx.getFileName().toString());
+            EngineResult pythonResult =
+                    runSafely(() -> pythonEngine.apply(templatePptx, fillPlan, pythonOut, timeout), "python-apply");
+            if (!pythonResult.successful()) {
                 log.warn(
-                        "template-fill dual-run java apply failed for {}: {}",
+                        "template-fill dual-run python apply failed for {}: {}",
                         fillPlan,
-                        javaResult.output());
-                return pythonResult;
+                        pythonResult.output());
+                return javaResult;
             }
-            PackageXmlComparator.Result packageResult = packageComparator.compare(pythonPptx, javaOut);
-            SlideXmlComparator.Result slideResult = slideComparator.compare(pythonPptx, javaOut);
+            Path pythonPptx = resolveExport(pythonOut);
+            if (pythonPptx == null || !Files.isRegularFile(pythonPptx)) {
+                log.warn("template-fill dual-run python export missing for {}", fillPlan);
+                return javaResult;
+            }
+            PackageXmlComparator.Result packageResult = packageComparator.compare(javaPptx, pythonPptx);
+            SlideXmlComparator.Result slideResult = slideComparator.compare(javaPptx, pythonPptx);
             if (!packageResult.equal() || !slideResult.equal()) {
-                log.warn(
-                        "template-fill dual-run XML mismatch for {}: packageDiffs={} slideDiffs={}",
-                        pythonPptx.getFileName(),
-                        packageResult.diffs().size(),
-                        slideResult.diffs().size());
+                String summary = "template-fill dual-run XML mismatch for "
+                        + javaPptx.getFileName()
+                        + ": packageDiffs="
+                        + packageResult.diffs().size()
+                        + " slideDiffs="
+                        + slideResult.diffs().size();
+                if (properties.isDualRunFailOnMismatch()) {
+                    throw new IllegalStateException(summary);
+                }
+                log.warn(summary);
             } else {
-                log.info("template-fill dual-run package/slide XML match for {}", pythonPptx.getFileName());
+                log.info("template-fill dual-run package/slide XML match for {}", javaPptx.getFileName());
             }
+        } catch (IllegalStateException ex) {
+            throw ex;
         } catch (Exception ex) {
-            log.warn("template-fill dual-run compare failed for {}; python remains authority", fillPlan, ex);
+            log.warn("template-fill dual-run compare failed for {}; java remains authority", fillPlan, ex);
         }
-        return pythonResult;
+        return javaResult;
     }
 
-    private static Path resolvePythonExport(Path exportOut) {
+    private static Path resolveExport(Path exportOut) {
         if (exportOut == null) {
             return null;
         }
@@ -112,9 +164,17 @@ public final class RoutingTemplateFillEngine implements TemplateFillEngine {
         if (parent == null || !Files.isDirectory(parent)) {
             return null;
         }
+        String stem = exportOut.getFileName().toString();
+        if (stem.toLowerCase().endsWith(".pptx")) {
+            stem = stem.substring(0, stem.length() - 5);
+        }
+        final String prefix = stem;
         try (var stream = Files.list(parent)) {
             return stream
-                    .filter(path -> path.getFileName().toString().endsWith(".pptx"))
+                    .filter(path -> {
+                        String name = path.getFileName().toString();
+                        return name.startsWith(prefix) && name.endsWith(".pptx");
+                    })
                     .sorted((a, b) -> {
                         try {
                             return Files.getLastModifiedTime(b).compareTo(Files.getLastModifiedTime(a));
@@ -129,11 +189,19 @@ public final class RoutingTemplateFillEngine implements TemplateFillEngine {
         }
     }
 
+    private void dualRunDiagnose(String stage, DualCall call) {
+        try {
+            call.run();
+        } catch (Exception ex) {
+            log.warn("template-fill dual-run {} diagnostic failed; java remains authority", stage, ex);
+        }
+    }
+
     private static EngineResult runSafely(EngineCall call, String label) {
         try {
             return call.run();
         } catch (RuntimeException ex) {
-            log.warn("template-fill {} threw; continuing with python authority", label, ex);
+            log.warn("template-fill {} threw; continuing with java authority", label, ex);
             return new EngineResult(1, "[" + label + "] failed: " + ex.getMessage(), false);
         }
     }
@@ -141,5 +209,10 @@ public final class RoutingTemplateFillEngine implements TemplateFillEngine {
     @FunctionalInterface
     private interface EngineCall {
         EngineResult run();
+    }
+
+    @FunctionalInterface
+    private interface DualCall {
+        void run() throws Exception;
     }
 }

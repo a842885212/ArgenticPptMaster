@@ -17,10 +17,9 @@ import domi.argenticpptmaster.domain.PptJobNodeStatus;
 import domi.argenticpptmaster.domain.PptSourceFile;
 import domi.argenticpptmaster.domain.PptTemplateFile;
 import domi.argenticpptmaster.domain.PptWorkflowMode;
-import domi.argenticpptmaster.engine.RoutingTemplateFillEngine;
 import domi.argenticpptmaster.engine.file.JavaTemplateFillEngine;
+import domi.argenticpptmaster.engine.file.JavaTemplateFillEngineTests;
 import domi.argenticpptmaster.engine.python.PythonProjectWorkspace;
-import domi.argenticpptmaster.engine.python.PythonTemplateFillEngine;
 import domi.argenticpptmaster.infra.PptMasterCommandExecutor;
 import domi.argenticpptmaster.repository.PptJobRepository;
 import java.nio.file.Files;
@@ -59,7 +58,7 @@ class PptTemplateFillCommandExecutorTests {
                 repository,
                 events,
                 new PythonProjectWorkspace(commands),
-                new RoutingTemplateFillEngine(new JavaTemplateFillEngine(), new PythonTemplateFillEngine(commands)),
+                new JavaTemplateFillEngine(),
                 analysisReader,
                 concurrencyLimiter,
                 new TemplateFillCapabilityIndexLoader(),
@@ -77,13 +76,30 @@ class PptTemplateFillCommandExecutorTests {
         Path sourcePath = workspace.resolve("uploads/content/0-source.md");
         Files.createDirectories(templatePath.getParent());
         Files.createDirectories(sourcePath.getParent());
-        Files.writeString(templatePath, "template");
+        JavaTemplateFillEngineTests.writeTemplate(templatePath);
         Files.writeString(sourcePath, "# source");
         Path slideLibrary = workspace.resolve("analysis/template.slide_library.json");
         Files.createDirectories(slideLibrary.getParent());
         Files.copy(getClass().getResourceAsStream("/template-fill/template.slide_library.json"), slideLibrary);
-        String draft = Files.readString(Path.of(
-                getClass().getResource("/template-fill/fill-plan-draft.json").toURI()));
+        String draft = """
+                {
+                  "schema": "template_fill_pptx_plan.v1",
+                  "status": "draft",
+                  "accepted_warnings": [],
+                  "slides": [
+                    {
+                      "source_slide": 1,
+                      "purpose": "cover",
+                      "replacements": [
+                        {"slot_id": "s01_sh1", "text": "模板填充集成方案"}
+                      ],
+                      "table_edits": [],
+                      "chart_edits": [],
+                      "transition": "fade"
+                    }
+                  ]
+                }
+                """;
         PptJob job = new PptJob(jobId, "demo", "ppt169", "fill", PptWorkflowMode.TEMPLATE_FILL, workspace);
         job.setTemplate(new PptTemplateFile("brand.pptx", "application/octet-stream", 8L, templatePath));
         job.addSource(new PptSourceFile("source.md", "text/markdown", 8L, sourcePath));
@@ -104,20 +120,6 @@ class PptTemplateFillCommandExecutorTests {
                         return new PptMasterCommandExecutor.CommandResult(0,
                                 "[OK] Project initialized: " + project, false);
                     }
-                    if (script.endsWith("template_fill_pptx.py") && args.get(0).equals("analyze")) {
-                        Files.copy(getClass().getResourceAsStream("/template-fill/template.slide_library.json"),
-                                Path.of(args.get(args.indexOf("-o") + 1)),
-                                java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-                    }
-                    if (script.endsWith("template_fill_pptx.py") && args.get(0).equals("check-plan")) {
-                        Files.copy(getClass().getResourceAsStream("/template-fill/check_report.json"),
-                                Path.of(args.get(args.indexOf("-o") + 1)));
-                    }
-                    if (script.endsWith("template_fill_pptx.py") && args.get(0).equals("apply")) {
-                        Path requestedOutput = Path.of(args.get(args.indexOf("-o") + 1));
-                        Files.copy(getClass().getResourceAsStream("/template-fill/minimal-valid-export.pptx"),
-                                requestedOutput.resolveSibling("template-fill_20260720_000000.pptx"));
-                    }
                     return new PptMasterCommandExecutor.CommandResult(0, "ok", false);
                 });
 
@@ -130,8 +132,13 @@ class PptTemplateFillCommandExecutorTests {
         assertThat(job.readbackValidationStatus()).isIn("PASSED", "PASSED_WITH_WARNINGS");
         assertThat(job.nodeExecution(PptJobNode.TEMPLATE_ANALYZED).status()).isEqualTo(PptJobNodeStatus.COMPLETED);
         assertThat(job.nodeExecution(PptJobNode.FILL_PLAN_VALIDATED).status()).isEqualTo(PptJobNodeStatus.COMPLETED);
-        verify(commands, org.mockito.Mockito.times(6))
+        // Only project_manager remains on Python; template-fill stages are Java authority.
+        verify(commands, org.mockito.Mockito.atLeast(2))
                 .runPythonScript(org.mockito.ArgumentMatchers.anyString(), anyList(), any(Duration.class));
+        verify(commands, never()).runPythonScript(
+                org.mockito.ArgumentMatchers.eq("skills/ppt-master/scripts/template_fill_pptx.py"),
+                anyList(),
+                any(Duration.class));
         ArgumentCaptor<PptJobEvent> eventsCaptor = ArgumentCaptor.forClass(PptJobEvent.class);
         verify(events, atLeast(4)).record(eq(job), eventsCaptor.capture());
         assertThat(eventsCaptor.getAllValues()).extracting(PptJobEvent::type)
@@ -146,12 +153,29 @@ class PptTemplateFillCommandExecutorTests {
         Path workspace = tempDir.resolve("job-fail");
         Path templatePath = workspace.resolve("uploads/template/0-brand.pptx");
         Files.createDirectories(templatePath.getParent());
-        Files.writeString(templatePath, "template");
+        // Blank slide has no text slots; analyze + check-plan will fail the confirmed s01_sh1 replacement.
+        writeBlankSlideTemplate(templatePath);
         Path slideLibrary = workspace.resolve("analysis/template.slide_library.json");
         Files.createDirectories(slideLibrary.getParent());
         Files.copy(getClass().getResourceAsStream("/template-fill/template.slide_library.json"), slideLibrary);
-        String draft = Files.readString(Path.of(
-                getClass().getResource("/template-fill/fill-plan-draft.json").toURI()));
+        String draft = """
+                {
+                  "schema": "template_fill_pptx_plan.v1",
+                  "status": "draft",
+                  "accepted_warnings": [],
+                  "slides": [
+                    {
+                      "source_slide": 1,
+                      "purpose": "cover",
+                      "replacements": [
+                        {"slot_id": "s01_sh1", "text": "ok"}
+                      ],
+                      "table_edits": [],
+                      "chart_edits": []
+                    }
+                  ]
+                }
+                """;
         PptJob job = new PptJob(jobId, "demo", "ppt169", "fill", PptWorkflowMode.TEMPLATE_FILL, workspace);
         job.setTemplate(new PptTemplateFile("brand.pptx", "application/octet-stream", 8L, templatePath));
         job.addSource(new PptSourceFile("source.md", "text/markdown", 8L,
@@ -173,18 +197,6 @@ class PptTemplateFillCommandExecutorTests {
                         return new PptMasterCommandExecutor.CommandResult(0,
                                 "[OK] Project initialized: " + project, false);
                     }
-                    if (script.endsWith("project_manager.py") && args.get(0).equals("import-sources")) {
-                        return new PptMasterCommandExecutor.CommandResult(0, "ok", false);
-                    }
-                    if (script.endsWith("template_fill_pptx.py") && args.get(0).equals("analyze")) {
-                        Files.copy(getClass().getResourceAsStream("/template-fill/template.slide_library.json"),
-                                Path.of(args.get(args.indexOf("-o") + 1)),
-                                java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-                        return new PptMasterCommandExecutor.CommandResult(0, "ok", false);
-                    }
-                    if (script.endsWith("template_fill_pptx.py") && args.get(0).equals("check-plan")) {
-                        return new PptMasterCommandExecutor.CommandResult(1, "check failed", false);
-                    }
                     return new PptMasterCommandExecutor.CommandResult(0, "ok", false);
                 });
 
@@ -194,10 +206,106 @@ class PptTemplateFillCommandExecutorTests {
         assertThat(job.status()).isEqualTo(domi.argenticpptmaster.domain.PptJobStatus.FAILED);
         assertThat(job.lastCompletedNode()).contains(PptJobNode.FILL_PLAN_CONFIRMED);
         assertThat(job.lastFailureNode()).contains(PptJobNode.FILL_PLAN_VALIDATED);
-        verify(commands, never()).runPythonScript(
-                org.mockito.ArgumentMatchers.eq("skills/ppt-master/scripts/template_fill_pptx.py"),
-                org.mockito.ArgumentMatchers.argThat(args -> args.contains("apply")),
-                any(Duration.class));
+    }
+
+    private static void writeBlankSlideTemplate(Path path) throws Exception {
+        Path extract = path.getParent().resolve("_blank_tpl");
+        Files.createDirectories(extract.resolve("_rels"));
+        Files.createDirectories(extract.resolve("ppt/slides/_rels"));
+        Files.createDirectories(extract.resolve("ppt/_rels"));
+        Files.createDirectories(extract.resolve("ppt/slideMasters"));
+        Files.createDirectories(extract.resolve("ppt/theme"));
+        Files.writeString(extract.resolve("[Content_Types].xml"), """
+                <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+                <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+                  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+                  <Default Extension="xml" ContentType="application/xml"/>
+                  <Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>
+                  <Override PartName="/ppt/slides/slide1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>
+                  <Override PartName="/ppt/slideMasters/slideMaster1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideMaster+xml"/>
+                  <Override PartName="/ppt/theme/theme1.xml" ContentType="application/vnd.openxmlformats-officedocument.theme+xml"/>
+                </Types>
+                """);
+        Files.writeString(extract.resolve("_rels/.rels"), """
+                <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+                <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+                  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/>
+                </Relationships>
+                """);
+        Files.writeString(extract.resolve("ppt/presentation.xml"), """
+                <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+                <p:presentation xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+                                xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+                  <p:sldMasterIdLst><p:sldMasterId id="2147483648" r:id="rId1"/></p:sldMasterIdLst>
+                  <p:sldIdLst><p:sldId id="256" r:id="rId2"/></p:sldIdLst>
+                </p:presentation>
+                """);
+        Files.writeString(extract.resolve("ppt/_rels/presentation.xml.rels"), """
+                <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+                <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+                  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster" Target="slideMasters/slideMaster1.xml"/>
+                  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide1.xml"/>
+                  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="theme/theme1.xml"/>
+                </Relationships>
+                """);
+        Files.writeString(extract.resolve("ppt/slides/slide1.xml"), """
+                <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+                <p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+                       xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+                  <p:cSld><p:spTree>
+                    <p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>
+                    <p:grpSpPr/>
+                  </p:spTree></p:cSld>
+                </p:sld>
+                """);
+        Files.writeString(extract.resolve("ppt/slides/_rels/slide1.xml.rels"), """
+                <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+                <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>
+                """);
+        Files.writeString(extract.resolve("ppt/slideMasters/slideMaster1.xml"), """
+                <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+                <p:sldMaster xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+                  <p:cSld><p:spTree>
+                    <p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>
+                    <p:grpSpPr/>
+                  </p:spTree></p:cSld>
+                  <p:clrMap bg1="lt1" tx1="dk1" bg2="lt2" tx2="dk2" accent1="accent1" accent2="accent2"
+                            accent3="accent3" accent4="accent4" accent5="accent5" accent6="accent6"
+                            hlink="hlink" folHlink="folHlink"/>
+                </p:sldMaster>
+                """);
+        Files.writeString(extract.resolve("ppt/theme/theme1.xml"), """
+                <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+                <a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="Office">
+                  <a:themeElements>
+                    <a:clrScheme name="Office">
+                      <a:dk1><a:sysClr val="windowText" lastClr="000000"/></a:dk1>
+                      <a:lt1><a:sysClr val="window" lastClr="FFFFFF"/></a:lt1>
+                      <a:dk2><a:srgbClr val="1F497D"/></a:dk2>
+                      <a:lt2><a:srgbClr val="EEECE1"/></a:lt2>
+                      <a:accent1><a:srgbClr val="4F81BD"/></a:accent1>
+                      <a:accent2><a:srgbClr val="C0504D"/></a:accent2>
+                      <a:accent3><a:srgbClr val="9BBB59"/></a:accent3>
+                      <a:accent4><a:srgbClr val="8064A2"/></a:accent4>
+                      <a:accent5><a:srgbClr val="4BACC6"/></a:accent5>
+                      <a:accent6><a:srgbClr val="F79646"/></a:accent6>
+                      <a:hlink><a:srgbClr val="0000FF"/></a:hlink>
+                      <a:folHlink><a:srgbClr val="800080"/></a:folHlink>
+                    </a:clrScheme>
+                    <a:fontScheme name="Office">
+                      <a:majorFont><a:latin typeface="Calibri"/></a:majorFont>
+                      <a:minorFont><a:latin typeface="Calibri"/></a:minorFont>
+                    </a:fontScheme>
+                    <a:fmtScheme name="Office">
+                      <a:fillStyleLst><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill></a:fillStyleLst>
+                      <a:lnStyleLst><a:ln w="9525"><a:solidFill><a:srgbClr val="000000"/></a:solidFill></a:ln></a:lnStyleLst>
+                      <a:effectStyleLst><a:effectStyle><a:effectLst/></a:effectStyle></a:effectStyleLst>
+                      <a:bgFillStyleLst><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill></a:bgFillStyleLst>
+                    </a:fmtScheme>
+                  </a:themeElements>
+                </a:theme>
+                """);
+        domi.argenticpptmaster.engine.ooxml.PptxPackage.zipDirectory(extract, path);
     }
 
     @Test
@@ -253,13 +361,30 @@ class PptTemplateFillCommandExecutorTests {
         Path sourcePath = workspace.resolve("uploads/content/0-source.md");
         Files.createDirectories(templatePath.getParent());
         Files.createDirectories(sourcePath.getParent());
-        Files.writeString(templatePath, "template");
+        JavaTemplateFillEngineTests.writeTemplate(templatePath);
         Files.writeString(sourcePath, "# source");
         Path slideLibrary = workspace.resolve("analysis/template.slide_library.json");
         Files.createDirectories(slideLibrary.getParent());
         Files.copy(getClass().getResourceAsStream("/template-fill/template.slide_library.json"), slideLibrary);
-        String draft = Files.readString(Path.of(
-                getClass().getResource("/template-fill/fill-plan-draft.json").toURI()));
+        String draft = """
+                {
+                  "schema": "template_fill_pptx_plan.v1",
+                  "status": "draft",
+                  "accepted_warnings": [],
+                  "slides": [
+                    {
+                      "source_slide": 1,
+                      "purpose": "cover",
+                      "replacements": [
+                        {"slot_id": "s01_sh1", "text": "模板填充集成方案"}
+                      ],
+                      "table_edits": [],
+                      "chart_edits": [],
+                      "transition": "fade"
+                    }
+                  ]
+                }
+                """;
         PptJob job = new PptJob(jobId, "demo", "ppt169", "fill", PptWorkflowMode.TEMPLATE_FILL, workspace);
         job.setTemplate(new PptTemplateFile("brand.pptx", "application/octet-stream", 8L, templatePath));
         job.addSource(new PptSourceFile("source.md", "text/markdown", 8L, sourcePath));
@@ -283,20 +408,6 @@ class PptTemplateFillCommandExecutorTests {
                         return new PptMasterCommandExecutor.CommandResult(0,
                                 "[OK] Project initialized: " + project, false);
                     }
-                    if (script.endsWith("template_fill_pptx.py") && args.get(0).equals("analyze")) {
-                        Files.copy(getClass().getResourceAsStream("/template-fill/template.slide_library.json"),
-                                Path.of(args.get(args.indexOf("-o") + 1)),
-                                java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-                    }
-                    if (script.endsWith("template_fill_pptx.py") && args.get(0).equals("check-plan")) {
-                        Files.copy(getClass().getResourceAsStream("/template-fill/check_report.json"),
-                                Path.of(args.get(args.indexOf("-o") + 1)));
-                    }
-                    if (script.endsWith("template_fill_pptx.py") && args.get(0).equals("apply")) {
-                        Path requestedOutput = Path.of(args.get(args.indexOf("-o") + 1));
-                        Files.copy(getClass().getResourceAsStream("/template-fill/minimal-valid-export.pptx"),
-                                requestedOutput.resolveSibling("template-fill_20260720_000000.pptx"));
-                    }
                     return new PptMasterCommandExecutor.CommandResult(0, "ok", false);
                 });
 
@@ -307,6 +418,7 @@ class PptTemplateFillCommandExecutorTests {
         assertThat(argsCaptor.getAllValues())
                 .allSatisfy(args -> assertThat(args).noneMatch(arg -> arg.contains("--force")));
         assertThat(argsCaptor.getAllValues().stream().map(args -> args.get(0)).toList())
-                .contains("init", "import-sources", "analyze", "check-plan", "apply", "validate");
+                .contains("init", "import-sources")
+                .doesNotContain("analyze", "check-plan", "apply", "validate");
     }
 }

@@ -19,8 +19,8 @@ import domi.argenticpptmaster.infra.PptMasterCommandExecutor;
 /**
  * Builds a capability-engine {@link PptEngineBundle} over a (often mocked) command executor.
  *
- * <p>Template-fill / native-enhance / svg-quality use Routing beans with Python as the
- * production authority so tests can keep mocking {@code runPythonScript}.</p>
+ * <p>Template-fill and native-enhance use Java authority (dual-run off by default). Svg-quality
+ * still routes with Python as the authority gate.</p>
  */
 public final class PptEngineTestSupport {
 

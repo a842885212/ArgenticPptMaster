@@ -5,13 +5,12 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import domi.argenticpptmaster.config.PptEngineProperties;
 import domi.argenticpptmaster.config.PptMasterProperties;
 import domi.argenticpptmaster.domain.PptJob;
 import domi.argenticpptmaster.domain.PptJobNode;
@@ -19,26 +18,24 @@ import domi.argenticpptmaster.domain.PptJobNodeStatus;
 import domi.argenticpptmaster.domain.PptJobStatus;
 import domi.argenticpptmaster.domain.PptSourceFile;
 import domi.argenticpptmaster.domain.PptWorkflowMode;
+import domi.argenticpptmaster.engine.EngineResult;
+import domi.argenticpptmaster.engine.NativeEnhanceEngine;
 import domi.argenticpptmaster.engine.RoutingNativeEnhanceEngine;
 import domi.argenticpptmaster.engine.file.JavaNativeEnhanceEngine;
-import domi.argenticpptmaster.engine.python.PythonNativeEnhanceEngine;
+import domi.argenticpptmaster.engine.file.JavaNativeEnhanceEngineTests;
 import domi.argenticpptmaster.engine.python.PythonNotesAudioGateway;
 import domi.argenticpptmaster.engine.python.PythonPptxMarkdownReadback;
 import domi.argenticpptmaster.infra.PptMasterCommandExecutor;
 import domi.argenticpptmaster.repository.InMemoryPptJobRepository;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipOutputStream;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import org.mockito.ArgumentCaptor;
 
 class PptNativeEnhanceCommandExecutorTests {
 
@@ -63,11 +60,14 @@ class PptNativeEnhanceCommandExecutorTests {
         repository = new InMemoryPptJobRepository();
         events = mock(PptWorkflowEvents.class);
         commands = mock(PptMasterCommandExecutor.class);
+        // Java authority; dual-run off so Python is never consulted for NE.
+        NativeEnhanceEngine engine = new RoutingNativeEnhanceEngine(
+                new JavaNativeEnhanceEngine(), stubPythonEngine(), PptEngineProperties.defaults());
         executor = new PptNativeEnhanceCommandExecutor(
                 properties,
                 repository,
                 events,
-                new RoutingNativeEnhanceEngine(new JavaNativeEnhanceEngine(), new PythonNativeEnhanceEngine(commands)),
+                engine,
                 new PythonNotesAudioGateway(commands),
                 new PythonPptxMarkdownReadback(commands, PythonPptxMarkdownReadback.NATIVE_ENHANCE_SCRIPT),
                 new NativeEnhanceReadinessContributor(),
@@ -104,61 +104,21 @@ class PptNativeEnhanceCommandExecutorTests {
         Path workspace = properties.workspacePath().resolve("jobs").resolve(jobId.toString());
         Files.createDirectories(workspace.resolve("uploads"));
         Path source = workspace.resolve("uploads/source.pptx");
-        Files.write(source, new byte[] {0x50, 0x4b});
+        JavaNativeEnhanceEngineTests.writeNSlidePptx(source, 2);
 
         PptJob job = new PptJob(jobId, "phase0", "ppt169", "notes", PptWorkflowMode.NATIVE_ENHANCE_PPTX, workspace);
-        job.addSource(new PptSourceFile("source.pptx", "application/octet-stream", 2, source));
+        job.addSource(new PptSourceFile("source.pptx", "application/octet-stream", Files.size(source), source));
         repository.save(job);
 
         when(commands.runPythonScript(anyString(), anyList(), any(Duration.class))).thenAnswer(invocation -> {
             String script = invocation.getArgument(0);
             List<String> args = invocation.getArgument(1);
-            if (PptNativeEnhanceCommandExecutor.NATIVE_ENHANCE_SCRIPT.equals(script) && args.get(0).equals("init")) {
-                Path project = Path.of(args.get(args.indexOf("--project-dir") + 1));
-                Files.createDirectories(project.resolve("analysis"));
-                Files.createDirectories(project.resolve("notes"));
-                Files.createDirectories(project.resolve("exports"));
-                Files.createDirectories(project.resolve("validation"));
-                Files.writeString(project.resolve("project.json"), """
-                        {"schema":"native_pptx_enhancement_project.v1","kind":"native_pptx_enhancement","slide_count":2}
-                        """);
-                ObjectNode index = objectMapper.createObjectNode();
-                index.put("schema", "native_pptx_enhancement_slide_index.v1");
-                index.put("slide_count", 2);
-                ArrayNode slides = index.putArray("slides");
-                slides.addObject().put("index", 1).put("note_file", "001.md").put("slide_number", 1).put("title", "Cover");
-                slides.addObject().put("index", 2).put("note_file", "002.md").put("slide_number", 2).put("title", "Agenda");
-                objectMapper.writeValue(project.resolve("analysis/slide_index.json").toFile(), index);
-                ObjectNode plan = objectMapper.createObjectNode();
-                plan.put("schema", "native_pptx_enhancement_plan.v1");
-                plan.put("status", "draft");
-                ObjectNode modules = plan.putObject("modules");
-                modules.putObject("notes").put("enabled", true);
-                modules.putObject("audio").put("enabled", true);
-                modules.putObject("timings").put("enabled", true);
-                modules.putObject("transitions").put("enabled", true);
-                objectMapper.writeValue(project.resolve("analysis/enhancement_plan.json").toFile(), plan);
-                return new PptMasterCommandExecutor.CommandResult(0, "ok", false);
-            }
-            if (PptNativeEnhanceCommandExecutor.NATIVE_ENHANCE_SCRIPT.equals(script) && args.get(0).equals("validate")) {
-                Path project = Path.of(args.get(1));
-                Files.writeString(project.resolve("validation/report.json"), """
-                        {"schema":"native_pptx_enhancement_validation.v1","plan_status":"confirmed","notes_count":2,"missing_notes":[]}
-                        """);
-                return new PptMasterCommandExecutor.CommandResult(0, "ok", false);
-            }
-            if (PptNativeEnhanceCommandExecutor.NATIVE_ENHANCE_SCRIPT.equals(script) && args.get(0).equals("apply")) {
-                Path project = Path.of(args.get(1));
-                Path export = project.resolve("exports/source_enhanced.pptx");
-                writeMinimalPptx(export, 2);
-                return new PptMasterCommandExecutor.CommandResult(0, "ok", false);
-            }
             if (PptNativeEnhanceCommandExecutor.PPT_TO_MD_SCRIPT.equals(script)) {
                 Path out = Path.of(args.get(args.indexOf("-o") + 1));
                 Files.writeString(out, "# readback\nTotal slides: 2\n");
                 return new PptMasterCommandExecutor.CommandResult(0, "ok", false);
             }
-            return new PptMasterCommandExecutor.CommandResult(1, "unexpected", false);
+            return new PptMasterCommandExecutor.CommandResult(1, "unexpected python call: " + script, false);
         });
 
         executor.runNotesOnlyMvp(jobId);
@@ -211,13 +171,6 @@ class PptNativeEnhanceCommandExecutorTests {
         assertThat(Files.isRegularFile(project.resolve("validation/native-enhance-readback.json"))).isTrue();
         assertThat(Files.readString(project.resolve("validation/native-enhance-readback.json")))
                 .contains("\"status\" : \"PASSED\"");
-
-        @SuppressWarnings("unchecked")
-        ArgumentCaptor<List<String>> argsCaptor = ArgumentCaptor.forClass(List.class);
-        org.mockito.Mockito.verify(commands, org.mockito.Mockito.atLeastOnce())
-                .runPythonScript(eq(PptNativeEnhanceCommandExecutor.NATIVE_ENHANCE_SCRIPT), argsCaptor.capture(), any());
-        assertThat(argsCaptor.getAllValues()).allSatisfy(args ->
-                assertThat(args).noneMatch(arg -> arg != null && arg.contains("--force")));
     }
 
     @Test
@@ -264,16 +217,28 @@ class PptNativeEnhanceCommandExecutorTests {
         Path workspace = properties.workspacePath().resolve("jobs").resolve(jobId.toString());
         Files.createDirectories(workspace.resolve("uploads"));
         Path source = workspace.resolve("uploads/source.pptx");
-        byte[] original = new byte[] {0x50, 0x4b, 0x03, 0x04};
-        Files.write(source, original);
+        JavaNativeEnhanceEngineTests.writeNSlidePptx(source, 1);
+        byte[] original = Files.readAllBytes(source);
 
         Path project = workspace.resolve("projects/phase0");
         Files.createDirectories(project.resolve("analysis"));
         Files.createDirectories(project.resolve("notes"));
+        Files.createDirectories(project.resolve("audio"));
         Files.createDirectories(project.resolve("exports"));
         Files.createDirectories(project.resolve("validation"));
+        Files.createDirectories(project.resolve("sources"));
+        Files.copy(source, project.resolve("sources/source.pptx"));
         Files.writeString(project.resolve("project.json"), """
-                {"schema":"native_pptx_enhancement_project.v1","kind":"native_pptx_enhancement","slide_count":1}
+                {
+                  "schema":"native_pptx_enhancement_project.v1",
+                  "kind":"native_pptx_enhancement",
+                  "slide_count":1,
+                  "source_pptx":"sources/source.pptx",
+                  "notes_dir":"notes",
+                  "audio_dir":"audio",
+                  "exports_dir":"exports",
+                  "slide_part_roster":["ppt/slides/slide1.xml"]
+                }
                 """);
         ObjectNode index = objectMapper.createObjectNode();
         index.put("schema", "native_pptx_enhancement_slide_index.v1");
@@ -284,6 +249,7 @@ class PptNativeEnhanceCommandExecutorTests {
         ObjectNode plan = objectMapper.createObjectNode();
         plan.put("schema", "native_pptx_enhancement_plan.v1");
         plan.put("status", "draft");
+        plan.put("slide_count", 1);
         ObjectNode modules = plan.putObject("modules");
         modules.putObject("notes").put("enabled", true);
         modules.putObject("audio").put("enabled", false);
@@ -306,19 +272,6 @@ class PptNativeEnhanceCommandExecutorTests {
         when(commands.runPythonScript(anyString(), anyList(), any(Duration.class))).thenAnswer(invocation -> {
             String script = invocation.getArgument(0);
             List<String> args = invocation.getArgument(1);
-            if (PptNativeEnhanceCommandExecutor.NATIVE_ENHANCE_SCRIPT.equals(script) && args.get(0).equals("init")) {
-                return new PptMasterCommandExecutor.CommandResult(1, "init should not run", false);
-            }
-            if (PptNativeEnhanceCommandExecutor.NATIVE_ENHANCE_SCRIPT.equals(script) && args.get(0).equals("validate")) {
-                Files.writeString(project.resolve("validation/report.json"), """
-                        {"schema":"native_pptx_enhancement_validation.v1","plan_status":"confirmed","notes_count":1,"missing_notes":[]}
-                        """);
-                return new PptMasterCommandExecutor.CommandResult(0, "ok", false);
-            }
-            if (PptNativeEnhanceCommandExecutor.NATIVE_ENHANCE_SCRIPT.equals(script) && args.get(0).equals("apply")) {
-                writeMinimalPptx(project.resolve("exports/source_enhanced.pptx"), 1);
-                return new PptMasterCommandExecutor.CommandResult(0, "ok", false);
-            }
             if (PptNativeEnhanceCommandExecutor.PPT_TO_MD_SCRIPT.equals(script)) {
                 Path out = Path.of(args.get(args.indexOf("-o") + 1));
                 Files.writeString(out, "# readback\n");
@@ -333,10 +286,6 @@ class PptNativeEnhanceCommandExecutorTests {
         assertThat(waiting.status()).isEqualTo(PptJobStatus.WAITING_CONFIRMATION);
         assertThat(Files.readAllBytes(source)).isEqualTo(original);
         assertThat(waiting.confirmationPayload().get("stage")).isEqualTo("enhancement_plan_confirmation");
-        org.mockito.Mockito.verify(commands, org.mockito.Mockito.never())
-                .runPythonScript(eq(PptNativeEnhanceCommandExecutor.NATIVE_ENHANCE_SCRIPT),
-                        org.mockito.ArgumentMatchers.argThat(args -> args != null && !args.isEmpty() && "init".equals(args.get(0))),
-                        any());
     }
 
     @Test
@@ -345,13 +294,24 @@ class PptNativeEnhanceCommandExecutorTests {
         Path workspace = properties.workspacePath().resolve("jobs").resolve(jobId.toString());
         Files.createDirectories(workspace.resolve("uploads"));
         Path source = workspace.resolve("uploads/source.pptx");
-        Files.write(source, new byte[] {0x50, 0x4b});
+        JavaNativeEnhanceEngineTests.writeNSlidePptx(source, 1);
 
         Path project = workspace.resolve("projects/phase0");
         Files.createDirectories(project.resolve("analysis"));
         Files.createDirectories(project.resolve("exports"));
+        Files.createDirectories(project.resolve("notes"));
+        Files.createDirectories(project.resolve("sources"));
+        Files.copy(source, project.resolve("sources/source.pptx"));
         Files.writeString(project.resolve("project.json"), """
-                {"schema":"native_pptx_enhancement_project.v1","kind":"native_pptx_enhancement","slide_count":1}
+                {
+                  "schema":"native_pptx_enhancement_project.v1",
+                  "kind":"native_pptx_enhancement",
+                  "slide_count":1,
+                  "source_pptx":"sources/source.pptx",
+                  "notes_dir":"notes",
+                  "audio_dir":"audio",
+                  "exports_dir":"exports"
+                }
                 """);
         ObjectNode index = objectMapper.createObjectNode();
         index.put("schema", "native_pptx_enhancement_slide_index.v1");
@@ -371,18 +331,14 @@ class PptNativeEnhanceCommandExecutorTests {
         objectMapper.writeValue(project.resolve("analysis/enhancement_plan.json").toFile(), plan);
 
         PptJob job = new PptJob(jobId, "phase0", "ppt169", "notes", PptWorkflowMode.NATIVE_ENHANCE_PPTX, workspace);
-        job.addSource(new PptSourceFile("source.pptx", "application/octet-stream", 2, source));
+        job.addSource(new PptSourceFile("source.pptx", "application/octet-stream", Files.size(source), source));
         job.prepareProject(project);
         job.completeNode(PptJobNode.PROJECT_READY, Map.of());
         job.completeNode(PptJobNode.NATIVE_ENHANCE_INITIALIZED, Map.of());
         job.completeNode(PptJobNode.ENHANCEMENT_PLAN_DRAFTED, Map.of("enhancementPlanStatus", "draft"));
-        // Node marked confirmed but on-disk plan remains draft — apply must still refuse.
         job.completeNode(PptJobNode.ENHANCEMENT_PLAN_CONFIRMED, Map.of("enhancementPlanStatus", "confirmed"));
         repository.save(job);
         NativeEnhancePlanStore.ensureDraftMetadata(job);
-
-        when(commands.runPythonScript(anyString(), anyList(), any(Duration.class)))
-                .thenReturn(new PptMasterCommandExecutor.CommandResult(0, "should not apply", false));
 
         assertThatThrownBy(() -> executor.continueAfterPlanConfirmation(jobId))
                 .isInstanceOf(NativeEnhanceExecutionException.class)
@@ -390,22 +346,15 @@ class PptNativeEnhanceCommandExecutorTests {
     }
 
     @Test
-    void initFailureRecordsStableErrorCode() {
+    void initFailureRecordsStableErrorCode() throws Exception {
         UUID jobId = UUID.randomUUID();
         Path workspace = properties.workspacePath().resolve("jobs").resolve(jobId.toString());
-        try {
-            Files.createDirectories(workspace.resolve("uploads"));
-            Path source = workspace.resolve("uploads/source.pptx");
-            Files.write(source, new byte[] {0x50, 0x4b});
-            PptJob job = new PptJob(jobId, "phase0", "ppt169", "notes", PptWorkflowMode.NATIVE_ENHANCE_PPTX, workspace);
-            job.addSource(new PptSourceFile("source.pptx", "application/octet-stream", 2, source));
-            repository.save(job);
-        } catch (Exception ex) {
-            throw new RuntimeException(ex);
-        }
-
-        when(commands.runPythonScript(anyString(), anyList(), any(Duration.class)))
-                .thenReturn(new PptMasterCommandExecutor.CommandResult(1, "boom", true));
+        Files.createDirectories(workspace.resolve("uploads"));
+        Path source = workspace.resolve("uploads/source.pptx");
+        Files.write(source, new byte[] {0x50, 0x4b});
+        PptJob job = new PptJob(jobId, "phase0", "ppt169", "notes", PptWorkflowMode.NATIVE_ENHANCE_PPTX, workspace);
+        job.addSource(new PptSourceFile("source.pptx", "application/octet-stream", 2, source));
+        repository.save(job);
 
         assertThatThrownBy(() -> executor.runNotesOnlyMvp(jobId))
                 .isInstanceOf(NativeEnhanceExecutionException.class)
@@ -426,15 +375,17 @@ class PptNativeEnhanceCommandExecutorTests {
         Path workspace = properties.workspacePath().resolve("jobs").resolve(jobId.toString());
         Files.createDirectories(workspace.resolve("uploads"));
         Path source = workspace.resolve("uploads/source.pptx");
-        Files.write(source, new byte[] {0x50, 0x4b});
+        JavaNativeEnhanceEngineTests.writeNSlidePptx(source, 1);
 
         Path project = workspace.resolve("projects/phase0");
         Files.createDirectories(project.resolve("analysis"));
         Files.createDirectories(project.resolve("notes"));
         Files.createDirectories(project.resolve("exports"));
         Files.createDirectories(project.resolve("validation"));
+        Files.createDirectories(project.resolve("sources"));
+        Files.copy(source, project.resolve("sources/source.pptx"));
         Files.writeString(project.resolve("project.json"), """
-                {"schema":"native_pptx_enhancement_project.v1","kind":"native_pptx_enhancement","slide_count":1,"audio":{"provider":"edge","voice":"zh-CN-YunjianNeural","rate":"+0%"}}
+                {"schema":"native_pptx_enhancement_project.v1","kind":"native_pptx_enhancement","slide_count":1,"source_pptx":"sources/source.pptx","notes_dir":"notes","audio_dir":"audio","exports_dir":"exports","audio":{"provider":"edge","voice":"zh-CN-YunjianNeural","rate":"+0%"}}
                 """);
         ObjectNode index = objectMapper.createObjectNode();
         index.put("schema", "native_pptx_enhancement_slide_index.v1");
@@ -444,7 +395,7 @@ class PptNativeEnhanceCommandExecutorTests {
         objectMapper.writeValue(project.resolve("analysis/slide_index.json").toFile(), index);
 
         PptJob job = new PptJob(jobId, "phase0", "ppt169", "notes", PptWorkflowMode.NATIVE_ENHANCE_PPTX, workspace);
-        job.addSource(new PptSourceFile("source.pptx", "application/octet-stream", 2, source));
+        job.addSource(new PptSourceFile("source.pptx", "application/octet-stream", Files.size(source), source));
         job.prepareProject(project);
         job.completeNode(PptJobNode.PROJECT_READY, Map.of());
         job.completeNode(PptJobNode.NATIVE_ENHANCE_INITIALIZED, Map.of());
@@ -472,7 +423,8 @@ class PptNativeEnhanceCommandExecutorTests {
                 properties,
                 repository,
                 events,
-                new RoutingNativeEnhanceEngine(new JavaNativeEnhanceEngine(), new PythonNativeEnhanceEngine(commands)),
+                new RoutingNativeEnhanceEngine(
+                        new JavaNativeEnhanceEngine(), stubPythonEngine(), PptEngineProperties.defaults()),
                 new PythonNotesAudioGateway(commands),
                 new PythonPptxMarkdownReadback(commands, PythonPptxMarkdownReadback.NATIVE_ENHANCE_SCRIPT),
                 new NativeEnhanceReadinessContributor(tempDir.resolve("no-ffprobe").toString()),
@@ -486,29 +438,22 @@ class PptNativeEnhanceCommandExecutorTests {
                 });
     }
 
-    private static void writeMinimalPptx(Path path, int slides) throws Exception {
-        Files.createDirectories(path.getParent());
-        try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(path))) {
-            zip.putNextEntry(new ZipEntry("[Content_Types].xml"));
-            zip.write("<Types></Types>".getBytes(StandardCharsets.UTF_8));
-            zip.closeEntry();
-            StringBuilder presentation = new StringBuilder(
-                    "<p:presentation xmlns:p=\"http://schemas.openxmlformats.org/presentationml/2006/main\">");
-            for (int i = 1; i <= slides; i++) {
-                presentation.append("<p:sldId id=\"").append(i).append("\"/>");
+    private static NativeEnhanceEngine stubPythonEngine() {
+        return new NativeEnhanceEngine() {
+            @Override
+            public EngineResult init(Path sourcePptx, String name, Path projectDir, Path projectsRoot, Duration timeout) {
+                return new EngineResult(1, "python stub unused", false);
             }
-            presentation.append("</p:presentation>");
-            zip.putNextEntry(new ZipEntry("ppt/presentation.xml"));
-            zip.write(presentation.toString().getBytes(StandardCharsets.UTF_8));
-            zip.closeEntry();
-            for (int i = 1; i <= slides; i++) {
-                zip.putNextEntry(new ZipEntry("ppt/slides/slide" + i + ".xml"));
-                zip.write(("<p:sld><p:cSld/></p:sld>").getBytes(StandardCharsets.UTF_8));
-                zip.closeEntry();
-                zip.putNextEntry(new ZipEntry("ppt/notesSlides/notesSlide" + i + ".xml"));
-                zip.write("<p:notes></p:notes>".getBytes(StandardCharsets.UTF_8));
-                zip.closeEntry();
+
+            @Override
+            public EngineResult validate(Path project, Duration timeout) {
+                return new EngineResult(1, "python stub unused", false);
             }
-        }
+
+            @Override
+            public EngineResult apply(List<String> arguments, Duration timeout) {
+                return new EngineResult(1, "python stub unused", false);
+            }
+        };
     }
 }

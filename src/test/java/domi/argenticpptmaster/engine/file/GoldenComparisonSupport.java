@@ -56,11 +56,25 @@ final class GoldenComparisonSupport {
         return pinRoot.resolve("skills/ppt-master/scripts/total_md_split.py");
     }
 
+    static Path svgQualityCheckerScript(Path pinRoot) {
+        return pinRoot.resolve("skills/ppt-master/scripts/svg_quality_checker.py");
+    }
+
     static boolean goldenEnvironmentReady(Path pinRoot, Path python, Path projectManager, Path totalMdSplit) {
-        return Files.isDirectory(pinRoot)
-                && Files.isExecutable(python)
-                && Files.isRegularFile(projectManager)
-                && Files.isRegularFile(totalMdSplit);
+        return goldenEnvironmentReady(
+                pinRoot, python, projectManager, totalMdSplit, svgQualityCheckerScript(pinRoot));
+    }
+
+    static boolean goldenEnvironmentReady(Path pinRoot, Path python, Path... requiredScripts) {
+        if (!Files.isDirectory(pinRoot) || !Files.isExecutable(python)) {
+            return false;
+        }
+        for (Path script : requiredScripts) {
+            if (!Files.isRegularFile(script)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     static ProcessResult runPython(Path python, Path script, List<String> args) throws IOException, InterruptedException {

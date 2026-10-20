@@ -6,6 +6,8 @@ package domi.argenticpptmaster.engine.file.svgquality;
 import domi.argenticpptmaster.engine.EngineResult;
 import domi.argenticpptmaster.engine.SvgQualityChecker;
 import domi.argenticpptmaster.engine.file.SlideRoster;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -15,15 +17,21 @@ import java.util.Optional;
 import org.w3c.dom.Document;
 
 /**
- * Partial SVG quality gate: viewBox, external image references, and icon placeholders.
+ * Java SVG quality subset for the service path ({@code project --format X}, stage final).
  *
- * <p>Not a production {@link SvgQualityChecker}; font, geometry, animation, and roster rules
- * from ppt-master are intentionally omitted.</p>
+ * <p>Covers self-contained blocking rules that do not require the DrawingML exporter:
+ * viewBox, forbidden elements, authoring-property contract, font-size grammar, external
+ * image references, and icon placeholders.</p>
+ *
+ * <p>Not a full replacement for ppt-master {@code svg_quality_checker.py}. Production
+ * wiring must keep Python as the authority gate via {@code RoutingSvgQualityChecker}
+ * until geometry/paint/native-object/spec-lock/roster checks are ported.</p>
  */
 public final class JavaSvgQualityChecker implements SvgQualityChecker {
 
-    private static final String PARTIAL_HEADER =
-            "[PARTIAL] viewBox, image references, and icon placeholders";
+    static final String SUBSET_HEADER =
+            "[JAVA-SUBSET] viewBox, forbidden elements, authoring properties, "
+                    + "font-size, image references, icon placeholders";
 
     @Override
     public EngineResult check(Path project, String format, Duration timeout) {
@@ -56,6 +64,13 @@ public final class JavaSvgQualityChecker implements SvgQualityChecker {
 
         for (Path svgFile : svgFiles) {
             String fileLabel = svgFile.getFileName().toString();
+            String content;
+            try {
+                content = Files.readString(svgFile, StandardCharsets.UTF_8);
+            } catch (IOException ex) {
+                failures.add(fileLabel + ": Failed to read file: " + ex.getMessage());
+                continue;
+            }
 
             Optional<String> actual = ViewBoxQualitySupport.readRootViewBox(svgFile);
             if (actual.isEmpty()) {
@@ -72,21 +87,34 @@ public final class JavaSvgQualityChecker implements SvgQualityChecker {
             }
 
             Optional<Document> document = SvgQualityXml.parse(svgFile);
-            if (document.isPresent()) {
-                for (String error : ImageReferenceQualitySupport.checkMissingExternalImages(
-                        svgFile, document.get())) {
-                    failures.add(fileLabel + ": " + error);
+            if (document.isEmpty()) {
+                if (actual.isPresent()) {
+                    failures.add(fileLabel + ": invalid XML (could not parse for quality checks)");
                 }
-                for (String error : IconPlaceholderQualitySupport.checkIconPlaceholders(
-                        svgFile, document.get())) {
-                    failures.add(fileLabel + ": " + error);
-                }
+                continue;
+            }
+
+            Document doc = document.get();
+            for (String error : ForbiddenElementsQualitySupport.checkForbiddenElements(content, doc)) {
+                failures.add(fileLabel + ": " + error);
+            }
+            for (String error : AuthoringPropertyContractSupport.checkAuthoringPropertyContract(doc)) {
+                failures.add(fileLabel + ": " + error);
+            }
+            for (String error : FontSizeQualitySupport.checkFontSizeValues(content)) {
+                failures.add(fileLabel + ": " + error);
+            }
+            for (String error : ImageReferenceQualitySupport.checkMissingExternalImages(svgFile, doc)) {
+                failures.add(fileLabel + ": " + error);
+            }
+            for (String error : IconPlaceholderQualitySupport.checkIconPlaceholders(svgFile, doc)) {
+                failures.add(fileLabel + ": " + error);
             }
         }
 
         if (!failures.isEmpty()) {
             StringBuilder output = new StringBuilder();
-            output.append(PARTIAL_HEADER).append('\n');
+            output.append(SUBSET_HEADER).append('\n');
             output.append("[ERROR] ").append(failures.size()).append(" SVG issue(s)\n");
             for (String line : failures) {
                 output.append("  - ").append(line).append('\n');
@@ -95,7 +123,7 @@ public final class JavaSvgQualityChecker implements SvgQualityChecker {
         }
 
         StringBuilder output = new StringBuilder();
-        output.append(PARTIAL_HEADER).append('\n');
+        output.append(SUBSET_HEADER).append('\n');
         output.append("[OK] Checked ").append(svgFiles.size()).append(" SVG file(s); expected viewBox '")
                 .append(expectedCompressed).append("'\n");
         for (Path svgFile : svgFiles) {

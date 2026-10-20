@@ -1421,14 +1421,18 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
         /**
          * 验证 SVG 输出质量。
          * <p>
-         * 使用 ppt-master 的 svg_quality_checker.py 对当前项目的 SVG 输出
-         * 进行质量检查，确保 SVG 文件符合规范后再进行 finalize 和导出。
+         * 通过 {@link domi.argenticpptmaster.engine.SvgQualityChecker}
+         * （Java 子集 dual-run + Python 权威门禁）对当前项目的 SVG 输出做质量检查，
+         * 确保符合规范后再 finalize/导出。
          * </p>
          *
          * @param runtime 工具运行时上下文
          * @return 验证结果描述
          */
-        @Tool(name = "validate_svg_output", description = "Run ppt-master svg_quality_checker.py against the current project before finalize/export.", readOnly = true)
+        @Tool(
+                name = "validate_svg_output",
+                description = "Validate SVG quality for the current project (Java subset dual-run; Python svg_quality_checker.py remains the authority gate) before finalize/export.",
+                readOnly = true)
         public String validateSvgOutput(PptAgentToolRuntime runtime) {
             requireApprovedOutline(runtime, "validate SVG");
             requireImagesReadyToContinue(runtime, "validate SVG");

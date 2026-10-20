@@ -8,6 +8,7 @@ import domi.argenticpptmaster.engine.PptEngineBundle;
 import domi.argenticpptmaster.engine.PptxMarkdownReadback;
 import domi.argenticpptmaster.engine.ProjectWorkspace;
 import domi.argenticpptmaster.engine.RoutingProjectWorkspace;
+import domi.argenticpptmaster.engine.RoutingSvgQualityChecker;
 import domi.argenticpptmaster.engine.SpeakerNotesSplitter;
 import domi.argenticpptmaster.engine.SvgFinalizer;
 import domi.argenticpptmaster.engine.SvgQualityChecker;
@@ -22,6 +23,7 @@ import domi.argenticpptmaster.engine.python.PythonNotesAudioGateway;
 import domi.argenticpptmaster.engine.python.PythonPptxMarkdownReadback;
 import domi.argenticpptmaster.engine.file.JavaProjectWorkspace;
 import domi.argenticpptmaster.engine.file.JavaSpeakerNotesSplitter;
+import domi.argenticpptmaster.engine.file.svgquality.JavaSvgQualityChecker;
 import domi.argenticpptmaster.engine.python.PythonProjectWorkspace;
 import domi.argenticpptmaster.engine.python.PythonSvgFinalizer;
 import domi.argenticpptmaster.engine.python.PythonSvgQualityChecker;
@@ -55,7 +57,9 @@ public class PptEngineConfiguration {
 
     @Bean
     SvgQualityChecker svgQualityChecker(PptMasterCommandExecutor commands) {
-        return new PythonSvgQualityChecker(commands);
+        // Java subset dual-runs; Python remains the production authority until parity.
+        return new RoutingSvgQualityChecker(
+                new JavaSvgQualityChecker(), new PythonSvgQualityChecker(commands));
     }
 
     @Bean

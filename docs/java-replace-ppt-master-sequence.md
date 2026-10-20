@@ -36,6 +36,18 @@ Java 服务只编排任务。脚本通过 `PptMasterCommandExecutor.runPythonScr
 
 `project_manager` 的 init 和 import-sources、`total_md_split`、`svg_quality_checker` 不碰 DrawingML，作为第一批。
 
+**第 2 步完成状态（当前分支）**
+
+| 能力 | 生产 Bean | 状态 |
+| --- | --- | --- |
+| `project_manager` init / import-sources（纯文件） | `RoutingProjectWorkspace` → `JavaProjectWorkspace`；Office/PDF/URL import 回落 Python | 已接线 |
+| `total_md_split` | `JavaSpeakerNotesSplitter` | 已接线 |
+| `svg_quality_checker` | `RoutingSvgQualityChecker`：`JavaSvgQualityChecker` 子集 dual-run + **`PythonSvgQualityChecker` 权威门禁** | 部分移植；**禁止**把 Java 子集单独当生产门禁 |
+
+`JavaSvgQualityChecker` 已覆盖服务路径上自包含的阻塞子集：viewBox、forbidden elements（不含依赖 `svg_to_pptx` 的 geometry/`<use>` 展开）、authoring-property contract、font-size 语法、外部图引用、icon placeholder。
+
+仍由 Python 权威门禁覆盖（Java 未移植或强依赖 DrawingML / native_objects / register_template / spec_lock / animations）：paint/opacity/transform/freeform/geometry length、unsupported visuals、preset geometry、native markers、pptx structure、spec_lock 对齐、illustration/animation/communication contracts、template-mode 等。完成定义：Java 与 pin 上 `project --format X` 的退出码与关键 ERROR 对齐后，才可把 Bean 切成纯 Java。
+
 ### 3. 换 OOXML 改写
 
 模板填充和 native enhance 在已有 PPTX 上克隆页、改文字、表、图、备注。这条路线不经过 SVG。用 JDK 的 ZIP 加 StAX/DOM 直接写 OOXML。Apache POI 适合读文本和页数，上游很多形状、动画、图表 XML 超出 POI 的写入模型，POI 不作为 DrawingML 写入器。

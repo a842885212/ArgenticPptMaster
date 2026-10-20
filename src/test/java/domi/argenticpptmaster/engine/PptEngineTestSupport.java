@@ -1,5 +1,6 @@
 package domi.argenticpptmaster.engine;
 
+import domi.argenticpptmaster.engine.file.svgquality.JavaSvgQualityChecker;
 import domi.argenticpptmaster.engine.python.PythonBeautifyAnalysisEngine;
 import domi.argenticpptmaster.engine.python.PythonImageGenerationGateway;
 import domi.argenticpptmaster.engine.python.PythonNativeEnhanceEngine;
@@ -24,7 +25,8 @@ public final class PptEngineTestSupport {
                 new PythonProjectWorkspace(commands),
                 new PythonBeautifyAnalysisEngine(commands),
                 new PythonSpeakerNotesSplitter(commands),
-                new PythonSvgQualityChecker(commands),
+                new RoutingSvgQualityChecker(
+                        new JavaSvgQualityChecker(), new PythonSvgQualityChecker(commands)),
                 new PythonSvgFinalizer(commands),
                 new PythonSvgToPptxExporter(commands),
                 new PythonTemplateFillEngine(commands),

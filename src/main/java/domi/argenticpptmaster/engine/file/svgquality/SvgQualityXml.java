@@ -53,6 +53,18 @@ final class SvgQualityXml {
         return colon >= 0 ? tag.substring(colon + 1) : tag;
     }
 
+    static String elementLabel(Element element) {
+        String tag = localName(element);
+        String elemId = element.getAttribute("id");
+        if (elemId != null) {
+            elemId = elemId.strip();
+        }
+        if (elemId != null && !elemId.isEmpty()) {
+            return "<" + tag + " id=\"" + elemId + "\">";
+        }
+        return "<" + tag + ">";
+    }
+
     static Map<Element, Element> parentByElement(Document document) {
         Map<Element, Element> parentByElement = new HashMap<>();
         Element root = document.getDocumentElement();

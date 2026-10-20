@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import domi.argenticpptmaster.engine.EngineResult;
+import domi.argenticpptmaster.engine.file.svgquality.JavaSvgQualityChecker;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -21,6 +22,7 @@ class PinnedPythonGoldenComparisonTests {
     private Path python;
     private Path projectManagerScript;
     private Path totalMdSplitScript;
+    private Path svgQualityCheckerScript;
 
     @BeforeEach
     void assumePinnedEnvironment() {
@@ -28,8 +30,9 @@ class PinnedPythonGoldenComparisonTests {
         python = GoldenComparisonSupport.pythonExecutable();
         projectManagerScript = GoldenComparisonSupport.projectManagerScript(pinRoot);
         totalMdSplitScript = GoldenComparisonSupport.totalMdSplitScript(pinRoot);
+        svgQualityCheckerScript = GoldenComparisonSupport.svgQualityCheckerScript(pinRoot);
         assumeTrue(GoldenComparisonSupport.goldenEnvironmentReady(
-                pinRoot, python, projectManagerScript, totalMdSplitScript));
+                pinRoot, python, projectManagerScript, totalMdSplitScript, svgQualityCheckerScript));
     }
 
     @Test
@@ -208,6 +211,55 @@ class PinnedPythonGoldenComparisonTests {
         assertThat(Files.exists(javaProject.resolve("notes/02_body.md"))).isFalse();
         assertThat(Files.exists(pythonProject.resolve("notes/01_intro.md"))).isFalse();
         assertThat(Files.exists(pythonProject.resolve("notes/02_body.md"))).isFalse();
+    }
+
+    @Test
+    void svgQualityForbiddenStyleExitMatchesPinnedPython(@TempDir Path tempDir) throws Exception {
+        Path project = tempDir.resolve("style-gate");
+        Path svgDir = project.resolve("svg_output");
+        Files.createDirectories(svgDir);
+        Files.writeString(
+                svgDir.resolve("slide_01.svg"),
+                "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1280 720\">"
+                        + "<style>.a{}</style></svg>",
+                StandardCharsets.UTF_8);
+
+        GoldenComparisonSupport.ProcessResult pythonRun = GoldenComparisonSupport.runPython(
+                python,
+                svgQualityCheckerScript,
+                List.of(project.toString(), "--format", "ppt169"));
+        EngineResult javaResult = new JavaSvgQualityChecker().check(project, "ppt169", Duration.ofSeconds(60));
+
+        assertThat(pythonRun.timedOut()).isFalse();
+        assertThat(javaResult.timedOut()).isFalse();
+        assertThat(pythonRun.exitCode()).isEqualTo(1);
+        assertThat(javaResult.exitCode()).isEqualTo(1);
+        assertThat(pythonRun.output()).contains("Detected forbidden <style> element");
+        assertThat(javaResult.output()).contains("Detected forbidden <style> element");
+    }
+
+    @Test
+    void svgQualityViewBoxMismatchExitMatchesPinnedPython(@TempDir Path tempDir) throws Exception {
+        Path project = tempDir.resolve("viewbox-gate");
+        Path svgDir = project.resolve("svg_output");
+        Files.createDirectories(svgDir);
+        Files.writeString(
+                svgDir.resolve("slide_01.svg"),
+                "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1024 768\"></svg>",
+                StandardCharsets.UTF_8);
+
+        GoldenComparisonSupport.ProcessResult pythonRun = GoldenComparisonSupport.runPython(
+                python,
+                svgQualityCheckerScript,
+                List.of(project.toString(), "--format", "ppt169"));
+        EngineResult javaResult = new JavaSvgQualityChecker().check(project, "ppt169", Duration.ofSeconds(60));
+
+        assertThat(pythonRun.timedOut()).isFalse();
+        assertThat(javaResult.timedOut()).isFalse();
+        assertThat(pythonRun.exitCode()).isEqualTo(1);
+        assertThat(javaResult.exitCode()).isEqualTo(1);
+        assertThat(pythonRun.output()).contains("viewBox mismatch");
+        assertThat(javaResult.output()).contains("viewBox mismatch");
     }
 
     private Path initPythonProject(Path projectsDir, String name) throws Exception {

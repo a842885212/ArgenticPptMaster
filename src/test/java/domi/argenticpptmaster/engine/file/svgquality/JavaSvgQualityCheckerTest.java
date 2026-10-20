@@ -39,7 +39,7 @@ class JavaSvgQualityCheckerTest {
         EngineResult result = checker.check(project, "ppt169", Duration.ofMinutes(1));
 
         assertThat(result.successful()).isTrue();
-        assertThat(result.output()).contains("[PARTIAL] viewBox, image references, and icon placeholders");
+        assertThat(result.output()).contains(JavaSvgQualityChecker.SUBSET_HEADER);
         assertThat(result.output()).contains("expected viewBox '0 0 1280 720'");
         assertThat(result.timedOut()).isFalse();
     }
@@ -92,6 +92,75 @@ class JavaSvgQualityCheckerTest {
 
         assertThat(result.successful()).isTrue();
         assertThat(result.output()).contains("expected viewBox '0 0 1242 1660'");
+    }
+
+    @Test
+    void rejectsForbiddenStyleElement() throws IOException {
+        writeSvg(
+                "slide_01.svg",
+                "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1280 720\">"
+                        + "<style>.a{}</style></svg>");
+
+        EngineResult result = checker.check(project, "ppt169", Duration.ZERO);
+
+        assertThat(result.exitCode()).isEqualTo(1);
+        assertThat(result.output()).contains("Detected forbidden <style> element");
+    }
+
+    @Test
+    void rejectsUnsupportedInlineStyleProperty() throws IOException {
+        writeSvg(
+                "slide_01.svg",
+                "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1280 720\">"
+                        + "<rect style=\"cursor:pointer\" width=\"10\" height=\"10\"/></svg>");
+
+        EngineResult result = checker.check(project, "ppt169", Duration.ZERO);
+
+        assertThat(result.exitCode()).isEqualTo(1);
+        assertThat(result.output()).contains("unsupported inline style property 'cursor'");
+    }
+
+    @Test
+    void rejectsUnsupportedFontSizeUnit() throws IOException {
+        writeSvg(
+                "slide_01.svg",
+                "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1280 720\">"
+                        + "<text font-size=\"12vh\">x</text></svg>");
+
+        EngineResult result = checker.check(project, "ppt169", Duration.ZERO);
+
+        assertThat(result.exitCode()).isEqualTo(1);
+        assertThat(result.output()).contains("Unsupported font-size value(s)");
+        assertThat(result.output()).contains("12vh");
+    }
+
+    @Test
+    void rejectsMissingExternalImage() throws IOException {
+        writeSvg(
+                "slide_01.svg",
+                "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1280 720\">"
+                        + "<image href=\"../images/missing.png\" width=\"100\" height=\"100\"/>"
+                        + "</svg>");
+
+        EngineResult result = checker.check(project, "ppt169", Duration.ZERO);
+
+        assertThat(result.exitCode()).isEqualTo(1);
+        assertThat(result.output()).contains("External image not found");
+    }
+
+    @Test
+    void rejectsMissingIconPlaceholder() throws IOException {
+        writeSvg(
+                "slide_01.svg",
+                "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1280 720\">"
+                        + "<use data-icon=\"lucide/missing-icon\" href=\"#icon\"/>"
+                        + "</svg>");
+
+        EngineResult result = checker.check(project, "ppt169", Duration.ZERO);
+
+        assertThat(result.exitCode()).isEqualTo(1);
+        assertThat(result.output()).contains("Project-local icon not found");
+        assertThat(result.output()).contains("lucide/missing-icon");
     }
 
     private void writeSvg(String name, String content) throws IOException {

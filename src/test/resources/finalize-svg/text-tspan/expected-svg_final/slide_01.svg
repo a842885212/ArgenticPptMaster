@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720">
+  <text font-family="Arial" font-size="24" fill="#111" x="100" y="120">
+    <tspan>First line</tspan>
+    </text><text font-family="Arial" font-size="24" fill="#111" x="100" y="152"><tspan>Second line</tspan>
+    </text><text font-family="Arial" font-size="24" fill="#111" x="100" y="184"><tspan font-weight="bold">Third bold</tspan>
+  </text><text x="100" y="300" font-size="18" fill="#333">Plain single line</text>
+</svg>

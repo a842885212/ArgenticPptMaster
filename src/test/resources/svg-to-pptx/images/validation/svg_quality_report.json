@@ -1,0 +1,179 @@
+{
+  "schema": "ppt-master.svg-quality-report.v1",
+  "stage": "final",
+  "target": "/tmp/step6-gen-images",
+  "source_fingerprint": {
+    "algorithm": "sha256",
+    "digest": "2da9f4008a0f819ac7b8258eb32266e7917f88726a4abd6593e1bf80f3143027",
+    "file_count": 1,
+    "files": [
+      {
+        "file": "slide_01.svg",
+        "sha256": "a143277c62b806099feff9aa925bd6c8e34e49fc459b4231b4a235c113709d30"
+      }
+    ]
+  },
+  "summary": {
+    "total": 1,
+    "passed": 0,
+    "warnings": 1,
+    "errors": 0
+  },
+  "issue_types": {},
+  "categories": {
+    "blocking": {
+      "count": 0,
+      "issues": []
+    },
+    "introduced": {
+      "count": 3,
+      "issues": [
+        {
+          "file": "slide_01.svg",
+          "message": "Image ../images/demo.png is 120x80 and renders at 2.00x scale in a 240x160 meet frame — may appear blurry"
+        },
+        {
+          "file": "slide_01.svg",
+          "message": "3 ungrouped top-level Slide-local element(s) in svg_output (<text> #2, <image> #3, <image> #4); group only logical content units in a top-level <g id=\"...\">. Keep genuine static page framing as a root primitive and declare a supported data-pptx-role such as \"background\" or \"decoration\""
+        },
+        {
+          "file": "slide_01.svg",
+          "message": "page SVG is missing root data-pptx-page-role"
+        }
+      ]
+    },
+    "inherited": {
+      "count": 0,
+      "issues": []
+    },
+    "source-import": {
+      "count": 0,
+      "summary": {
+        "warning_count": 0,
+        "by_code": {}
+      }
+    }
+  },
+  "drift": {
+    "colors": {},
+    "fonts": {},
+    "sizes": {
+      "28": [
+        "slide_01.svg"
+      ]
+    }
+  },
+  "carrier_receipt": {
+    "scope": "informational-not-a-quota",
+    "pages": 1,
+    "totals": {
+      "text_elements": 1,
+      "image_placements": 2,
+      "icons": 0,
+      "svg_geometry_elements": 1,
+      "preset_shapes": 0,
+      "page_frame_elements": 0,
+      "marker_uses": 0
+    },
+    "pages_with": {
+      "images": 1,
+      "icons": 0,
+      "presets": 0,
+      "charts": 0,
+      "tables": 0,
+      "formulas": 0
+    },
+    "geometry_elements": {
+      "circle": 0,
+      "ellipse": 0,
+      "line": 0,
+      "path": 0,
+      "polygon": 0,
+      "polyline": 0,
+      "rect": 1
+    },
+    "preset_names": {},
+    "native_objects": {
+      "chart": 0,
+      "formula_block": 0,
+      "formula_inline": 0,
+      "other": 0,
+      "table": 0
+    },
+    "image_page_max_frame_share_range": [
+      0.0417,
+      0.0417
+    ]
+  },
+  "project_issues": {
+    "template": [],
+    "animation": [],
+    "illustration": [],
+    "communication_trace": [],
+    "pptx_structure": []
+  },
+  "files": [
+    {
+      "file": "slide_01.svg",
+      "path": "/tmp/step6-gen-images/svg_output/slide_01.svg",
+      "exists": true,
+      "errors": [],
+      "warnings": [
+        "Image ../images/demo.png is 120x80 and renders at 2.00x scale in a 240x160 meet frame — may appear blurry",
+        "3 ungrouped top-level Slide-local element(s) in svg_output (<text> #2, <image> #3, <image> #4); group only logical content units in a top-level <g id=\"...\">. Keep genuine static page framing as a root primitive and declare a supported data-pptx-role such as \"background\" or \"decoration\"",
+        "page SVG is missing root data-pptx-page-role"
+      ],
+      "info": {
+        "viewbox": "0 0 1280 720",
+        "carrier_receipt": {
+          "text_elements": 1,
+          "images": {
+            "placements": 2,
+            "files": [
+              "(embedded)",
+              "demo.png"
+            ],
+            "max_frame_share": 0.0417
+          },
+          "icons": 0,
+          "geometry": {
+            "svg_elements": {
+              "rect": 1,
+              "circle": 0,
+              "ellipse": 0,
+              "line": 0,
+              "polyline": 0,
+              "polygon": 0,
+              "path": 0
+            },
+            "preset_shapes": 0,
+            "preset_names": {},
+            "page_frame_elements": 0,
+            "marker_uses": {
+              "start": 0,
+              "mid": 0,
+              "end": 0
+            }
+          },
+          "native_objects": {
+            "chart": 0,
+            "table": 0,
+            "formula_block": 0,
+            "formula_inline": 0,
+            "other": 0
+          }
+        },
+        "fonts": [
+          "Microsoft YaHei"
+        ],
+        "text_elements": 1,
+        "tspan_elements": 0,
+        "sparse_typography_sizes": {
+          "28": 1
+        }
+      },
+      "passed": true,
+      "source_sha256": "a143277c62b806099feff9aa925bd6c8e34e49fc459b4231b4a235c113709d30"
+    }
+  ]
+}

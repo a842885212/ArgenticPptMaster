@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+       xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+       xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+<p:cSld>
+<p:bg><p:bgPr><a:solidFill><a:schemeClr val="lt1"></a:schemeClr></a:solidFill><a:effectLst/></p:bgPr></p:bg>
+<p:spTree>
+<p:nvGrpSpPr>
+<p:cNvPr id="1" name=""/>
+<p:cNvGrpSpPr/><p:nvPr/>
+</p:nvGrpSpPr>
+<p:grpSpPr>
+<a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/>
+<a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm>
+</p:grpSpPr>
+<p:sp>
+<p:nvSpPr>
+<p:cNvPr id="2" name="TextBox 2"/>
+<p:cNvSpPr txBox="1"/><p:nvPr/>
+</p:nvSpPr>
+<p:spPr>
+<a:xfrm><a:off x="751332" y="535305"/>
+<a:ext cx="1824961" cy="410718"/></a:xfrm>
+<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>
+<a:noFill/>
+<a:ln><a:noFill/></a:ln>
+
+</p:spPr>
+<p:txBody>
+<a:bodyPr wrap="none" lIns="0" tIns="0" rIns="0" bIns="0" anchor="t" anchorCtr="0">
+<a:spAutoFit/>
+</a:bodyPr>
+<a:lstStyle/>
+<a:p>
+<a:pPr algn="l"></a:pPr>
+<a:r>
+<a:rPr lang="zh-CN" sz="2100" dirty="0">
+
+<a:solidFill><a:schemeClr val="dk1"></a:schemeClr></a:solidFill>
+
+<a:latin typeface="+mn-lt"/>
+<a:ea typeface="+mn-ea"/>
+<a:cs typeface="+mn-cs"/>
+
+</a:rPr>
+<a:t>Formula slide</a:t>
+</a:r>
+</a:p>
+</p:txBody>
+</p:sp>
+<mc:AlternateContent xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006">
+<mc:Choice xmlns:a14="http://schemas.microsoft.com/office/drawing/2010/main" Requires="a14">
+<p:sp>
+<p:nvSpPr>
+<p:cNvPr id="3" name="energy-formula"/>
+<p:cNvSpPr txBox="1"><a:spLocks noGrp="1"/></p:cNvSpPr>
+<p:nvPr/>
+</p:nvSpPr>
+<p:spPr>
+<a:xfrm><a:off x="1905000" y="1905000"/><a:ext cx="3810000" cy="1143000"/></a:xfrm>
+<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>
+<a:noFill/>
+<a:ln><a:noFill/></a:ln>
+</p:spPr>
+<p:txBody>
+<a:bodyPr lIns="0" tIns="0" rIns="0" bIns="0" wrap="none" anchor="ctr">
+<a:normAutofit/>
+</a:bodyPr>
+<a:lstStyle/>
+<a:p><a:pPr algn="ctr"/>
+<a14:m><m:oMathPara xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:oMathParaPr><m:jc m:val="center" /></m:oMathParaPr><m:oMath><m:r><a:rPr lang="zh-CN" sz="2700" dirty="0"><a:solidFill><a:srgbClr val="1F4E79" /></a:solidFill><a:latin typeface="Cambria Math" /><a:ea typeface="Cambria Math" /><a:cs typeface="Cambria Math" /></a:rPr><m:t>E</m:t></m:r><m:r><m:rPr><m:sty m:val="p" /></m:rPr><a:rPr lang="zh-CN" sz="2700" dirty="0"><a:solidFill><a:srgbClr val="1F4E79" /></a:solidFill><a:latin typeface="Cambria Math" /><a:ea typeface="Cambria Math" /><a:cs typeface="Cambria Math" /></a:rPr><m:t>=</m:t></m:r><m:r><a:rPr lang="zh-CN" sz="2700" dirty="0"><a:solidFill><a:srgbClr val="1F4E79" /></a:solidFill><a:latin typeface="Cambria Math" /><a:ea typeface="Cambria Math" /><a:cs typeface="Cambria Math" /></a:rPr><m:t>m</m:t></m:r><m:sSup><m:e><m:r><a:rPr lang="zh-CN" sz="2700" dirty="0"><a:solidFill><a:srgbClr val="1F4E79" /></a:solidFill><a:latin typeface="Cambria Math" /><a:ea typeface="Cambria Math" /><a:cs typeface="Cambria Math" /></a:rPr><m:t>c</m:t></m:r></m:e><m:sup><m:r><a:rPr lang="zh-CN" sz="2700" dirty="0"><a:solidFill><a:srgbClr val="1F4E79" /></a:solidFill><a:latin typeface="Cambria Math" /><a:ea typeface="Cambria Math" /><a:cs typeface="Cambria Math" /></a:rPr><m:t>2</m:t></m:r></m:sup></m:sSup></m:oMath></m:oMathPara></a14:m>
+</a:p>
+</p:txBody>
+</p:sp>
+</mc:Choice>
+</mc:AlternateContent>
+</p:spTree>
+</p:cSld>
+<p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr>
+
+  <p:transition p14:dur="400" xmlns:p14="http://schemas.microsoft.com/office/powerpoint/2010/main">
+    <p:fade/>
+  </p:transition>
+</p:sld>

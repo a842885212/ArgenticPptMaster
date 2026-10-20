@@ -6,7 +6,6 @@ package domi.argenticpptmaster.engine.file.svgfinalize;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
@@ -75,7 +74,7 @@ public final class GeometryMaterializer {
                     retained.add(declaration);
                     continue;
                 }
-                String name = declaration.substring(0, colon).strip().toLowerCase(Locale.ROOT);
+                String name = declaration.substring(0, colon).strip().toLowerCase(java.util.Locale.ROOT);
                 String value = declaration.substring(colon + 1).strip();
                 if (!GEOMETRY_LIKE.contains(name)) {
                     retained.add(declaration);
@@ -138,11 +137,7 @@ public final class GeometryMaterializer {
     }
 
     private static String formatNumber(double value) {
-        if (Math.abs(value) < 1e-12) {
-            value = 0.0;
-        }
-        // Python: f'{value:.12g}'
-        return String.format(Locale.ROOT, "%.12g", value);
+        return SvgFinalizeXml.formatG(value);
     }
 
     public static final class GeometryStyleException extends RuntimeException {

@@ -9,7 +9,6 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
@@ -525,10 +524,7 @@ public final class LocalUseExpander {
     }
 
     private static String fmtNumber(double value) {
-        if (Math.abs(value) < 1e-12) {
-            value = 0.0;
-        }
-        return String.format(Locale.ROOT, "%.12g", value);
+        return SvgFinalizeXml.formatG(value);
     }
 
     private static String attr(Element element, String name) {

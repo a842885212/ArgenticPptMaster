@@ -184,12 +184,20 @@ public final class SvgFinalizeXml {
         return s;
     }
 
+    /**
+     * Format like Python {@code f'{value:.12g}'} / {@code format(value, '.12g')} —
+     * up to 12 significant digits without useless trailing zeros.
+     */
     public static String formatG(double value) {
-        if (Math.abs(value) < 1e-12) {
-            value = 0.0;
+        if (!Double.isFinite(value)) {
+            throw new IllegalArgumentException("value must be finite: " + value);
         }
-        // Match Python f'{value:g}' / '{value:.12g}' for common icon scales.
-        java.math.BigDecimal bd = new java.math.BigDecimal(Double.toString(value));
+        if (Math.abs(value) < 1e-12) {
+            return "0";
+        }
+        // Limit to 12 significant digits then strip trailing zeros (Python :.12g).
+        String scientific = String.format(java.util.Locale.ROOT, "%.12e", value);
+        java.math.BigDecimal bd = new java.math.BigDecimal(scientific);
         bd = bd.stripTrailingZeros();
         String plain = bd.toPlainString();
         if (plain.equals("-0")) {

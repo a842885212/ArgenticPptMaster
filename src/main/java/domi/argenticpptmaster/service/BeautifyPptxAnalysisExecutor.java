@@ -11,13 +11,14 @@ import domi.argenticpptmaster.domain.PptJobEvent;
 import domi.argenticpptmaster.domain.PptJobEventType;
 import domi.argenticpptmaster.domain.PptJobNode;
 import domi.argenticpptmaster.domain.PptWorkflowMode;
-import domi.argenticpptmaster.infra.PptMasterCommandExecutor;
+import domi.argenticpptmaster.engine.BeautifyAnalysisEngine;
+import domi.argenticpptmaster.engine.EngineResult;
+import domi.argenticpptmaster.engine.ProjectWorkspace;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -32,23 +33,22 @@ import org.springframework.stereotype.Component;
 @Component
 public class BeautifyPptxAnalysisExecutor {
 
-    private static final String IDENTITY_SCRIPT = "skills/ppt-master/scripts/beautify_identity.py";
-    private static final String PROJECT_MANAGER_SCRIPT = "skills/ppt-master/scripts/project_manager.py";
-    private static final String INTAKE_SCRIPT = "skills/ppt-master/scripts/pptx_intake.py";
-    private static final String INVENTORY_SCRIPT = "skills/ppt-master/scripts/beautify_inventory.py";
     private static final Pattern SAFE_STEM = Pattern.compile("[A-Za-z0-9._-]+");
 
     private final PptMasterProperties properties;
-    private final PptMasterCommandExecutor commands;
+    private final ProjectWorkspace projectWorkspace;
+    private final BeautifyAnalysisEngine beautifyAnalysis;
     private final PptWorkflowEvents events;
     private final ObjectMapper objectMapper;
 
     public BeautifyPptxAnalysisExecutor(
             PptMasterProperties properties,
-            PptMasterCommandExecutor commands,
+            ProjectWorkspace projectWorkspace,
+            BeautifyAnalysisEngine beautifyAnalysis,
             PptWorkflowEvents events) {
         this.properties = properties;
-        this.commands = commands;
+        this.projectWorkspace = projectWorkspace;
+        this.beautifyAnalysis = beautifyAnalysis;
         this.events = events;
         this.objectMapper = new ObjectMapper();
     }
@@ -81,20 +81,27 @@ public class BeautifyPptxAnalysisExecutor {
     private AnalysisPaths initializeAndImport(PptJob job, Path workspace, Path source) {
         BeautifyPptxProperties limits = properties.beautifyPptx();
         events.record(job, stageEvent(PptJobEventType.NODE_STARTED, "identity", PptJobNode.PROJECT_READY, Map.of()));
-        PptMasterCommandExecutor.CommandResult identity = run(
-                "identity", IDENTITY_SCRIPT, List.of(source.toString()), limits.identityTimeout(),
+        EngineResult identity = requireSuccess(
+                "identity",
+                beautifyAnalysis.identify(source, limits.identityTimeout()),
                 BeautifyPptxErrorCode.BEAUTIFY_IDENTITY_FAILED);
         String resolvedFormat = resolveFormat(identity.output());
         Path project = projectPath(job, workspace, resolvedFormat);
         job.prepareProject(project);
         events.record(job, stageEvent(PptJobEventType.NODE_STARTED, "init", PptJobNode.PROJECT_READY, Map.of()));
-        run("init", PROJECT_MANAGER_SCRIPT, List.of(
-                "init", job.projectName() + "_" + job.id().toString().substring(0, 8),
-                "--format", resolvedFormat, "--dir", project.getParent().toString()), limits.projectTimeout(),
+        requireSuccess(
+                "init",
+                projectWorkspace.init(
+                        job.projectName() + "_" + job.id().toString().substring(0, 8),
+                        resolvedFormat,
+                        project.getParent(),
+                        limits.projectTimeout()),
                 BeautifyPptxErrorCode.BEAUTIFY_INTAKE_FAILED);
         events.record(job, stageEvent(PptJobEventType.NODE_STARTED, "import", PptJobNode.PROJECT_READY, Map.of()));
-        run("import", PROJECT_MANAGER_SCRIPT, List.of("import-sources", project.toString(), source.toString(), "--copy"),
-                limits.projectTimeout(), BeautifyPptxErrorCode.BEAUTIFY_INTAKE_FAILED);
+        requireSuccess(
+                "import",
+                projectWorkspace.importSources(project, List.of(source), true, limits.projectTimeout()),
+                BeautifyPptxErrorCode.BEAUTIFY_INTAKE_FAILED);
         Path analysis = inside(project, project.resolve("analysis"), "analysis");
         requireImportedSource(project);
         String stem = stem(source);
@@ -121,8 +128,10 @@ public class BeautifyPptxAnalysisExecutor {
         Path profilePath = paths.analysis().resolve("source_profile.json");
         if (!intakeBundleReusable(identityPath, libraryPath, profilePath)) {
             events.record(job, stageEvent(PptJobEventType.NODE_STARTED, "intake", PptJobNode.BEAUTIFY_ANALYZED, Map.of()));
-            run("intake", INTAKE_SCRIPT, List.of(source.toString(), "-o", paths.analysis().toString()),
-                    limits.intakeTimeout(), BeautifyPptxErrorCode.BEAUTIFY_INTAKE_FAILED);
+            requireSuccess(
+                    "intake",
+                    beautifyAnalysis.intake(source, paths.analysis(), limits.intakeTimeout()),
+                    BeautifyPptxErrorCode.BEAUTIFY_INTAKE_FAILED);
         }
         requireFile(identityPath, "identity artifact");
         requireFile(libraryPath, "slide library artifact");
@@ -130,14 +139,16 @@ public class BeautifyPptxAnalysisExecutor {
 
         Path inventoryPath = paths.analysis().resolve("beautify_inventory.json");
         if (!inventoryReusable(inventoryPath, identityPath, libraryPath)) {
-            List<String> args = new ArrayList<>(List.of(libraryPath.toString()));
             Path imageManifest = paths.project().resolve("images/image_manifest.json");
-            if (Files.isRegularFile(imageManifest)) {
-                args.addAll(List.of("--images", imageManifest.toString()));
-            }
-            args.addAll(List.of("-o", inventoryPath.toString()));
             events.record(job, stageEvent(PptJobEventType.NODE_STARTED, "inventory", PptJobNode.BEAUTIFY_ANALYZED, Map.of()));
-            run("inventory", INVENTORY_SCRIPT, List.copyOf(args), limits.inventoryTimeout(),
+            requireSuccess(
+                    "inventory",
+                    beautifyAnalysis.inventory(
+                            libraryPath,
+                            Files.isRegularFile(imageManifest) ? java.util.Optional.of(imageManifest)
+                                    : java.util.Optional.empty(),
+                            inventoryPath,
+                            limits.inventoryTimeout()),
                     BeautifyPptxErrorCode.BEAUTIFY_INVENTORY_FAILED);
         }
         requireFile(inventoryPath, "inventory artifact");
@@ -293,9 +304,8 @@ public class BeautifyPptxAnalysisExecutor {
         return node;
     }
 
-    private PptMasterCommandExecutor.CommandResult run(
-            String stage, String script, List<String> args, java.time.Duration timeout, BeautifyPptxErrorCode errorCode) {
-        PptMasterCommandExecutor.CommandResult result = commands.runPythonScript(script, List.copyOf(args), timeout);
+    private EngineResult requireSuccess(
+            String stage, EngineResult result, BeautifyPptxErrorCode errorCode) {
         if (result.successful()) {
             return result;
         }

@@ -17,6 +17,8 @@ import domi.argenticpptmaster.domain.PptJobNodeStatus;
 import domi.argenticpptmaster.domain.PptSourceFile;
 import domi.argenticpptmaster.domain.PptTemplateFile;
 import domi.argenticpptmaster.domain.PptWorkflowMode;
+import domi.argenticpptmaster.engine.python.PythonProjectWorkspace;
+import domi.argenticpptmaster.engine.python.PythonTemplateFillEngine;
 import domi.argenticpptmaster.infra.PptMasterCommandExecutor;
 import domi.argenticpptmaster.repository.PptJobRepository;
 import java.nio.file.Files;
@@ -52,7 +54,12 @@ class PptTemplateFillCommandExecutorTests {
                 PptMasterProperties.forTest(tempDir, tempDir));
         executor = new PptTemplateFillCommandExecutor(
                 PptMasterProperties.forTest(tempDir, tempDir),
-                repository, events, commands, analysisReader, concurrencyLimiter,
+                repository,
+                events,
+                new PythonProjectWorkspace(commands),
+                new PythonTemplateFillEngine(commands),
+                analysisReader,
+                concurrencyLimiter,
                 new TemplateFillCapabilityIndexLoader(),
                 new TemplateFillConstraintResolver(),
                 new PptTemplateFillPlanStore(PptMasterProperties.forTest(tempDir, tempDir), new TemplateFillPlanValidator()),

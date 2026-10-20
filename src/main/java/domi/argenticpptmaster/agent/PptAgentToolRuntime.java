@@ -8,7 +8,7 @@ import domi.argenticpptmaster.domain.PptJobNode;
 import domi.argenticpptmaster.domain.PptJobNodeStatus;
 import domi.argenticpptmaster.domain.PptNodeExecution;
 import domi.argenticpptmaster.domain.PptWorkflowMode;
-import domi.argenticpptmaster.infra.PptMasterCommandExecutor;
+import domi.argenticpptmaster.engine.PptEngineBundle;
 import domi.argenticpptmaster.service.PptWorkflowEvents;
 import java.util.Map;
 
@@ -16,7 +16,7 @@ import java.util.Map;
 public record PptAgentToolRuntime(
         PptJob job,
         PptMasterProperties properties,
-        PptMasterCommandExecutor executor,
+        PptEngineBundle engines,
         PptWorkflowEvents events) {
 
     void completeNode(PptJobNode node, Map<String, Object> summary) {

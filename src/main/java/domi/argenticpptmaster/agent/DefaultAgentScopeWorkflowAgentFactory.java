@@ -12,7 +12,16 @@ import domi.argenticpptmaster.domain.PptJobNodeStatus;
 import domi.argenticpptmaster.domain.PptNodeExecution;
 import domi.argenticpptmaster.domain.PptOutline;
 import domi.argenticpptmaster.domain.PptWorkflowMode;
-import domi.argenticpptmaster.infra.PptMasterCommandExecutor;
+import domi.argenticpptmaster.engine.EngineResult;
+import domi.argenticpptmaster.engine.PptEngineBundle;
+import domi.argenticpptmaster.engine.python.PythonBeautifyAnalysisEngine;
+import domi.argenticpptmaster.engine.python.PythonImageGenerationGateway;
+import domi.argenticpptmaster.engine.python.PythonProjectWorkspace;
+import domi.argenticpptmaster.engine.python.PythonSpeakerNotesSplitter;
+import domi.argenticpptmaster.engine.python.PythonSvgFinalizer;
+import domi.argenticpptmaster.engine.python.PythonSvgQualityChecker;
+import domi.argenticpptmaster.engine.python.PythonSvgToPptxExporter;
+import domi.argenticpptmaster.engine.python.PythonTemplateFillEngine;
 import domi.argenticpptmaster.service.PptWorkflowEvents;
 import domi.argenticpptmaster.service.PptOutlineStore;
 import domi.argenticpptmaster.service.PptArtifactRegistry;
@@ -81,16 +90,16 @@ import reactor.core.publisher.Flux;
 @Component
 public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflowAgentFactory {
 
-    private static final String PROJECT_MANAGER_SCRIPT = "skills/ppt-master/scripts/project_manager.py";
-    private static final String FINALIZE_SVG_SCRIPT = "skills/ppt-master/scripts/finalize_svg.py";
-    private static final String TOTAL_MD_SPLIT_SCRIPT = "skills/ppt-master/scripts/total_md_split.py";
-    private static final String SVG_QUALITY_CHECKER_SCRIPT = "skills/ppt-master/scripts/svg_quality_checker.py";
-    private static final String EXPORT_SCRIPT = "skills/ppt-master/scripts/svg_to_pptx.py";
-    private static final String IMAGE_GEN_SCRIPT = "skills/ppt-master/scripts/image_gen.py";
-    private static final String BEAUTIFY_IDENTITY_SCRIPT = "skills/ppt-master/scripts/beautify_identity.py";
-    private static final String BEAUTIFY_INTAKE_SCRIPT = "skills/ppt-master/scripts/pptx_intake.py";
-    private static final String BEAUTIFY_INVENTORY_SCRIPT = "skills/ppt-master/scripts/beautify_inventory.py";
-    private static final String TEMPLATE_FILL_SCRIPT = "skills/ppt-master/scripts/template_fill_pptx.py";
+    private static final String PROJECT_MANAGER_SCRIPT = PythonProjectWorkspace.SCRIPT;
+    private static final String FINALIZE_SVG_SCRIPT = PythonSvgFinalizer.SCRIPT;
+    private static final String TOTAL_MD_SPLIT_SCRIPT = PythonSpeakerNotesSplitter.SCRIPT;
+    private static final String SVG_QUALITY_CHECKER_SCRIPT = PythonSvgQualityChecker.SCRIPT;
+    private static final String EXPORT_SCRIPT = PythonSvgToPptxExporter.SCRIPT;
+    private static final String IMAGE_GEN_SCRIPT = PythonImageGenerationGateway.SCRIPT;
+    private static final String BEAUTIFY_IDENTITY_SCRIPT = PythonBeautifyAnalysisEngine.IDENTITY_SCRIPT;
+    private static final String BEAUTIFY_INTAKE_SCRIPT = PythonBeautifyAnalysisEngine.INTAKE_SCRIPT;
+    private static final String BEAUTIFY_INVENTORY_SCRIPT = PythonBeautifyAnalysisEngine.INVENTORY_SCRIPT;
+    private static final String TEMPLATE_FILL_SCRIPT = PythonTemplateFillEngine.SCRIPT;
     private static final Logger log = LoggerFactory.getLogger(DefaultAgentScopeWorkflowAgentFactory.class);
 
     private static final String APPROVAL_TOOL_NAME = "request_plan_confirmation";
@@ -99,7 +108,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
 
     private final AgentScopeProperties agentScopeProperties;
     private final PptMasterProperties pptMasterProperties;
-    private final PptMasterCommandExecutor commandExecutor;
+    private final PptEngineBundle engines;
     private final PptWorkflowEvents events;
     private final TemplateFillAgentTools templateFillAgentTools;
     private final NativeEnhanceAgentTools nativeEnhanceAgentTools;
@@ -109,21 +118,21 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
     public DefaultAgentScopeWorkflowAgentFactory(
             AgentScopeProperties agentScopeProperties,
             PptMasterProperties pptMasterProperties,
-            PptMasterCommandExecutor commandExecutor,
+            PptEngineBundle engines,
             PptWorkflowEvents events,
             TemplateFillAgentTools templateFillAgentTools) {
-        this(agentScopeProperties, pptMasterProperties, commandExecutor, events, templateFillAgentTools,
+        this(agentScopeProperties, pptMasterProperties, engines, events, templateFillAgentTools,
                 new NativeEnhanceAgentTools(), null);
     }
 
     public DefaultAgentScopeWorkflowAgentFactory(
             AgentScopeProperties agentScopeProperties,
             PptMasterProperties pptMasterProperties,
-            PptMasterCommandExecutor commandExecutor,
+            PptEngineBundle engines,
             PptWorkflowEvents events,
             TemplateFillAgentTools templateFillAgentTools,
             NativeEnhanceAgentTools nativeEnhanceAgentTools) {
-        this(agentScopeProperties, pptMasterProperties, commandExecutor, events, templateFillAgentTools,
+        this(agentScopeProperties, pptMasterProperties, engines, events, templateFillAgentTools,
                 nativeEnhanceAgentTools, null);
     }
 
@@ -131,14 +140,14 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
     public DefaultAgentScopeWorkflowAgentFactory(
             AgentScopeProperties agentScopeProperties,
             PptMasterProperties pptMasterProperties,
-            PptMasterCommandExecutor commandExecutor,
+            PptEngineBundle engines,
             PptWorkflowEvents events,
             TemplateFillAgentTools templateFillAgentTools,
             NativeEnhanceAgentTools nativeEnhanceAgentTools,
             BeautifyPptxLifecycleStore beautifyLifecycleStore) {
         this.agentScopeProperties = agentScopeProperties;
         this.pptMasterProperties = pptMasterProperties;
-        this.commandExecutor = commandExecutor;
+        this.engines = engines;
         this.events = events;
         this.templateFillAgentTools = templateFillAgentTools;
         this.nativeEnhanceAgentTools = nativeEnhanceAgentTools == null
@@ -183,7 +192,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                 .maxIters(agentScopeProperties.maxIters())
                 .build();
 
-        PptAgentToolRuntime toolRuntime = new PptAgentToolRuntime(job, pptMasterProperties, commandExecutor, events);
+        PptAgentToolRuntime toolRuntime = new PptAgentToolRuntime(job, pptMasterProperties, engines, events);
         return (messages, runtimeContext) -> {
             RuntimeContext effectiveContext = runtimeContext == null ? RuntimeContext.empty() : runtimeContext;
             effectiveContext.put(PptAgentToolRuntime.class, toolRuntime);
@@ -208,7 +217,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                 .maxIters(agentScopeProperties.maxIters())
                 .build();
 
-        PptAgentToolRuntime toolRuntime = new PptAgentToolRuntime(job, pptMasterProperties, commandExecutor, events);
+        PptAgentToolRuntime toolRuntime = new PptAgentToolRuntime(job, pptMasterProperties, engines, events);
         return (messages, runtimeContext) -> {
             RuntimeContext effectiveContext = runtimeContext == null ? RuntimeContext.empty() : runtimeContext;
             effectiveContext.put(PptAgentToolRuntime.class, toolRuntime);
@@ -233,7 +242,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                 .maxIters(agentScopeProperties.maxIters())
                 .build();
 
-        PptAgentToolRuntime toolRuntime = new PptAgentToolRuntime(job, pptMasterProperties, commandExecutor, events);
+        PptAgentToolRuntime toolRuntime = new PptAgentToolRuntime(job, pptMasterProperties, engines, events);
         return (messages, runtimeContext) -> {
             RuntimeContext effectiveContext = runtimeContext == null ? RuntimeContext.empty() : runtimeContext;
             effectiveContext.put(PptAgentToolRuntime.class, toolRuntime);
@@ -788,8 +797,8 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                 throw new IllegalStateException("beautify-pptx requires exactly one source file");
             }
             Path source = runtime.job().sourceFiles().get(0).storedPath();
-            PptMasterCommandExecutor.CommandResult identity = runtime.executor().runPythonScript(
-                    BEAUTIFY_IDENTITY_SCRIPT, List.of(source.toString()));
+            Duration timeout = runtime.properties().commandTimeout();
+            EngineResult identity = runtime.engines().beautifyAnalysis().identify(source, timeout);
             if (!identity.successful()) {
                 throw new IllegalStateException("BEAUTIFY_IDENTITY_FAILED: " + identity.output());
             }
@@ -798,16 +807,16 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
             Path projectPath = preparedPath.getParent().resolve(preparedPath.getFileName().toString()
                     .replace("_" + runtime.job().format() + "_", "_" + resolvedFormat + "_"));
             runtime.job().prepareProject(projectPath);
-            PptMasterCommandExecutor.CommandResult initialized = runtime.executor().runPythonScript(
-                    PROJECT_MANAGER_SCRIPT, List.of("init", runtime.job().projectName() + "_"
-                    + runtime.job().id().toString().substring(0, 8), "--format", resolvedFormat, "--dir",
-                    projectPath.getParent().toString()));
+            EngineResult initialized = runtime.engines().projectWorkspace().init(
+                    runtime.job().projectName() + "_" + runtime.job().id().toString().substring(0, 8),
+                    resolvedFormat,
+                    projectPath.getParent(),
+                    timeout);
             if (!initialized.successful()) {
                 throw new IllegalStateException("BEAUTIFY_INTAKE_FAILED: project init failed: " + initialized.output());
             }
-            List<String> importArguments = List.of("import-sources", projectPath.toString(), source.toString(), "--copy");
-            PptMasterCommandExecutor.CommandResult imported = runtime.executor().runPythonScript(
-                    PROJECT_MANAGER_SCRIPT, importArguments);
+            EngineResult imported = runtime.engines().projectWorkspace().importSources(
+                    projectPath, List.of(source), true, timeout);
             if (!imported.successful()) {
                 throw new IllegalStateException("BEAUTIFY_INTAKE_FAILED: " + imported.output());
             }
@@ -816,21 +825,18 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
             Path identityPath = analysis.resolve(stem + ".identity.json");
             Path libraryPath = analysis.resolve(stem + ".slide_library.json");
             if (!Files.isRegularFile(identityPath) || !Files.isRegularFile(libraryPath)) {
-                PptMasterCommandExecutor.CommandResult intake = runtime.executor().runPythonScript(
-                        BEAUTIFY_INTAKE_SCRIPT, List.of(source.toString(), "-o", analysis.toString()));
+                EngineResult intake = runtime.engines().beautifyAnalysis().intake(source, analysis, timeout);
                 if (!intake.successful()) {
                     throw new IllegalStateException("BEAUTIFY_INTAKE_FAILED: " + intake.output());
                 }
             }
             Path inventoryPath = analysis.resolve("beautify_inventory.json");
             Path imageManifest = projectPath.resolve("images/image_manifest.json");
-            List<String> inventoryArguments = new ArrayList<>(List.of(libraryPath.toString()));
-            if (Files.isRegularFile(imageManifest)) {
-                inventoryArguments.addAll(List.of("--images", imageManifest.toString()));
-            }
-            inventoryArguments.addAll(List.of("-o", inventoryPath.toString()));
-            PptMasterCommandExecutor.CommandResult inventory = runtime.executor().runPythonScript(
-                    BEAUTIFY_INVENTORY_SCRIPT, inventoryArguments);
+            EngineResult inventory = runtime.engines().beautifyAnalysis().inventory(
+                    libraryPath,
+                    Files.isRegularFile(imageManifest) ? Optional.of(imageManifest) : Optional.empty(),
+                    inventoryPath,
+                    timeout);
             if (!inventory.successful()) {
                 throw new IllegalStateException("BEAUTIFY_INVENTORY_FAILED: " + inventory.output());
             }
@@ -940,15 +946,11 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                     PptJobEventType.AGENT_MESSAGE,
                     "initializing ppt-master project",
                     Map.of("projectName", projectPath.getFileName().toString())));
-            PptMasterCommandExecutor.CommandResult result = runtime.executor().runPythonScript(
-                    PROJECT_MANAGER_SCRIPT,
-                    List.of(
-                            "init",
-                            runtime.job().projectName() + "_" + runtime.job().id().toString().substring(0, 8),
-                            "--format",
-                            runtime.job().format(),
-                            "--dir",
-                            projectPath.getParent().toString()));
+            EngineResult result = runtime.engines().projectWorkspace().init(
+                    runtime.job().projectName() + "_" + runtime.job().id().toString().substring(0, 8),
+                    runtime.job().format(),
+                    projectPath.getParent(),
+                    runtime.properties().commandTimeout());
             if (!result.successful()) {
                 throw new IllegalStateException("project init failed: " + result.output());
             }
@@ -979,16 +981,15 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
             } catch (IOException ex) {
                 throw new IllegalStateException("failed to inspect sources dir", ex);
             }
-            List<String> arguments = new ArrayList<>();
-            arguments.add("import-sources");
-            arguments.add(projectPath.toString());
-            runtime.job().sourceFiles().forEach(source -> arguments.add(source.storedPath().toString()));
-            arguments.add("--copy");
             runtime.events().record(runtime.job(), PptJobEvent.of(
                     PptJobEventType.AGENT_MESSAGE,
                     "importing uploaded files into ppt-master project",
                     Map.of("sourceCount", runtime.job().sourceFiles().size())));
-            PptMasterCommandExecutor.CommandResult result = runtime.executor().runPythonScript(PROJECT_MANAGER_SCRIPT, arguments);
+            List<Path> sourcePaths = runtime.job().sourceFiles().stream()
+                    .map(source -> source.storedPath())
+                    .toList();
+            EngineResult result = runtime.engines().projectWorkspace().importSources(
+                    projectPath, sourcePaths, true, runtime.properties().commandTimeout());
             if (!result.successful()) {
                 throw new IllegalStateException("source import failed: " + result.output());
             }
@@ -1010,9 +1011,8 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
         public String inspectProjectInfo(PptAgentToolRuntime runtime) {
             Path projectPath = runtime.job().projectPath()
                     .orElseThrow(() -> new IllegalStateException("job project path is not prepared"));
-            PptMasterCommandExecutor.CommandResult result = runtime.executor().runPythonScript(
-                    PROJECT_MANAGER_SCRIPT,
-                    List.of("info", projectPath.toString()));
+            EngineResult result = runtime.engines().projectWorkspace().info(
+                    projectPath, runtime.properties().commandTimeout());
             if (!result.successful()) {
                 throw new IllegalStateException("project info failed: " + result.output());
             }
@@ -1085,9 +1085,8 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
         public String validateProject(PptAgentToolRuntime runtime) {
             Path projectPath = runtime.job().projectPath()
                     .orElseThrow(() -> new IllegalStateException("job project path is not prepared"));
-            PptMasterCommandExecutor.CommandResult result = runtime.executor().runPythonScript(
-                    PROJECT_MANAGER_SCRIPT,
-                    List.of("validate", projectPath.toString()));
+            EngineResult result = runtime.engines().projectWorkspace().validate(
+                    projectPath, runtime.properties().commandTimeout());
             if (!result.successful()) {
                 throw new IllegalStateException("project validation failed: " + result.output());
             }
@@ -1410,9 +1409,8 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
             requireImagesReadyToContinue(runtime, "split speaker notes");
             Path projectPath = runtime.job().projectPath()
                     .orElseThrow(() -> new IllegalStateException("job project path is not prepared"));
-            PptMasterCommandExecutor.CommandResult result = runtime.executor().runPythonScript(
-                    TOTAL_MD_SPLIT_SCRIPT,
-                    List.of(projectPath.toString()));
+            EngineResult result = runtime.engines().speakerNotesSplitter().split(
+                    projectPath, runtime.properties().commandTimeout());
             if (!result.successful()) {
                 throw new IllegalStateException("speaker notes split failed: " + result.output());
             }
@@ -1423,14 +1421,18 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
         /**
          * 验证 SVG 输出质量。
          * <p>
-         * 使用 ppt-master 的 svg_quality_checker.py 对当前项目的 SVG 输出
-         * 进行质量检查，确保 SVG 文件符合规范后再进行 finalize 和导出。
+         * 通过 {@link domi.argenticpptmaster.engine.SvgQualityChecker}
+         * （Java 子集 dual-run + Python 权威门禁）对当前项目的 SVG 输出做质量检查，
+         * 确保符合规范后再 finalize/导出。
          * </p>
          *
          * @param runtime 工具运行时上下文
          * @return 验证结果描述
          */
-        @Tool(name = "validate_svg_output", description = "Run ppt-master svg_quality_checker.py against the current project before finalize/export.", readOnly = true)
+        @Tool(
+                name = "validate_svg_output",
+                description = "Validate SVG quality for the current project (Java subset dual-run; Python svg_quality_checker.py remains the authority gate) before finalize/export.",
+                readOnly = true)
         public String validateSvgOutput(PptAgentToolRuntime runtime) {
             requireApprovedOutline(runtime, "validate SVG");
             requireImagesReadyToContinue(runtime, "validate SVG");
@@ -1439,9 +1441,10 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
             if (runtime.job().workflowMode() == PptWorkflowMode.BEAUTIFY_PPTX) {
                 BeautifyPptxSvgContractValidator.validate(projectPath);
             }
-            PptMasterCommandExecutor.CommandResult result = runtime.executor().runPythonScript(
-                    SVG_QUALITY_CHECKER_SCRIPT,
-                    List.of(projectPath.toString(), "--format", resolvedProjectFormat(projectPath, runtime.job().format())));
+            EngineResult result = runtime.engines().svgQualityChecker().check(
+                    projectPath,
+                    resolvedProjectFormat(projectPath, runtime.job().format()),
+                    runtime.properties().commandTimeout());
             if (!result.successful()) {
                 throw new IllegalStateException("svg quality validation failed: " + result.output());
             }
@@ -1465,9 +1468,8 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
             requireImagesReadyToContinue(runtime, "finalize SVG");
             Path projectPath = runtime.job().projectPath()
                     .orElseThrow(() -> new IllegalStateException("job project path is not prepared"));
-            PptMasterCommandExecutor.CommandResult result = runtime.executor().runPythonScript(
-                    FINALIZE_SVG_SCRIPT,
-                    List.of(projectPath.toString()));
+            EngineResult result = runtime.engines().svgFinalizer().finalizeSvg(
+                    projectPath, runtime.properties().commandTimeout());
             if (!result.successful()) {
                 throw new IllegalStateException("svg finalize failed: " + result.output());
             }
@@ -1501,9 +1503,8 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                     PptJobEventType.AGENT_MESSAGE,
                     "exporting pptx from svg_final",
                     Map.of("projectName", projectPath.getFileName().toString())));
-            PptMasterCommandExecutor.CommandResult result = runtime.executor().runPythonScript(
-                    EXPORT_SCRIPT,
-                    List.of(projectPath.toString()));
+            EngineResult result = runtime.engines().svgToPptxExporter().export(
+                    projectPath, runtime.properties().commandTimeout());
             if (!result.successful()) {
                 throw new IllegalStateException("ppt export failed: " + result.output());
             }
@@ -1517,7 +1518,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
             if (runtime.job().workflowMode() == PptWorkflowMode.BEAUTIFY_PPTX) {
                 BeautifyPptxOutputVerifier.ReadbackResult readback;
                 try {
-                    readback = new BeautifyPptxOutputVerifier(runtime.executor(), runtime.events())
+                    readback = new BeautifyPptxOutputVerifier(runtime.engines().beautifyReadback(), runtime.events())
                             .verify(runtime.job(), artifact, projectPath, pptMasterProperties.commandTimeout());
                 } catch (RuntimeException ex) {
                     runtime.job().retainExport(artifact);
@@ -1587,11 +1588,8 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                     PptJobEventType.AGENT_MESSAGE,
                     "generating ai images from manifest",
                     Map.of("manifestPath", manifestPath.toString())));
-            PptMasterCommandExecutor.CommandResult result = runtime.executor().runPythonScript(
-                    IMAGE_GEN_SCRIPT,
-                    List.of(
-                            "--manifest", manifestPath.toString(),
-                            "--output", manifestPath.getParent().toString()));
+            EngineResult result = runtime.engines().imageGeneration().generateFromManifest(
+                    manifestPath, manifestPath.getParent(), runtime.properties().commandTimeout());
             if (!result.successful()) {
                 throw new IllegalStateException("image generation failed: " + result.output());
             }

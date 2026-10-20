@@ -19,6 +19,9 @@ import domi.argenticpptmaster.domain.PptJobNodeStatus;
 import domi.argenticpptmaster.domain.PptJobStatus;
 import domi.argenticpptmaster.domain.PptSourceFile;
 import domi.argenticpptmaster.domain.PptWorkflowMode;
+import domi.argenticpptmaster.engine.python.PythonNativeEnhanceEngine;
+import domi.argenticpptmaster.engine.python.PythonNotesAudioGateway;
+import domi.argenticpptmaster.engine.python.PythonPptxMarkdownReadback;
 import domi.argenticpptmaster.infra.PptMasterCommandExecutor;
 import domi.argenticpptmaster.repository.InMemoryPptJobRepository;
 import java.nio.charset.StandardCharsets;
@@ -59,7 +62,12 @@ class PptNativeEnhanceCommandExecutorTests {
         events = mock(PptWorkflowEvents.class);
         commands = mock(PptMasterCommandExecutor.class);
         executor = new PptNativeEnhanceCommandExecutor(
-                properties, repository, events, commands,
+                properties,
+                repository,
+                events,
+                new PythonNativeEnhanceEngine(commands),
+                new PythonNotesAudioGateway(commands),
+                new PythonPptxMarkdownReadback(commands, PythonPptxMarkdownReadback.NATIVE_ENHANCE_SCRIPT),
                 new NativeEnhanceReadinessContributor(),
                 new NativeEnhanceOutputVerifier());
     }
@@ -459,7 +467,12 @@ class PptNativeEnhanceCommandExecutorTests {
         repository.save(job);
 
         PptNativeEnhanceCommandExecutor failingExecutor = new PptNativeEnhanceCommandExecutor(
-                properties, repository, events, commands,
+                properties,
+                repository,
+                events,
+                new PythonNativeEnhanceEngine(commands),
+                new PythonNotesAudioGateway(commands),
+                new PythonPptxMarkdownReadback(commands, PythonPptxMarkdownReadback.NATIVE_ENHANCE_SCRIPT),
                 new NativeEnhanceReadinessContributor(tempDir.resolve("no-ffprobe").toString()),
                 new NativeEnhanceOutputVerifier());
 

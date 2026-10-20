@@ -13,7 +13,11 @@ import domi.argenticpptmaster.domain.PptTemplateFile;
 import domi.argenticpptmaster.domain.PptWorkflowMode;
 import domi.argenticpptmaster.domain.TemplateFillAnalysisSummary;
 import domi.argenticpptmaster.domain.TemplateFillErrorCode;
-import domi.argenticpptmaster.infra.PptMasterCommandExecutor;
+import domi.argenticpptmaster.engine.EngineResult;
+import domi.argenticpptmaster.engine.ProjectWorkspace;
+import domi.argenticpptmaster.engine.TemplateFillEngine;
+import domi.argenticpptmaster.engine.python.PythonProjectWorkspace;
+import domi.argenticpptmaster.engine.python.PythonTemplateFillEngine;
 import domi.argenticpptmaster.repository.PptJobRepository;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -38,14 +42,13 @@ import org.springframework.stereotype.Component;
 @Component
 public class PptTemplateFillCommandExecutor {
 
-    private static final String PROJECT_MANAGER = "skills/ppt-master/scripts/project_manager.py";
-    private static final String TEMPLATE_FILL = "skills/ppt-master/scripts/template_fill_pptx.py";
     private static final Pattern PROJECT_OUTPUT = Pattern.compile("(?m)^\\[OK\\] Project initialized: (.+)$");
 
     private final PptMasterProperties properties;
     private final PptJobRepository repository;
     private final PptWorkflowEvents events;
-    private final PptMasterCommandExecutor commands;
+    private final ProjectWorkspace projectWorkspace;
+    private final TemplateFillEngine templateFillEngine;
     private final PptTemplateFillAnalysisReader analysisReader;
     private final PptTemplateFillConcurrencyLimiter concurrencyLimiter;
     private final TemplateFillCapabilityIndexLoader capabilityIndexLoader;
@@ -60,7 +63,8 @@ public class PptTemplateFillCommandExecutor {
             PptMasterProperties properties,
             PptJobRepository repository,
             PptWorkflowEvents events,
-            PptMasterCommandExecutor commands,
+            ProjectWorkspace projectWorkspace,
+            TemplateFillEngine templateFillEngine,
             PptTemplateFillAnalysisReader analysisReader,
             PptTemplateFillConcurrencyLimiter concurrencyLimiter,
             TemplateFillCapabilityIndexLoader capabilityIndexLoader,
@@ -68,7 +72,7 @@ public class PptTemplateFillCommandExecutor {
             PptTemplateFillPlanStore planStore,
             TemplateFillOutputVerifier outputVerifier,
             TemplateFillLifecycleStore lifecycleStore) {
-        this(properties, repository, events, commands, analysisReader, concurrencyLimiter,
+        this(properties, repository, events, projectWorkspace, templateFillEngine, analysisReader, concurrencyLimiter,
                 capabilityIndexLoader, constraintResolver, planStore, outputVerifier, lifecycleStore, null);
     }
 
@@ -77,7 +81,8 @@ public class PptTemplateFillCommandExecutor {
             PptMasterProperties properties,
             PptJobRepository repository,
             PptWorkflowEvents events,
-            PptMasterCommandExecutor commands,
+            ProjectWorkspace projectWorkspace,
+            TemplateFillEngine templateFillEngine,
             PptTemplateFillAnalysisReader analysisReader,
             PptTemplateFillConcurrencyLimiter concurrencyLimiter,
             TemplateFillCapabilityIndexLoader capabilityIndexLoader,
@@ -89,7 +94,8 @@ public class PptTemplateFillCommandExecutor {
         this.properties = properties;
         this.repository = repository;
         this.events = events;
-        this.commands = commands;
+        this.projectWorkspace = projectWorkspace;
+        this.templateFillEngine = templateFillEngine;
         this.analysisReader = analysisReader;
         this.concurrencyLimiter = concurrencyLimiter;
         this.capabilityIndexLoader = capabilityIndexLoader;
@@ -278,9 +284,10 @@ public class PptTemplateFillCommandExecutor {
             return requireInside(workspace, job.projectPath().get(), "project");
         }
         Path projectsDir = workspace.resolve("projects").normalize();
-        CommandResult init = run(job, "INIT", PROJECT_MANAGER, List.of(
-                "init", job.projectName(), "--format", job.format(), "--dir", projectsDir.toString()),
-                properties.commandTimeout());
+        List<String> initArgs = List.of(
+                "init", job.projectName(), "--format", job.format(), "--dir", projectsDir.toString());
+        CommandResult init = runStage(job, "INIT", PythonProjectWorkspace.SCRIPT, initArgs,
+                () -> projectWorkspace.init(job.projectName(), job.format(), projectsDir, properties.commandTimeout()));
         Path project = parseProjectPath(init.output(), workspace);
         job.prepareProject(project);
         repository.save(job);
@@ -295,42 +302,51 @@ public class PptTemplateFillCommandExecutor {
     }
 
     private void importSources(PptJob job, Path workspace, Path project, Path templatePath) {
+        List<Path> sources = new ArrayList<>();
+        for (var source : job.sourceFiles()) {
+            sources.add(requireInside(workspace, source.storedPath(), "content"));
+        }
+        sources.add(templatePath);
         List<String> importArgs = new ArrayList<>();
         importArgs.add("import-sources");
         importArgs.add(project.toString());
-        for (var source : job.sourceFiles()) {
-            importArgs.add(requireInside(workspace, source.storedPath(), "content").toString());
+        for (Path source : sources) {
+            importArgs.add(source.toString());
         }
-        importArgs.add(templatePath.toString());
         importArgs.add("--copy");
-        run(job, "IMPORT", PROJECT_MANAGER, importArgs, properties.commandTimeout());
+        runStage(job, "IMPORT", PythonProjectWorkspace.SCRIPT, importArgs,
+                () -> projectWorkspace.importSources(project, sources, true, properties.commandTimeout()));
         stageCompleted("IMPORT", job);
     }
 
     private void analyzeTemplate(PptJob job, Path templatePath, Path slideLibrary) {
-        run(job, "ANALYZE", TEMPLATE_FILL,
-                List.of("analyze", templatePath.toString(), "-o", slideLibrary.toString()),
-                properties.templateFillAnalyzeTimeout());
+        List<String> args = List.of("analyze", templatePath.toString(), "-o", slideLibrary.toString());
+        runStage(job, "ANALYZE", PythonTemplateFillEngine.SCRIPT, args,
+                () -> templateFillEngine.analyze(templatePath, slideLibrary, properties.templateFillAnalyzeTimeout()));
         requireFile(slideLibrary, "ANALYZE");
         stageCompleted("ANALYZE", job);
     }
 
     private void validatePlan(PptJob job, Path slideLibrary, Path projectPlan, Path checkReport) {
-        run(job, "CHECK_PLAN", TEMPLATE_FILL, List.of(
-                "check-plan", slideLibrary.toString(), projectPlan.toString(), "-o", checkReport.toString()),
-                properties.commandTimeout());
+        List<String> args = List.of(
+                "check-plan", slideLibrary.toString(), projectPlan.toString(), "-o", checkReport.toString());
+        runStage(job, "CHECK_PLAN", PythonTemplateFillEngine.SCRIPT, args,
+                () -> templateFillEngine.checkPlan(slideLibrary, projectPlan, checkReport, properties.commandTimeout()));
         stageCompleted("CHECK_PLAN", job);
     }
 
     private void applyExport(PptJob job, Path templatePath, Path projectPlan, Path exportPath) {
-        run(job, "APPLY", TEMPLATE_FILL, List.of(
-                "apply", templatePath.toString(), projectPlan.toString(), "-o", exportPath.toString()),
-                properties.commandTimeout());
+        List<String> args = List.of(
+                "apply", templatePath.toString(), projectPlan.toString(), "-o", exportPath.toString());
+        runStage(job, "APPLY", PythonTemplateFillEngine.SCRIPT, args,
+                () -> templateFillEngine.apply(templatePath, projectPlan, exportPath, properties.commandTimeout()));
         stageCompleted("APPLY", job);
     }
 
     private void validateOutput(PptJob job, Path project) {
-        run(job, "VALIDATE", TEMPLATE_FILL, List.of("validate", project.toString()), properties.commandTimeout());
+        List<String> args = List.of("validate", project.toString());
+        runStage(job, "VALIDATE", PythonTemplateFillEngine.SCRIPT, args,
+                () -> templateFillEngine.validate(project, properties.commandTimeout()));
         stageCompleted("VALIDATE", job);
     }
 
@@ -358,12 +374,17 @@ public class PptTemplateFillCommandExecutor {
         return mode == ExecutionMode.FULL_WITH_PLAN || mode == ExecutionMode.RESUME_FROM_FILL_PLAN_VALIDATED;
     }
 
-    private CommandResult run(PptJob job, String stage, String script, List<String> arguments, Duration timeout) {
+    private CommandResult runStage(
+            PptJob job,
+            String stage,
+            String script,
+            List<String> arguments,
+            java.util.function.Supplier<EngineResult> action) {
         rejectUnsafeCommand(stage, script, arguments);
         events.record(job, PptJobEvent.of(PptJobEventType.TEMPLATE_FILL_STAGE_STARTED,
                 "template-fill stage started", progressPayload(job, Map.of("stage", stage))));
         Instant started = Instant.now();
-        PptMasterCommandExecutor.CommandResult result = commands.runPythonScript(script, List.copyOf(arguments), timeout);
+        EngineResult result = action.get();
         Duration elapsed = Duration.between(started, Instant.now());
         if (!result.successful()) {
             recordStageTelemetry(stage, TemplateFillTelemetry.Outcome.FAILURE, elapsed);
@@ -402,7 +423,7 @@ public class PptTemplateFillCommandExecutor {
         }
     }
 
-    private PptTemplateFillExecutionException stageFailure(String stage, PptMasterCommandExecutor.CommandResult result) {
+    private PptTemplateFillExecutionException stageFailure(String stage, EngineResult result) {
         String message = "template-fill " + stage.toLowerCase() + " failed (exitCode=" + result.exitCode()
                 + ", timedOut=" + result.timedOut() + "): " + safeMessage(result.output());
         TemplateFillErrorCode code = switch (stage) {

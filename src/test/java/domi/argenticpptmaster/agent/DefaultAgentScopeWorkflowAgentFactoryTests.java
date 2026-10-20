@@ -10,6 +10,8 @@ import domi.argenticpptmaster.config.PptMasterProperties;
 import domi.argenticpptmaster.domain.PptJob;
 import domi.argenticpptmaster.domain.PptJobNode;
 import domi.argenticpptmaster.domain.PptWorkflowMode;
+import domi.argenticpptmaster.engine.PptEngineBundle;
+import domi.argenticpptmaster.engine.PptEngineTestSupport;
 import domi.argenticpptmaster.infra.PptMasterCommandExecutor;
 import domi.argenticpptmaster.service.PptJobEventPublisher;
 import domi.argenticpptmaster.service.PptOutlineStore;
@@ -165,7 +167,7 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
         pendingJob.prepareProject(context.projectPath);
         PptAgentToolRuntime pendingRuntime =
                 new PptAgentToolRuntime(
-                        pendingJob, context.properties, context.executor, context.events);
+                        pendingJob, context.properties, context.engines, context.events);
 
         assertThatThrownBy(() -> context.tools.writeProjectTextFile("design_spec.md", "draft", pendingRuntime))
                 .isInstanceOf(IllegalStateException.class)
@@ -461,8 +463,8 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
             job.prepareProject(base.projectPath);
             return new TestContext(base.projectPath, base.tools,
                     new PptAgentToolRuntime(
-                            job, base.properties, base.executor, base.events),
-                    base.executor, base.factory, job, base.properties, base.events, base.agentProperties);
+                            job, base.properties, base.engines, base.events),
+                    base.executor, base.engines, base.factory, job, base.properties, base.events, base.agentProperties);
         } catch (IOException ex) {
             throw new RuntimeException(ex);
         }
@@ -475,8 +477,8 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
                     PptWorkflowMode.BEAUTIFY_PPTX, base.job.workspacePath());
             job.prepareProject(base.projectPath);
             return new TestContext(base.projectPath, base.tools,
-                    new PptAgentToolRuntime(job, base.properties, base.executor, base.events),
-                    base.executor, base.factory, job, base.properties, base.events, base.agentProperties);
+                    new PptAgentToolRuntime(job, base.properties, base.engines, base.events),
+                    base.executor, base.engines, base.factory, job, base.properties, base.events, base.agentProperties);
         } catch (IOException ex) {
             throw new RuntimeException(ex);
         }
@@ -531,7 +533,7 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
         DefaultAgentScopeWorkflowAgentFactory factory = new DefaultAgentScopeWorkflowAgentFactory(
                 properties,
                 pptProperties,
-                new RecordingCommandExecutor(pptProperties),
+                PptEngineTestSupport.pythonBundle(new RecordingCommandExecutor(pptProperties)),
                 new PptWorkflowEvents(new PptJobEventPublisher()),
                 templateFillAgentTools(pptProperties));
 
@@ -571,11 +573,12 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
                 null,
                 null);
         RecordingCommandExecutor executor = new RecordingCommandExecutor(properties);
+        PptEngineBundle engines = PptEngineTestSupport.pythonBundle(executor);
         PptWorkflowEvents events = new PptWorkflowEvents(new PptJobEventPublisher());
         DefaultAgentScopeWorkflowAgentFactory factory = new DefaultAgentScopeWorkflowAgentFactory(
                 agentProperties,
                 properties,
-                executor,
+                engines,
                 events,
                 templateFillAgentTools(properties));
         DefaultAgentScopeWorkflowAgentFactory.PptAgentTools tools = factory.new PptAgentTools();
@@ -589,8 +592,8 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
                 workspacePath.resolve("jobs/demo"));
         job.prepareProject(projectPath);
         PptAgentToolRuntime runtime =
-                new PptAgentToolRuntime(job, properties, executor, events);
-        return new TestContext(projectPath, tools, runtime, executor, factory, job, properties, events, agentProperties);
+                new PptAgentToolRuntime(job, properties, engines, events);
+        return new TestContext(projectPath, tools, runtime, executor, engines, factory, job, properties, events, agentProperties);
     }
 
     private TestContext createContextWithFallbacks() {
@@ -610,13 +613,13 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
             DefaultAgentScopeWorkflowAgentFactory factory = new DefaultAgentScopeWorkflowAgentFactory(
                     agentProperties,
                     base.properties,
-                    new RecordingCommandExecutor(base.properties),
+                    PptEngineTestSupport.pythonBundle(new RecordingCommandExecutor(base.properties)),
                     base.events,
                     templateFillAgentTools(base.properties));
             return new TestContext(base.projectPath, factory.new PptAgentTools(),
                     new PptAgentToolRuntime(
-                            base.job, base.properties, base.executor, base.events),
-                    base.executor, factory, base.job, base.properties, base.events, agentProperties);
+                            base.job, base.properties, base.engines, base.events),
+                    base.executor, base.engines, factory, base.job, base.properties, base.events, agentProperties);
         } catch (IOException ex) {
             throw new RuntimeException(ex);
         }
@@ -627,6 +630,7 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
             DefaultAgentScopeWorkflowAgentFactory.PptAgentTools tools,
             PptAgentToolRuntime runtime,
             RecordingCommandExecutor executor,
+            PptEngineBundle engines,
             DefaultAgentScopeWorkflowAgentFactory factory,
             PptJob job,
             PptMasterProperties properties,
@@ -650,7 +654,7 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
         }
 
         @Override
-        public CommandResult runPythonScript(String scriptRelativePath, List<String> arguments) {
+        public CommandResult runPythonScript(String scriptRelativePath, List<String> arguments, Duration timeout) {
             calledScripts.add(scriptRelativePath);
             argumentsByScript.put(scriptRelativePath, List.copyOf(arguments));
             return new CommandResult(0, "ok", false);

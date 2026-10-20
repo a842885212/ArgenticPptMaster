@@ -16,6 +16,8 @@ import domi.argenticpptmaster.domain.PptJob;
 import domi.argenticpptmaster.domain.PptJobNode;
 import domi.argenticpptmaster.domain.PptSourceFile;
 import domi.argenticpptmaster.domain.PptWorkflowMode;
+import domi.argenticpptmaster.engine.python.PythonBeautifyAnalysisEngine;
+import domi.argenticpptmaster.engine.python.PythonProjectWorkspace;
 import domi.argenticpptmaster.infra.PptMasterCommandExecutor;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -72,7 +74,11 @@ class BeautifyPptxAnalysisExecutorTests {
             throw new AssertionError("unexpected command: " + script);
         });
 
-        new BeautifyPptxAnalysisExecutor(PptMasterProperties.forTest(tempDir.resolve("repo"), workspace), commands, events)
+        new BeautifyPptxAnalysisExecutor(
+                PptMasterProperties.forTest(tempDir.resolve("repo"), workspace),
+                new PythonProjectWorkspace(commands),
+                new PythonBeautifyAnalysisEngine(commands),
+                events)
                 .execute(job);
 
         assertThat(job.nodeExecution(PptJobNode.PROJECT_READY).status()).isEqualTo(
@@ -104,8 +110,12 @@ class BeautifyPptxAnalysisExecutorTests {
         job.prepareProject(project);
         job.completeNode(PptJobNode.PROJECT_READY, java.util.Map.of("resolvedFormat", "ppt169"));
 
-        new BeautifyPptxAnalysisExecutor(PptMasterProperties.forTest(tempDir.resolve("repo"), workspace),
-                mock(PptMasterCommandExecutor.class), mock(PptWorkflowEvents.class)).execute(job);
+        PptMasterCommandExecutor commands = mock(PptMasterCommandExecutor.class);
+        new BeautifyPptxAnalysisExecutor(
+                PptMasterProperties.forTest(tempDir.resolve("repo"), workspace),
+                new PythonProjectWorkspace(commands),
+                new PythonBeautifyAnalysisEngine(commands),
+                mock(PptWorkflowEvents.class)).execute(job);
 
         assertThat(job.nodeExecution(PptJobNode.BEAUTIFY_ANALYZED).summary())
                 .containsEntry("sourcePageCount", 1)
@@ -128,8 +138,12 @@ class BeautifyPptxAnalysisExecutorTests {
         job.prepareProject(project);
         job.completeNode(PptJobNode.PROJECT_READY, java.util.Map.of("resolvedFormat", "ppt169"));
 
-        new BeautifyPptxAnalysisExecutor(PptMasterProperties.forTest(tempDir.resolve("repo"), workspace),
-                mock(PptMasterCommandExecutor.class), mock(PptWorkflowEvents.class)).execute(job);
+        PptMasterCommandExecutor commands = mock(PptMasterCommandExecutor.class);
+        new BeautifyPptxAnalysisExecutor(
+                PptMasterProperties.forTest(tempDir.resolve("repo"), workspace),
+                new PythonProjectWorkspace(commands),
+                new PythonBeautifyAnalysisEngine(commands),
+                mock(PptWorkflowEvents.class)).execute(job);
 
         assertThat(job.nodeExecution(PptJobNode.BEAUTIFY_ANALYZED).status())
                 .isEqualTo(domi.argenticpptmaster.domain.PptJobNodeStatus.COMPLETED);
@@ -150,8 +164,11 @@ class BeautifyPptxAnalysisExecutorTests {
         job.prepareProject(project);
         job.completeNode(PptJobNode.PROJECT_READY, java.util.Map.of("resolvedFormat", "ppt169"));
 
+        PptMasterCommandExecutor commands = mock(PptMasterCommandExecutor.class);
         BeautifyPptxAnalysisExecutor executor = new BeautifyPptxAnalysisExecutor(
-                PptMasterProperties.forTest(tempDir.resolve("repo"), workspace), mock(PptMasterCommandExecutor.class),
+                PptMasterProperties.forTest(tempDir.resolve("repo"), workspace),
+                new PythonProjectWorkspace(commands),
+                new PythonBeautifyAnalysisEngine(commands),
                 mock(PptWorkflowEvents.class));
 
         assertThatThrownBy(() -> executor.execute(job))
@@ -173,7 +190,10 @@ class BeautifyPptxAnalysisExecutorTests {
         job.completeNode(PptJobNode.PROJECT_READY, java.util.Map.of("resolvedFormat", "ppt169"));
         PptMasterCommandExecutor commands = mock(PptMasterCommandExecutor.class);
 
-        new BeautifyPptxAnalysisExecutor(PptMasterProperties.forTest(tempDir.resolve("repo"), workspace), commands,
+        new BeautifyPptxAnalysisExecutor(
+                PptMasterProperties.forTest(tempDir.resolve("repo"), workspace),
+                new PythonProjectWorkspace(commands),
+                new PythonBeautifyAnalysisEngine(commands),
                 mock(PptWorkflowEvents.class)).execute(job);
 
         assertThat(job.nodeExecution(PptJobNode.BEAUTIFY_ANALYZED).summary()).containsEntry("sourcePageCount", 1);
@@ -211,7 +231,10 @@ class BeautifyPptxAnalysisExecutorTests {
             throw new AssertionError("unexpected command: " + script);
         });
 
-        new BeautifyPptxAnalysisExecutor(PptMasterProperties.forTest(tempDir.resolve("repo"), workspace), commands,
+        new BeautifyPptxAnalysisExecutor(
+                PptMasterProperties.forTest(tempDir.resolve("repo"), workspace),
+                new PythonProjectWorkspace(commands),
+                new PythonBeautifyAnalysisEngine(commands),
                 mock(PptWorkflowEvents.class)).execute(job);
 
         assertThat(job.nodeExecution(PptJobNode.BEAUTIFY_ANALYZED).status())

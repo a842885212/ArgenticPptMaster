@@ -22,6 +22,7 @@ import domi.argenticpptmaster.exception.PptJobNotFoundException;
 import domi.argenticpptmaster.exception.PptJobResumeException;
 import domi.argenticpptmaster.exception.PptJobStateException;
 import domi.argenticpptmaster.service.BeautifyPptxDiagnosticService;
+import domi.argenticpptmaster.service.NativeEnhancePptxDiagnosticService;
 import domi.argenticpptmaster.service.PptJobEventPublisher;
 import domi.argenticpptmaster.service.PptWorkflowService;
 import domi.argenticpptmaster.service.PptJobCreateCommand;
@@ -71,6 +72,9 @@ class PptJobControllerTests {
 
     @MockitoBean
     private BeautifyPptxDiagnosticService beautifyDiagnosticService;
+
+    @MockitoBean
+    private NativeEnhancePptxDiagnosticService nativeEnhanceDiagnosticService;
 
     @MockitoBean
     private PptJobEventPublisher eventPublisher;

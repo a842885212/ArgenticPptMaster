@@ -110,6 +110,34 @@ Java 服务只编排任务。脚本通过 `PptMasterCommandExecutor.runPythonScr
 
 按现有 Python 包的边界搬：坐标（1 SVG px = 9525 EMU）、形状、文本、图片、表格、图表、公式、动画。每搬一块，就用固定的 `svg_output/` 让 Python 和 Java 各导出一次，忽略时间戳和关系 ID 后比较 slide XML。
 
+**第 6 步整体完成（当前分支）**
+
+按文档范围，服务 flat-release 导出路径（`SvgToPptxExporter.export(project)`，读 `svg_output/`，要求 `spec_lock.md` + 通过的 final quality report）的生产权威已切到 Java。JDK ZIP + DOM 写 OOXML；**不用** Apache POI 作 DrawingML 写入器；**不**在运行时依赖 python-pptx。
+
+| 能力 | 生产 Bean | 状态 |
+| --- | --- | --- |
+| 坐标 / canvas（`EMU_PER_PX = 9525`；`spec_lock` viewBox / theme） | `RoutingSvgToPptxExporter` → **`JavaSvgToPptxExporter` 权威**；可选 dual-run 时 Python 仅诊断（默认关） | **已完成（Java 权威）** |
+| 形状（rect/circle/ellipse/line/polyline/polygon；path 子集） | 同上；`engine.file.svgtopptx.drawingml.*` | **已完成（Java 权威）**；完整 freeform path 语法为残差 |
+| 文本（`<text>` → `a:txBody`；pin 宽度估计 + headroom；theme 字体 token） | 同上 | **已完成（Java 权威）** |
+| 图片（项目相对路径 + data-URI raster → media + `p:pic`） | 同上 | **已完成（Java 权威）** |
+| 表格标记（`data-pptx-replace-with="table"`） | 默认服务路径保留 SVG fallback 子树转 DrawingML（对齐 pin 未传 `--native-charts-and-tables`） | **已完成（Java 权威）**；完整 native `<a:tbl>` / `--native-charts-and-tables` 为残差 |
+| 图表标记（`data-pptx-replace-with="chart"`） | 同上默认 SVG fallback | **已完成（Java 权威）**；完整 chart XML + workbook / ChartEx 样式为残差 |
+| 公式标记（`data-pptx-replace-with="formula"` → OMML） | 服务子集：字面量 / `=` / `^{}` 上标（如 `E=mc^{2}`） | **已完成（Java 权威）**；完整 LaTeX AST / mhchem 为残差 |
+| 动画 | 默认 CLI：无对象动画（`-a none`）；页过渡 fade（pin 默认） | **已完成（Java 权威）**；完整 object animation / animations.json 为残差 |
+| 包结构（`[Content_Types]`、presentation、slides、theme、notes） | `PptxFlatPackageWriter`（JDK ZIP） | **已完成（Java 权威）** |
+| 门禁（缺 `spec_lock` / 缺或指纹不匹配的 final quality report → 非 0） | `QualityReportGate` + `SpecLock` | **已完成（Java 权威）** |
+| 契约测试 | fixtures `svg-to-pptx/{shapes-text,images,formula,table-marker,chart-marker}` + pin gold；`SlideXmlComparator` | **已完成** |
+
+**明确不在第 6 步「整体完成」内（已知缺口）**
+
+- `--roundtrip` / authoring-svg-flat 源对象还原
+- `--quick-generate`
+- `--enable-dangerous-nonconforming-svg-export`
+- `pptx_structure` 的 `structured` / `preserve` / 模板镜像
+- `--native-charts-and-tables` 全量 native chart/table 样式与 workbook 对齐
+- 完整 formula AST / mhchem；完整 freeform path / shape-boolean；完整 object animation 注册表
+- 替换 `svg_quality_checker` Python 权威（仍属第 2 步部分移植）
+
 ## 不移植
 
 `image_gen.py` 和 `notes_to_audio.py` 留在转换器之外。出图由 Java 直接调现有模型接口。旁白继续用外部 TTS。

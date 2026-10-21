@@ -12,6 +12,7 @@ import domi.argenticpptmaster.engine.RoutingNativeEnhanceEngine;
 import domi.argenticpptmaster.engine.RoutingProjectWorkspace;
 import domi.argenticpptmaster.engine.RoutingSvgFinalizer;
 import domi.argenticpptmaster.engine.RoutingSvgQualityChecker;
+import domi.argenticpptmaster.engine.RoutingSvgToPptxExporter;
 import domi.argenticpptmaster.engine.RoutingTemplateFillEngine;
 import domi.argenticpptmaster.engine.SpeakerNotesSplitter;
 import domi.argenticpptmaster.engine.SvgFinalizer;
@@ -30,6 +31,7 @@ import domi.argenticpptmaster.engine.file.JavaNativeEnhanceEngine;
 import domi.argenticpptmaster.engine.file.JavaProjectWorkspace;
 import domi.argenticpptmaster.engine.file.JavaSpeakerNotesSplitter;
 import domi.argenticpptmaster.engine.file.JavaSvgFinalizer;
+import domi.argenticpptmaster.engine.file.JavaSvgToPptxExporter;
 import domi.argenticpptmaster.engine.file.JavaTemplateFillEngine;
 import domi.argenticpptmaster.engine.file.svgquality.JavaSvgQualityChecker;
 import domi.argenticpptmaster.engine.python.PythonProjectWorkspace;
@@ -80,8 +82,10 @@ public class PptEngineConfiguration {
     }
 
     @Bean
-    SvgToPptxExporter svgToPptxExporter(PptMasterCommandExecutor commands) {
-        return new PythonSvgToPptxExporter(commands);
+    SvgToPptxExporter svgToPptxExporter(PptMasterCommandExecutor commands, PptEngineProperties engineProperties) {
+        // Java is the production authority. Optional dual-run keeps Python as secondary diagnostics only.
+        return new RoutingSvgToPptxExporter(
+                new JavaSvgToPptxExporter(), new PythonSvgToPptxExporter(commands), engineProperties);
     }
 
     @Bean

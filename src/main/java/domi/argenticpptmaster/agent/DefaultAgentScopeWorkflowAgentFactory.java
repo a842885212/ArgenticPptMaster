@@ -270,7 +270,9 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
         if (!Files.exists(pptMasterProperties.repoPath().resolve(SVG_QUALITY_CHECKER_SCRIPT))) {
             throw new IllegalStateException("ppt-master svg_quality_checker not found under " + pptMasterProperties.repoPath());
         }
-        if (!Files.exists(pptMasterProperties.repoPath().resolve(IMAGE_GEN_SCRIPT))) {
+        // 只有当出图权威是 Python 适配器时才需要 image_gen.py；默认 Java 网关不依赖 ppt-master 脚本。
+        if (engines.imageGeneration() instanceof PythonImageGenerationGateway
+                && !Files.exists(pptMasterProperties.repoPath().resolve(IMAGE_GEN_SCRIPT))) {
             throw new IllegalStateException("ppt-master image_gen not found under " + pptMasterProperties.repoPath());
         }
         ensureModelGroupConfigured();
@@ -674,7 +676,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                 6. 必须调用 derive_image_manifest_from_locked_outline 从已锁定 outline.json 中各页的 imageRequirement 派生 images/image_prompts.json；不得由 design_spec 新增或改变图片需求。每个 item 必须包含 outlineVersion、slideNo、purpose、filename、prompt、aspect_ratio、status（初始为 Pending）。
                    写入后必须调用 request_plan_confirmation，stage 固定为 "image_manifest_confirmation"，并在 contextData 中返回 {type:"ppt_image_manifest", outlineVersion, items}；不得在用户 APPROVE 前调用 generate_project_images。
                    - 没有 imageRequirement 时也必须提交空清单确认；确认后不得调用图片生成命令。
-                7. 仅在图片清单确认后，且清单有待生成条目时，调用 generate_project_images 执行 image_gen.py --manifest 生成图片。
+                7. 仅在图片清单确认后，且清单有待生成条目时，调用 generate_project_images 通过出图网关批量生成图片。
                 8. 调用 inspect_image_manifest_status 确认所有 item 状态：
                    - 若存在 Failed：
                      a. 绝不要直接结束任务、不要输出 FINAL 总结、不要写 notes/svg、不要导出。
@@ -690,7 +692,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                 10. 生成 svg_output 后，调用 validate_svg_output，再调用 split_speaker_notes、finalize_project_svg，最后调用 export_project_pptx。
 
                 图片阶段约束：
-                - 第一版只支持 Path A：调用 generate_project_images（底层 image_gen.py --manifest）。
+                - 第一版只支持 Path A：调用 generate_project_images（默认走服务内 OpenAI 兼容出图网关）。
                 - 不支持自动切换到 host-native 或 manual。
                 - 图片生成失败时不可中止，必须进入 image_retry_decision 确认环，等待用户决定重试或放弃。
                 - 只有用户明确放弃或任务被取消时才允许终止；不要在图片未生成的情况下继续 SVG 生成或导出。
@@ -1564,15 +1566,18 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
          * 执行图片生成（Path A）。
          * <p>
          * 当工作流模式为 {@link domi.argenticpptmaster.domain.PptWorkflowMode#IMAGE_ENHANCED}
-         * 且已生成 {@code images/image_prompts.json} 后，调用 ppt-master 的
-         * {@code image_gen.py --manifest} 命令批量生成图片。
-         * 脚本会根据当前进程环境或 {@code .env} 中的 {@code IMAGE_BACKEND} 配置选择后端。
+         * 且已生成 {@code images/image_prompts.json} 后，委托 {@link ImageGenerationGateway}
+         * 批量生成图片：默认是服务内 OpenAI 兼容网关（{@code ppt.image.*}），
+         * 仅在 {@code ppt.image.python-fallback=true} 时回落到 ppt-master 的
+         * {@code image_gen.py --manifest}。编排门禁与产物路径约定不变。
          * </p>
          *
          * @param runtime 工具运行时上下文
          * @return 图片生成结果描述
          */
-        @Tool(name = "generate_project_images", description = "Run ppt-master image_gen.py --manifest to generate AI images listed in images/image_prompts.json.")
+        @Tool(name = "generate_project_images",
+                description = "Generate the AI images listed in images/image_prompts.json through the service image gateway"
+                        + " (OpenAI-compatible by default); only Pending or Failed items are processed.")
         public String generateProjectImages(PptAgentToolRuntime runtime) {
             rejectBeautifyDirectProjectOperation(runtime, "generate_project_images");
             requireApprovedOutline(runtime, "generate images");

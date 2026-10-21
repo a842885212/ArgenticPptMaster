@@ -22,7 +22,7 @@ Java 服务只编排任务。脚本通过 `PptMasterCommandExecutor.runPythonScr
 | `beautify_identity.py`、`beautify_inventory.py`、`pptx_intake.py` | 各约 1.1 万到 1.4 万行 | 读现有 PPTX |
 | `finalize_svg.py` | 约 1.8 万行 | SVG 后处理 |
 | `svg_to_pptx/` | 50 个文件，约 5.1 万行 | SVG 到可编辑 DrawingML |
-| `image_gen.py` | 约 5.2 万行 | 模型出图，不是转换器 |
+| `image_gen.py` | 约 5.2 万行 | 模型出图，不是转换器；见第 7 步，改由 Java 直连 |
 
 `svg_to_pptx/` 是整条链路里唯一真正绑住上游的部分。
 
@@ -54,7 +54,7 @@ Java 服务只编排任务。脚本通过 `PptMasterCommandExecutor.runPythonScr
 
 **第 3 步整体完成（当前分支）**
 
-按文档范围，OOXML 改写路径的生产权威已切到 Java；`notes_to_audio.py` / `image_gen.py` 仍属「不移植」。
+按文档范围，OOXML 改写路径的生产权威已切到 Java；`notes_to_audio.py` 仍属「不移植」，`image_gen.py` 已在第 7 步换成 Java 直连。
 
 | 能力 | 生产 Bean | 状态 |
 | --- | --- | --- |
@@ -73,7 +73,7 @@ Java 服务只编排任务。脚本通过 `PptMasterCommandExecutor.runPythonScr
 
 **第 4 步整体完成（当前分支）**
 
-按文档范围，美化分析路径的生产权威已切到 Java；SVG / finalize / image_gen / notes_to_audio 仍属后续或不移植。
+按文档范围，美化分析路径的生产权威已切到 Java；SVG / finalize / notes_to_audio 仍属后续或不移植（出图见第 7 步）。
 
 | 能力 | 生产 Bean | 状态 |
 | --- | --- | --- |
@@ -138,9 +138,30 @@ Java 服务只编排任务。脚本通过 `PptMasterCommandExecutor.runPythonScr
 - 完整 formula AST / mhchem；完整 freeform path / shape-boolean；完整 object animation 注册表
 - 替换 `svg_quality_checker` Python 权威（仍属第 2 步部分移植）
 
+### 7. 出图改 Java 直连（IMAGE_ENHANCED Path A）
+
+`image_gen.py` 是多厂商模型出图适配器，不是 OOXML/SVG 转换器，因此**不整包移植**。本服务只实现自己需要的那一条路径：`JavaImageGenerationGateway` 读 `images/image_prompts.json`，并发直连 OpenAI 兼容 `POST {ppt.image.base-url}/images/generations`，写 `images/<filename>` 并逐条回写清单状态。
+
+| 能力 | 生产 Bean | 状态 |
+| --- | --- | --- |
+| Path A 批量出图 | `ImageGenerationGateway` → **`JavaImageGenerationGateway` 权威** | **已完成（Java 权威）** |
+| 回落 `image_gen.py --manifest` | `PythonImageGenerationGateway`，仅当 `ppt.image.python-fallback=true` | 保留为回滚开关 |
+
+契约要点：
+
+- 只处理 `Pending` / `Failed`，跳过 `Generated` / `Needs-Manual`；本次运行存在失败条目即非零结果，成功条目的文件与状态保持已落盘，与 Python 版语义一致。
+- 请求体是 OpenAI 风格：发送 `size`，不发送 `aspect_ratio`。`aspect_ratio` 仅支持 1K 档固定映射（`1:1`→`1024x1024`、`16:9`→`1280x720`、`4:3`→`1024x768`、`3:4`→`768x1024`），表外比例不发请求，直接记 `Failed`；`quality` 固定 `medium`。
+- 响应优先 `b64_json`；只有 `url` 时再下载该 URL，且不向图片主机透传出图密钥。仅 HTTP 429 走指数退避重试（最多 3 次），其它错误立即 `Failed`。
+- 并发取 `ppt.image.concurrency`（默认 5），单条请求受 `ppt.image.item-timeout`（默认 180s）约束，整批仍受 `ppt-master.command-timeout` 兜底。
+- 清单回写用进程内互斥 + 临时文件 `ATOMIC_MOVE`，不提供跨进程锁。
+- `ppt.image.base-url` 必填，不复用对话侧 `agentscope.base-url`；`ppt.image.api-key` 缺省时回落对话密钥。
+- 未启用 Python fallback 时，启动前置不再要求仓库里存在 `image_gen.py`。
+
+明确不做：多厂商 `IMAGE_BACKEND` 注册表、`--render-md` / `--summary` 视图、512px/2K/4K size preset、限流时的全局并发降级。
+
 ## 不移植
 
-`image_gen.py` 和 `notes_to_audio.py` 留在转换器之外。出图由 Java 直接调现有模型接口。旁白继续用外部 TTS。
+`notes_to_audio.py` 留在转换器之外，旁白继续用外部 TTS。`image_gen.py` 不整包移植：出图已由 `JavaImageGenerationGateway` 直连 OpenAI 兼容端点（见第 7 步），只在显式 `ppt.image.python-fallback=true` 时才回到该脚本。
 
 ## 验收
 

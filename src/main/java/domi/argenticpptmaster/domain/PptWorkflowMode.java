@@ -8,7 +8,7 @@ package domi.argenticpptmaster.domain;
  * <ul>
  *   <li>{@link #BASIC} —— 基础流程，仅使用 markdown-first 路线生成 PPT，不引入 AI 图片生成。</li>
  *   <li>{@link #IMAGE_ENHANCED} —— 进阶流程，在基础流程之上增加图片阶段：
- *        生成 {@code images/image_prompts.json}，调用 {@code image_gen.py --manifest} 生成图片，
+ *        生成 {@code images/image_prompts.json}，经出图网关（默认服务内 OpenAI 兼容实现）生成图片，
  *        再由 SVG 页面引用已生成的图片。</li>
  *   <li>{@link #TEMPLATE_FILL} —— 使用原生 PPTX 模板和已确认填充计划直接生成可编辑 PPTX。</li>
  * </ul>

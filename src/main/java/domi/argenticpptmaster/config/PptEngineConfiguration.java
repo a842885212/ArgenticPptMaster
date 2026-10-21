@@ -27,12 +27,14 @@ import domi.argenticpptmaster.engine.python.PythonNativeEnhanceEngine;
 import domi.argenticpptmaster.engine.python.PythonNotesAudioGateway;
 import domi.argenticpptmaster.engine.python.PythonPptxMarkdownReadback;
 import domi.argenticpptmaster.engine.file.JavaBeautifyAnalysisEngine;
+import domi.argenticpptmaster.engine.file.JavaImageGenerationGateway;
 import domi.argenticpptmaster.engine.file.JavaNativeEnhanceEngine;
 import domi.argenticpptmaster.engine.file.JavaProjectWorkspace;
 import domi.argenticpptmaster.engine.file.JavaSpeakerNotesSplitter;
 import domi.argenticpptmaster.engine.file.JavaSvgFinalizer;
 import domi.argenticpptmaster.engine.file.JavaSvgToPptxExporter;
 import domi.argenticpptmaster.engine.file.JavaTemplateFillEngine;
+import domi.argenticpptmaster.engine.file.imagegen.OpenAiImageClient;
 import domi.argenticpptmaster.engine.file.svgquality.JavaSvgQualityChecker;
 import domi.argenticpptmaster.engine.python.PythonProjectWorkspace;
 import domi.argenticpptmaster.engine.python.PythonSvgFinalizer;
@@ -40,6 +42,8 @@ import domi.argenticpptmaster.engine.python.PythonSvgQualityChecker;
 import domi.argenticpptmaster.engine.python.PythonSvgToPptxExporter;
 import domi.argenticpptmaster.engine.python.PythonTemplateFillEngine;
 import domi.argenticpptmaster.infra.PptMasterCommandExecutor;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
@@ -47,8 +51,10 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
 
 @Configuration
-@EnableConfigurationProperties(PptEngineProperties.class)
+@EnableConfigurationProperties({PptEngineProperties.class, PptImageProperties.class})
 public class PptEngineConfiguration {
+
+    private static final Logger log = LoggerFactory.getLogger(PptEngineConfiguration.class);
 
     @Bean
     ProjectWorkspace projectWorkspace(PptMasterCommandExecutor commands) {
@@ -115,9 +121,28 @@ public class PptEngineConfiguration {
         return new PythonPptxMarkdownReadback(commands, PythonPptxMarkdownReadback.NATIVE_ENHANCE_SCRIPT);
     }
 
+    /**
+     * Path A 出图权威。
+     * <p>
+     * 默认使用服务内 OpenAI 兼容网关；仅当 {@code ppt.image.python-fallback=true} 时回落到
+     * ppt-master 的 {@code image_gen.py} 适配器。出图密钥可回落到对话密钥，但 base-url 绝不回落，
+     * 因为对话代理通常不提供 {@code /images/generations}。
+     * </p>
+     */
     @Bean
-    ImageGenerationGateway imageGenerationGateway(PptMasterCommandExecutor commands) {
-        return new PythonImageGenerationGateway(commands);
+    ImageGenerationGateway imageGenerationGateway(
+            PptMasterCommandExecutor commands,
+            PptImageProperties imageProperties,
+            AgentScopeProperties agentScopeProperties) {
+        if (imageProperties.isPythonFallback()) {
+            return new PythonImageGenerationGateway(commands);
+        }
+        if (!imageProperties.hasBaseUrl()) {
+            log.warn("ppt.image.base-url is not configured; IMAGE_ENHANCED image generation will fail"
+                    + " until it is set");
+        }
+        String apiKey = imageProperties.effectiveApiKey(agentScopeProperties.effectivePrimary().apiKey());
+        return new JavaImageGenerationGateway(imageProperties, new OpenAiImageClient(imageProperties, apiKey));
     }
 
     @Bean

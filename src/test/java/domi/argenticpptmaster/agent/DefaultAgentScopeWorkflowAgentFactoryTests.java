@@ -10,8 +10,15 @@ import domi.argenticpptmaster.config.PptMasterProperties;
 import domi.argenticpptmaster.domain.PptJob;
 import domi.argenticpptmaster.domain.PptJobNode;
 import domi.argenticpptmaster.domain.PptWorkflowMode;
+import domi.argenticpptmaster.engine.EngineResult;
+import domi.argenticpptmaster.engine.ImageGenerationGateway;
 import domi.argenticpptmaster.engine.PptEngineBundle;
 import domi.argenticpptmaster.engine.PptEngineTestSupport;
+import domi.argenticpptmaster.engine.python.PythonImageGenerationGateway;
+import domi.argenticpptmaster.engine.python.PythonProjectWorkspace;
+import domi.argenticpptmaster.engine.python.PythonSpeakerNotesSplitter;
+import domi.argenticpptmaster.engine.python.PythonSvgFinalizer;
+import domi.argenticpptmaster.engine.python.PythonSvgQualityChecker;
 import domi.argenticpptmaster.infra.PptMasterCommandExecutor;
 import domi.argenticpptmaster.service.PptJobEventPublisher;
 import domi.argenticpptmaster.service.PptOutlineStore;
@@ -187,7 +194,10 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
     }
 
     /**
-     * 验证 {@code generateProjectImages} 在 manifest 存在时调用 image_gen.py --manifest。
+     * 验证显式接入 Python 适配器时，{@code generateProjectImages} 调用 image_gen.py --manifest。
+     *
+     * <p>生产默认权威已是 {@code JavaImageGenerationGateway}；本用例通过测试装配保留 fallback
+     * 路径的契约（参数与脚本路径不变）。</p>
      */
     @Test
     void generateProjectImagesDelegatesToImageGenScript() throws IOException {
@@ -206,6 +216,44 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
                 .containsExactly(
                         "--manifest", context.projectPath.resolve("images/image_prompts.json").toString(),
                         "--output", context.projectPath.resolve("images").toString());
+    }
+
+    /**
+     * 验证 Java 出图权威下，工具不再调用任何 Python 脚本，而是直接委托已装配的网关。
+     */
+    @Test
+    void generateProjectImagesUsesWiredImageGatewayWithoutPythonScript() throws IOException {
+        TestContext context = createContextWithJavaImageGateway();
+        context.job.confirmNode(PptJobNode.PLAN_CONFIRMED);
+        context.job.confirmNode(PptJobNode.IMAGE_MANIFEST_CONFIRMED);
+        Files.createDirectories(context.projectPath.resolve("images"));
+        Files.writeString(context.projectPath.resolve("images/image_prompts.json"), """
+                {"items": [{"filename": "cover.png", "prompt": "a cover", "aspect_ratio": "16:9", "status": "Pending"}]}
+                """);
+
+        String result = context.tools.generateProjectImages(context.runtime);
+
+        assertThat(result).contains("java gateway generated 1 image");
+        assertThat(context.executor.calledScripts()).doesNotContain("skills/ppt-master/scripts/image_gen.py");
+    }
+
+    /**
+     * 验证 image_gen.py 只在出图权威为 Python 适配器时才是启动前置条件。
+     */
+    @Test
+    void imageGenScriptIsPrerequisiteOnlyWhenPythonGatewayIsWired() throws IOException {
+        TestContext base = createContext();
+        createMarkdownPrerequisiteScripts(base.properties.repoPath());
+
+        DefaultAgentScopeWorkflowAgentFactory pythonAuthority = factoryWithImageGateway(
+                base, new PythonImageGenerationGateway(base.executor));
+        assertThatThrownBy(() -> pythonAuthority.create(base.job))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("image_gen");
+
+        DefaultAgentScopeWorkflowAgentFactory javaAuthority = factoryWithImageGateway(base, recordingGateway());
+        assertThat(javaAuthority.create(base.job)).isNotNull();
+        assertThat(base.executor.calledScripts()).doesNotContain("skills/ppt-master/scripts/image_gen.py");
     }
 
     /**
@@ -600,6 +648,71 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
         PptAgentToolRuntime runtime =
                 new PptAgentToolRuntime(job, properties, engines, events);
         return new TestContext(projectPath, tools, runtime, executor, engines, factory, job, properties, events, agentProperties);
+    }
+
+    /** 构造一个只记录调用的出图网关，模拟 Java 权威且不发起任何网络请求。 */
+    private ImageGenerationGateway recordingGateway() {
+        return (manifest, outputDir, timeout) -> new EngineResult(0, "java gateway generated 1 image", false);
+    }
+
+    /** 落地 markdown 路径必需的 ppt-master 脚本，但故意缺少 image_gen.py。 */
+    private void createMarkdownPrerequisiteScripts(Path repoPath) throws IOException {
+        for (String script : List.of(
+                PythonProjectWorkspace.SCRIPT,
+                PythonSvgFinalizer.SCRIPT,
+                PythonSpeakerNotesSplitter.SCRIPT,
+                PythonSvgQualityChecker.SCRIPT)) {
+            Path target = repoPath.resolve(script);
+            Files.createDirectories(target.getParent());
+            Files.writeString(target, "#!/usr/bin/env python3\n");
+        }
+    }
+
+    /** 用指定出图网关重建工厂与引擎包，其余能力仍使用 Python 适配器。 */
+    private DefaultAgentScopeWorkflowAgentFactory factoryWithImageGateway(
+            TestContext base,
+            ImageGenerationGateway imageGeneration) {
+        AgentScopeProperties agentProperties = new AgentScopeProperties(
+                "openai",
+                "dummy-model",
+                "sk-test",
+                "http://127.0.0.1:1/v1",
+                8,
+                tempDir.resolve("sessions"),
+                "ppt-master-service",
+                null,
+                null,
+                null);
+        return new DefaultAgentScopeWorkflowAgentFactory(
+                agentProperties,
+                base.properties,
+                PptEngineTestSupport.pythonBundle(base.executor, imageGeneration),
+                base.events,
+                templateFillAgentTools(base.properties));
+    }
+
+    /** 用记录型出图网关（Java 权威替身）重建完整的测试上下文，含 tools 与 runtime。 */
+    private TestContext createContextWithJavaImageGateway() throws IOException {
+        TestContext base = createContext();
+        ImageGenerationGateway gateway = recordingGateway();
+        PptEngineBundle engines = PptEngineTestSupport.pythonBundle(base.executor, gateway);
+        DefaultAgentScopeWorkflowAgentFactory factory = new DefaultAgentScopeWorkflowAgentFactory(
+                base.agentProperties,
+                base.properties,
+                engines,
+                base.events,
+                templateFillAgentTools(base.properties));
+        return new TestContext(
+                base.projectPath,
+                factory.new PptAgentTools(),
+                new PptAgentToolRuntime(base.job, base.properties, engines, base.events),
+                base.executor,
+                engines,
+                factory,
+                base.job,
+                base.properties,
+                base.events,
+                base.agentProperties);
     }
 
     private TestContext createContextWithFallbacks() {

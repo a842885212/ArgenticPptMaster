@@ -1,5 +1,6 @@
 package domi.argenticpptmaster.engine;
 
+import domi.argenticpptmaster.engine.ImageGenerationGateway;
 import domi.argenticpptmaster.engine.file.JavaBeautifyAnalysisEngine;
 import domi.argenticpptmaster.engine.file.JavaNativeEnhanceEngine;
 import domi.argenticpptmaster.engine.file.JavaSvgFinalizer;
@@ -31,6 +32,17 @@ public final class PptEngineTestSupport {
     }
 
     public static PptEngineBundle pythonBundle(PptMasterCommandExecutor commands) {
+        return pythonBundle(commands, new PythonImageGenerationGateway(commands));
+    }
+
+    /**
+     * 与 {@link #pythonBundle(PptMasterCommandExecutor)} 相同，但替换出图权威。
+     *
+     * <p>用于验证 Java 出图网关下的 agent 行为：其余能力仍走 Python 适配器。</p>
+     */
+    public static PptEngineBundle pythonBundle(
+            PptMasterCommandExecutor commands,
+            ImageGenerationGateway imageGeneration) {
         return new PptEngineBundle(
                 new PythonProjectWorkspace(commands),
                 new RoutingBeautifyAnalysisEngine(
@@ -47,7 +59,7 @@ public final class PptEngineTestSupport {
                         new JavaNativeEnhanceEngine(), new PythonNativeEnhanceEngine(commands)),
                 new PythonPptxMarkdownReadback(commands, PythonPptxMarkdownReadback.BEAUTIFY_SCRIPT),
                 new PythonPptxMarkdownReadback(commands, PythonPptxMarkdownReadback.NATIVE_ENHANCE_SCRIPT),
-                new PythonImageGenerationGateway(commands),
+                imageGeneration,
                 new PythonNotesAudioGateway(commands));
     }
 }

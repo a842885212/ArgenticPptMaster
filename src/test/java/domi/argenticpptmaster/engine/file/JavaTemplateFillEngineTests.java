@@ -160,10 +160,18 @@ public class JavaTemplateFillEngineTests {
         if (Files.isRegularFile(requested)) {
             return requested;
         }
+        // apply() may write a timestamped sibling (export_yyyyMMdd_HHmmss.pptx); do not
+        // pick unrelated pptx files that share the temp directory (e.g. template.pptx).
+        String stem = requested.getFileName().toString().replaceFirst("(?i)\\.pptx$", "");
         try (Stream<Path> stream = Files.list(requested.getParent())) {
             return stream
-                    .filter(path -> path.getFileName().toString().endsWith(".pptx"))
-                    .findFirst()
+                    .filter(Files::isRegularFile)
+                    .filter(path -> {
+                        String name = path.getFileName().toString();
+                        return name.regionMatches(true, 0, stem, 0, stem.length())
+                                && name.toLowerCase().endsWith(".pptx");
+                    })
+                    .max(Comparator.comparing(path -> path.getFileName().toString()))
                     .orElseThrow();
         }
     }

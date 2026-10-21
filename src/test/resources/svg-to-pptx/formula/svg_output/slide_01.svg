@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720" width="1280" height="720">
+  <rect x="0" y="0" width="1280" height="720" fill="#FFFFFF"/>
+  <text x="80" y="80" font-family="Microsoft YaHei" font-size="28" fill="#222222">Formula slide</text>
+  <g id="energy-formula" data-pptx-replace-with="formula"
+     data-pptx-x="200" data-pptx-y="200"
+     data-pptx-width="400" data-pptx-height="120"
+     data-pptx-bounds="200 200 400 120">
+    <metadata type="application/json"><![CDATA[
+      {"latex":"E=mc^{2}","display":"block","font_size":36,"color":"#1F4E79","align":"center"}
+    ]]></metadata>
+    <text x="400" y="270" text-anchor="middle" font-family="Microsoft YaHei" font-size="36" fill="#1F4E79">E=mc²</text>
+  </g>
+</svg>

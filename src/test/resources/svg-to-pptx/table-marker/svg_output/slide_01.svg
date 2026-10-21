@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720" width="1280" height="720">
+  <rect x="0" y="0" width="1280" height="720" fill="#FFFFFF"/>
+  <text x="80" y="70" font-family="Microsoft YaHei" font-size="28" fill="#222222">Table slide</text>
+  <g id="demo-table" data-pptx-replace-with="table"
+     data-pptx-x="120" data-pptx-y="120"
+     data-pptx-width="600" data-pptx-height="240"
+     data-pptx-bounds="120 120 600 240" data-pptx-fallback-sha256="d988aafa51e48a3e68f36e08e36a0407cbd272157cf6fc0195031137404905c2">
+    <metadata type="application/json"><![CDATA[
+{"schema":"ppt-master.semantic-table.v2","x":120,"y":120,"width":600,"height":240,"name":"demo-table","columns":[{"text":"Item"},{"text":"Value"}],"rows":[[{"text":"Alpha"},{"text":"10"}],[{"text":"Beta"},{"text":"20"}]]}
+    ]]></metadata>
+    <rect x="120" y="120" width="600" height="240" fill="#F5F5F5" stroke="#1F4E79" stroke-width="2"/>
+    <text x="140" y="160" font-family="Microsoft YaHei" font-size="18" fill="#222222">Item</text>
+    <text x="400" y="160" font-family="Microsoft YaHei" font-size="18" fill="#222222">Value</text>
+    <text x="140" y="210" font-family="Microsoft YaHei" font-size="18" fill="#222222">Alpha</text>
+    <text x="400" y="210" font-family="Microsoft YaHei" font-size="18" fill="#222222">10</text>
+    <text x="140" y="260" font-family="Microsoft YaHei" font-size="18" fill="#222222">Beta</text>
+    <text x="400" y="260" font-family="Microsoft YaHei" font-size="18" fill="#222222">20</text>
+  </g>
+</svg>

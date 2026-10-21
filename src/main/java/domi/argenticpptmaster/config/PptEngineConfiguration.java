@@ -7,9 +7,12 @@ import domi.argenticpptmaster.engine.NotesAudioGateway;
 import domi.argenticpptmaster.engine.PptEngineBundle;
 import domi.argenticpptmaster.engine.PptxMarkdownReadback;
 import domi.argenticpptmaster.engine.ProjectWorkspace;
+import domi.argenticpptmaster.engine.RoutingBeautifyAnalysisEngine;
 import domi.argenticpptmaster.engine.RoutingNativeEnhanceEngine;
 import domi.argenticpptmaster.engine.RoutingProjectWorkspace;
+import domi.argenticpptmaster.engine.RoutingSvgFinalizer;
 import domi.argenticpptmaster.engine.RoutingSvgQualityChecker;
+import domi.argenticpptmaster.engine.RoutingSvgToPptxExporter;
 import domi.argenticpptmaster.engine.RoutingTemplateFillEngine;
 import domi.argenticpptmaster.engine.SpeakerNotesSplitter;
 import domi.argenticpptmaster.engine.SvgFinalizer;
@@ -23,9 +26,12 @@ import domi.argenticpptmaster.engine.python.PythonImageGenerationGateway;
 import domi.argenticpptmaster.engine.python.PythonNativeEnhanceEngine;
 import domi.argenticpptmaster.engine.python.PythonNotesAudioGateway;
 import domi.argenticpptmaster.engine.python.PythonPptxMarkdownReadback;
+import domi.argenticpptmaster.engine.file.JavaBeautifyAnalysisEngine;
 import domi.argenticpptmaster.engine.file.JavaNativeEnhanceEngine;
 import domi.argenticpptmaster.engine.file.JavaProjectWorkspace;
 import domi.argenticpptmaster.engine.file.JavaSpeakerNotesSplitter;
+import domi.argenticpptmaster.engine.file.JavaSvgFinalizer;
+import domi.argenticpptmaster.engine.file.JavaSvgToPptxExporter;
 import domi.argenticpptmaster.engine.file.JavaTemplateFillEngine;
 import domi.argenticpptmaster.engine.file.svgquality.JavaSvgQualityChecker;
 import domi.argenticpptmaster.engine.python.PythonProjectWorkspace;
@@ -50,8 +56,10 @@ public class PptEngineConfiguration {
     }
 
     @Bean
-    BeautifyAnalysisEngine beautifyAnalysisEngine(PptMasterCommandExecutor commands) {
-        return new PythonBeautifyAnalysisEngine(commands);
+    BeautifyAnalysisEngine beautifyAnalysisEngine(PptMasterCommandExecutor commands, PptEngineProperties engineProperties) {
+        // Java is the production authority. Optional dual-run keeps Python as secondary diagnostics only.
+        return new RoutingBeautifyAnalysisEngine(
+                new JavaBeautifyAnalysisEngine(), new PythonBeautifyAnalysisEngine(commands), engineProperties);
     }
 
     @Bean
@@ -67,27 +75,31 @@ public class PptEngineConfiguration {
     }
 
     @Bean
-    SvgFinalizer svgFinalizer(PptMasterCommandExecutor commands) {
-        return new PythonSvgFinalizer(commands);
+    SvgFinalizer svgFinalizer(PptMasterCommandExecutor commands, PptEngineProperties engineProperties) {
+        // Java is the production authority. Optional dual-run keeps Python as secondary diagnostics only.
+        return new RoutingSvgFinalizer(
+                new JavaSvgFinalizer(), new PythonSvgFinalizer(commands), engineProperties);
     }
 
     @Bean
-    SvgToPptxExporter svgToPptxExporter(PptMasterCommandExecutor commands) {
-        return new PythonSvgToPptxExporter(commands);
+    SvgToPptxExporter svgToPptxExporter(PptMasterCommandExecutor commands, PptEngineProperties engineProperties) {
+        // Java is the production authority. Optional dual-run keeps Python as secondary diagnostics only.
+        return new RoutingSvgToPptxExporter(
+                new JavaSvgToPptxExporter(), new PythonSvgToPptxExporter(commands), engineProperties);
     }
 
     @Bean
-    TemplateFillEngine templateFillEngine(PptMasterCommandExecutor commands) {
-        // Java notes+text subset dual-runs; Python remains the production authority until parity.
+    TemplateFillEngine templateFillEngine(PptMasterCommandExecutor commands, PptEngineProperties engineProperties) {
+        // Java is the production authority. Optional dual-run keeps Python as secondary diagnostics only.
         return new RoutingTemplateFillEngine(
-                new JavaTemplateFillEngine(), new PythonTemplateFillEngine(commands));
+                new JavaTemplateFillEngine(), new PythonTemplateFillEngine(commands), engineProperties);
     }
 
     @Bean
-    NativeEnhanceEngine nativeEnhanceEngine(PptMasterCommandExecutor commands) {
-        // Java notes subset dual-runs; Python remains the production authority until parity.
+    NativeEnhanceEngine nativeEnhanceEngine(PptMasterCommandExecutor commands, PptEngineProperties engineProperties) {
+        // Java is the production authority. Optional dual-run keeps Python as secondary diagnostics only.
         return new RoutingNativeEnhanceEngine(
-                new JavaNativeEnhanceEngine(), new PythonNativeEnhanceEngine(commands));
+                new JavaNativeEnhanceEngine(), new PythonNativeEnhanceEngine(commands), engineProperties);
     }
 
     @Bean

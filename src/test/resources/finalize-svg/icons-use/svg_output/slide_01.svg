@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1280" height="720" viewBox="0 0 1280 720">
+  <defs>
+    <symbol id="badge" viewBox="0 0 32 32">
+      <circle cx="16" cy="16" r="14" fill="#0076A8"/>
+      <rect id="badge-inner" x="10" y="10" width="12" height="12" fill="#fff"/>
+    </symbol>
+  </defs>
+  <use data-icon="chunk-filled/rocket" x="80" y="80" width="48" height="48" fill="#0076A8"/>
+  <use href="#badge" x="200" y="80" width="64" height="64"/>
+  <rect style="x: 20px; y: 200px; width: 40px; height: 40px" fill="#eee"/>
+</svg>

@@ -1,0 +1,160 @@
+{
+  "schema": "template_fill_pptx_library.v1",
+  "source_pptx": "/workspace/src/test/resources/beautify-pptx/pure-text-mvp.pptx",
+  "slide_count": 4,
+  "canvas_px": {
+    "width": 960,
+    "height": 720
+  },
+  "slides": [
+    {
+      "slide_index": 1,
+      "page_type": "cover_candidate",
+      "text_summary": "Pure Text Beautify\nEvery slide remains in order.",
+      "slots": [
+        {
+          "slot_id": "s01_sh2",
+          "role": "title_candidate",
+          "text": "Pure Text Beautify\nEvery slide remains in order.",
+          "paragraph_count": 2,
+          "geometry": {
+            "x": 77,
+            "y": 77,
+            "width": 1104,
+            "height": 557
+          },
+          "text_metrics": {
+            "font_size_px": 40.0,
+            "paragraph_count": 2
+          }
+        }
+      ],
+      "tables": [],
+      "charts": [],
+      "diagrams": []
+    },
+    {
+      "slide_index": 2,
+      "page_type": "chapter_candidate",
+      "text_summary": "Repeated text\nKeep me\nKeep me\nDense page starts here",
+      "slots": [
+        {
+          "slot_id": "s02_sh2",
+          "role": "title_candidate",
+          "text": "Repeated text\nKeep me\nKeep me\nDense page starts here",
+          "paragraph_count": 4,
+          "geometry": {
+            "x": 77,
+            "y": 77,
+            "width": 1104,
+            "height": 557
+          },
+          "text_metrics": {
+            "font_size_px": 40.0,
+            "paragraph_count": 4
+          }
+        }
+      ],
+      "tables": [],
+      "charts": [],
+      "diagrams": []
+    },
+    {
+      "slide_index": 3,
+      "page_type": "chapter_candidate",
+      "text_summary": "Dense page\nOne\nTwo\nThree\nFour\nFive\nSix\nSeven\nEight",
+      "slots": [
+        {
+          "slot_id": "s03_sh2",
+          "role": "title_candidate",
+          "text": "Dense page\nOne\nTwo\nThree\nFour\nFive\nSix\nSeven\nEight",
+          "paragraph_count": 9,
+          "geometry": {
+            "x": 77,
+            "y": 77,
+            "width": 1104,
+            "height": 557
+          },
+          "text_metrics": {
+            "font_size_px": 40.0,
+            "paragraph_count": 9
+          }
+        }
+      ],
+      "tables": [],
+      "charts": [],
+      "diagrams": []
+    },
+    {
+      "slide_index": 4,
+      "page_type": "ending_candidate",
+      "text_summary": "Pause",
+      "slots": [
+        {
+          "slot_id": "s04_sh2",
+          "role": "title_candidate",
+          "text": "Pause",
+          "paragraph_count": 1,
+          "geometry": {
+            "x": 77,
+            "y": 77,
+            "width": 1104,
+            "height": 557
+          },
+          "text_metrics": {
+            "font_size_px": 40.0,
+            "paragraph_count": 1
+          }
+        }
+      ],
+      "tables": [],
+      "charts": [],
+      "diagrams": []
+    }
+  ],
+  "plan_contract": {
+    "schema": "template_fill_pptx_plan.v1",
+    "slides": [
+      {
+        "source_slide": 1,
+        "purpose": "封面 / 章节 / 内容 / 结尾",
+        "replacements": [
+          {
+            "slot_id": "s01_sh2",
+            "text": "替换后的文字"
+          }
+        ],
+        "table_edits": [
+          {
+            "table_id": "s01_tbl3",
+            "cells": [
+              {
+                "row": 0,
+                "col": 0,
+                "text": "替换后的单元格"
+              }
+            ]
+          }
+        ],
+        "chart_edits": [
+          {
+            "chart_id": "s01_ch4",
+            "categories": [
+              "A",
+              "B"
+            ],
+            "series": [
+              {
+                "name": "系列1",
+                "values": [
+                  1,
+                  2
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

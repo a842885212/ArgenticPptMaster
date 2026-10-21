@@ -298,14 +298,18 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
     }
 
     /**
-     * 验证后处理工具方法（validateSvgOutput、splitSpeakerNotes、finalizeProjectSvg）
-     * 正确委托到对应的 Python 脚本，且传入正确的项目路径和格式参数。
+     * 验证后处理工具：svg quality / notes split 仍走 Python；finalize_svg 已由 Java 权威处理，
+     * 不再调用 finalize_svg.py。
      */
     @Test
     void postProcessingToolsDelegateToExpectedScripts() throws IOException {
         TestContext context = createContext();
         context.job.confirmNode(PptJobNode.PLAN_CONFIRMED);
         Files.writeString(context.projectPath.resolve("notes/total.md"), "# 01_cover\nhello");
+        Files.writeString(
+                context.projectPath.resolve("svg_output/01_cover.svg"),
+                "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1280\" height=\"720\" viewBox=\"0 0 1280 720\">"
+                        + "<text x=\"40\" y=\"80\">cover</text></svg>");
 
         context.tools.validateSvgOutput(context.runtime);
         context.tools.splitSpeakerNotes(context.runtime);
@@ -313,10 +317,12 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
 
         assertThat(context.executor.calledScripts()).containsExactly(
                 "skills/ppt-master/scripts/svg_quality_checker.py",
-                "skills/ppt-master/scripts/total_md_split.py",
-                "skills/ppt-master/scripts/finalize_svg.py");
+                "skills/ppt-master/scripts/total_md_split.py");
+        assertThat(context.executor.calledScripts())
+                .doesNotContain("skills/ppt-master/scripts/finalize_svg.py");
         assertThat(context.executor.argumentsFor("skills/ppt-master/scripts/svg_quality_checker.py"))
                 .containsExactly(context.projectPath.toString(), "--format", "ppt169");
+        assertThat(Files.isRegularFile(context.projectPath.resolve("svg_final/01_cover.svg"))).isTrue();
     }
 
     /**

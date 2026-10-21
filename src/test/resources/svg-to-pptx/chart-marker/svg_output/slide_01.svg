@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720" width="1280" height="720">
+  <rect x="0" y="0" width="1280" height="720" fill="#FFFFFF"/>
+  <text x="80" y="70" font-family="Microsoft YaHei" font-size="28" fill="#222222">Chart slide</text>
+  <g id="demo-chart" data-pptx-replace-with="chart"
+     data-pptx-x="120" data-pptx-y="120"
+     data-pptx-width="640" data-pptx-height="360"
+     data-pptx-bounds="120 120 640 360"
+     data-pptx-fallback-sha256="f986b4d116e9e88e8a700acb1712b269c5434816ab003f178f9edecc24a1141b">
+    <metadata type="application/json"><![CDATA[
+{"x":120,"y":120,"width":640,"height":360,"name":"demo-chart","type":"column","title":"Revenue","categories":["Q1","Q2","Q3"],"series":[{"name":"Cloud","values":[12,15,19]}]}
+    ]]></metadata>
+    <rect x="120" y="120" width="640" height="360" fill="#FAFAFA" stroke="#1F4E79" stroke-width="2"/>
+    <rect x="200" y="300" width="60" height="120" fill="#1F4E79"/>
+    <rect x="320" y="270" width="60" height="150" fill="#1F4E79"/>
+    <rect x="440" y="230" width="60" height="190" fill="#1F4E79"/>
+    <text x="440" y="150" font-family="Microsoft YaHei" font-size="18" fill="#222222">Revenue</text>
+  </g>
+</svg>

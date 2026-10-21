@@ -2,35 +2,93 @@ package domi.argenticpptmaster.engine.file;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import domi.argenticpptmaster.engine.EngineResult;
 import domi.argenticpptmaster.engine.ooxml.PptxPackage;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.Comparator;
+import java.util.stream.Stream;
 import java.util.zip.ZipFile;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-class JavaTemplateFillEngineTests {
+public class JavaTemplateFillEngineTests {
+
+    private static final ObjectMapper MAPPER = new ObjectMapper();
 
     @TempDir
     Path tempDir;
 
     @Test
-    void applyNotesAndTextReplacement() throws Exception {
+    void analyzeWritesSlideLibrary() throws Exception {
         Path template = writeTemplate(tempDir.resolve("template.pptx"));
+        Path library = tempDir.resolve("lib.json");
+
+        EngineResult result = new JavaTemplateFillEngine().analyze(template, library, Duration.ofSeconds(30));
+
+        assertThat(result.successful()).isTrue();
+        JsonNode root = MAPPER.readTree(library.toFile());
+        assertThat(root.path("schema").asText()).isEqualTo("template_fill_pptx_library.v1");
+        assertThat(root.path("slide_count").asInt()).isEqualTo(1);
+        assertThat(root.path("slides").get(0).path("slots").get(0).path("slot_id").asText())
+                .isEqualTo("s01_sh1");
+    }
+
+    @Test
+    void checkPlanReportsOkForMatchingReplacement() throws Exception {
+        Path template = writeTemplate(tempDir.resolve("template.pptx"));
+        Path library = tempDir.resolve("lib.json");
+        new JavaTemplateFillEngine().analyze(template, library, Duration.ofSeconds(30));
         Path plan = tempDir.resolve("plan.json");
         Files.writeString(
                 plan,
                 """
                 {
+                  "status": "confirmed",
+                  "slides": [
+                    {
+                      "source_slide": 1,
+                      "replacements": [{"slot_id": "s01_sh1", "text": "Filled"}]
+                    }
+                  ]
+                }
+                """,
+                StandardCharsets.UTF_8);
+        Path report = tempDir.resolve("check.json");
+
+        EngineResult result =
+                new JavaTemplateFillEngine().checkPlan(library, plan, report, Duration.ofSeconds(30));
+
+        assertThat(result.successful()).isTrue();
+        assertThat(MAPPER.readTree(report.toFile()).path("summary").path("error").asInt()).isZero();
+    }
+
+    @Test
+    void applyNotesTextTableAndTransition() throws Exception {
+        Path template = writeTemplateWithTable(tempDir.resolve("template.pptx"));
+        Path plan = tempDir.resolve("plan.json");
+        Files.writeString(
+                plan,
+                """
+                {
+                  "status": "confirmed",
                   "slides": [
                     {
                       "source_slide": 1,
                       "notes": "Speaker **line**",
+                      "transition": "fade",
                       "replacements": [
                         {"shape_name": "Title", "text": "Filled"}
+                      ],
+                      "table_edits": [
+                        {
+                          "table_id": "s01_tbl3",
+                          "cells": [{"row": 0, "col": 0, "text": "CellA"}]
+                        }
                       ]
                     }
                   ]
@@ -42,37 +100,84 @@ class JavaTemplateFillEngineTests {
         EngineResult result = new JavaTemplateFillEngine().apply(template, plan, export, Duration.ofSeconds(30));
 
         assertThat(result.successful()).isTrue();
-        assertThat(JavaTemplateFillEngine.isSkip(result)).isFalse();
-        try (ZipFile zip = new ZipFile(export.toFile())) {
-            String slide = new String(
-                    zip.getInputStream(zip.getEntry("ppt/slides/slide2.xml")).readAllBytes(),
-                    StandardCharsets.UTF_8);
+        Path actual = findExport(export);
+        try (ZipFile zip = new ZipFile(actual.toFile())) {
+            String slideName = zip.stream()
+                    .map(e -> e.getName())
+                    .filter(name -> name.matches("ppt/slides/slide\\d+\\.xml"))
+                    .max(Comparator.comparingInt(name -> Integer.parseInt(name.replaceAll("\\D", ""))))
+                    .orElseThrow();
+            String slide = new String(zip.getInputStream(zip.getEntry(slideName)).readAllBytes(), StandardCharsets.UTF_8);
             assertThat(slide).contains("Filled");
-            assertThat(zip.getEntry("ppt/notesSlides/notesSlide2.xml")).isNotNull();
+            assertThat(slide).contains("CellA");
+            assertThat(slide).contains("<p:transition");
+            assertThat(slide).contains("<p:fade");
+            String notesName = "ppt/notesSlides/notesSlide"
+                    + slideName.replaceAll("\\D", "")
+                    + ".xml";
+            assertThat(zip.getEntry(notesName)).isNotNull();
             String notes = new String(
-                    zip.getInputStream(zip.getEntry("ppt/notesSlides/notesSlide2.xml")).readAllBytes(),
-                    StandardCharsets.UTF_8);
+                    zip.getInputStream(zip.getEntry(notesName)).readAllBytes(), StandardCharsets.UTF_8);
             assertThat(notes).contains("Speaker line");
         }
     }
 
     @Test
-    void skipsTableEdits() throws Exception {
-        Path plan = tempDir.resolve("plan.json");
+    void validatePassesForAppliedPlan() throws Exception {
+        Path template = writeTemplate(tempDir.resolve("template.pptx"));
+        Path project = tempDir.resolve("project");
+        Files.createDirectories(project.resolve("analysis"));
+        Files.createDirectories(project.resolve("exports"));
+        Files.createDirectories(project.resolve("validation"));
+        Path library = project.resolve("analysis/template.slide_library.json");
+        new JavaTemplateFillEngine().analyze(template, library, Duration.ofSeconds(30));
+        Path plan = project.resolve("analysis/fill_plan.json");
         Files.writeString(
                 plan,
                 """
-                {"slides":[{"source_slide":1,"table_edits":[{"table_id":"t1"}]}]}
+                {
+                  "status": "confirmed",
+                  "slides": [
+                    {
+                      "source_slide": 1,
+                      "replacements": [{"slot_id": "s01_sh1", "text": "Filled Title"}]
+                    }
+                  ]
+                }
                 """,
                 StandardCharsets.UTF_8);
-        EngineResult result = new JavaTemplateFillEngine()
-                .apply(tempDir.resolve("t.pptx"), plan, tempDir.resolve("o.pptx"), Duration.ZERO);
-        assertThat(JavaTemplateFillEngine.isSkip(result)).isTrue();
-        assertThat(result.output()).contains("table_edits");
+        Path export = project.resolve("exports/template-fill.pptx");
+        assertThat(new JavaTemplateFillEngine().apply(template, plan, export, Duration.ofSeconds(30)).successful())
+                .isTrue();
+
+        EngineResult result = new JavaTemplateFillEngine().validate(project, Duration.ofSeconds(30));
+
+        assertThat(result.successful()).isTrue();
+        assertThat(Files.isRegularFile(project.resolve("validation/validate_report.json"))).isTrue();
     }
 
-    private static Path writeTemplate(Path path) throws Exception {
-        Path extract = path.getParent().resolve("_tpl");
+    private static Path findExport(Path requested) throws Exception {
+        if (Files.isRegularFile(requested)) {
+            return requested;
+        }
+        try (Stream<Path> stream = Files.list(requested.getParent())) {
+            return stream
+                    .filter(path -> path.getFileName().toString().endsWith(".pptx"))
+                    .findFirst()
+                    .orElseThrow();
+        }
+    }
+
+    public static Path writeTemplate(Path path) throws Exception {
+        return writeTemplateInternal(path, false);
+    }
+
+    public static Path writeTemplateWithTable(Path path) throws Exception {
+        return writeTemplateInternal(path, true);
+    }
+
+    private static Path writeTemplateInternal(Path path, boolean withTable) throws Exception {
+        Path extract = path.getParent().resolve("_tpl_extract_" + path.getFileName().toString().replace('.', '_'));
         Files.createDirectories(extract.resolve("_rels"));
         Files.createDirectories(extract.resolve("ppt/slides/_rels"));
         Files.createDirectories(extract.resolve("ppt/_rels"));
@@ -107,6 +212,7 @@ class JavaTemplateFillEngineTests {
                                 xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
                   <p:sldMasterIdLst><p:sldMasterId id="2147483648" r:id="rId1"/></p:sldMasterIdLst>
                   <p:sldIdLst><p:sldId id="256" r:id="rId2"/></p:sldIdLst>
+                  <p:sldSz cx="12192000" cy="6858000"/>
                 </p:presentation>
                 """);
         Files.writeString(
@@ -119,6 +225,23 @@ class JavaTemplateFillEngineTests {
                   <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="theme/theme1.xml"/>
                 </Relationships>
                 """);
+        String tableXml = withTable
+                ? """
+                    <p:graphicFrame>
+                      <p:nvGraphicFramePr>
+                        <p:cNvPr id="3" name="Table 3"/>
+                        <p:cNvGraphicFramePr/><p:nvPr/>
+                      </p:nvGraphicFramePr>
+                      <p:xfrm><a:off x="0" y="0"/><a:ext cx="100" cy="100"/></p:xfrm>
+                      <a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/table">
+                        <a:tbl>
+                          <a:tr h="100"><a:tc><a:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>A</a:t></a:r></a:p></a:txBody></a:tc>
+                            <a:tc><a:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>B</a:t></a:r></a:p></a:txBody></a:tc></a:tr>
+                        </a:tbl>
+                      </a:graphicData></a:graphic>
+                    </p:graphicFrame>
+                    """
+                : "";
         Files.writeString(
                 extract.resolve("ppt/slides/slide1.xml"),
                 """
@@ -128,12 +251,14 @@ class JavaTemplateFillEngineTests {
                   <p:cSld><p:spTree>
                     <p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>
                     <p:grpSpPr/>
-                    <p:sp><p:nvSpPr><p:cNvPr id="2" name="Title"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr>
-                      <p:spPr/><p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>Hello</a:t></a:r></a:p></p:txBody>
+                    <p:sp><p:nvSpPr><p:cNvPr id="1" name="Title"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr>
+                      <p:spPr><a:xfrm><a:off x="914400" y="457200"/><a:ext cx="9144000" cy="914400"/></a:xfrm></p:spPr>
+                      <p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:rPr sz="3600"/><a:t>Hello</a:t></a:r></a:p></p:txBody>
                     </p:sp>
+                    %s
                   </p:spTree></p:cSld>
                 </p:sld>
-                """);
+                """.formatted(tableXml));
         Files.writeString(
                 extract.resolve("ppt/slides/_rels/slide1.xml.rels"),
                 """

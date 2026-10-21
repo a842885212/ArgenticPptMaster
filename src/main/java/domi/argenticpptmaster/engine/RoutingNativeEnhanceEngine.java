@@ -1,8 +1,11 @@
+// Copyright (c) 2025-2026 Hugo He
+// Ported from ppt-master (MIT) commit cc535363b8cf6e3abd0543d578d32b4f4cc3cf98.
+
 package domi.argenticpptmaster.engine;
 
+import domi.argenticpptmaster.config.PptEngineProperties;
 import domi.argenticpptmaster.engine.compare.PackageXmlComparator;
 import domi.argenticpptmaster.engine.compare.SlideXmlComparator;
-import domi.argenticpptmaster.engine.file.JavaNativeEnhanceEngine;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -13,12 +16,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Dual-runs the Java native-enhance notes subset beside Python, returning the Python
- * result as the production authority.
+ * Native-enhance routing with {@code JavaNativeEnhanceEngine} as the production authority.
  *
- * <p>Java must not alone gate apply/validate until notes (and later audio/timings/transitions)
- * produce slide/notes XML aligned with the pinned ppt-master converter. Until then Python
- * decides success; Java findings are logged for dual-run drift detection.</p>
+ * <p>When dual-run is enabled, Python runs as a secondary diagnostic only; mismatches are
+ * logged (or thrown when fail-on-mismatch is set) and never replace the Java result or
+ * artifact.</p>
  */
 public final class RoutingNativeEnhanceEngine implements NativeEnhanceEngine {
 
@@ -26,20 +28,28 @@ public final class RoutingNativeEnhanceEngine implements NativeEnhanceEngine {
 
     private final NativeEnhanceEngine javaEngine;
     private final NativeEnhanceEngine pythonEngine;
+    private final PptEngineProperties properties;
     private final PackageXmlComparator packageComparator;
     private final SlideXmlComparator slideComparator;
 
     public RoutingNativeEnhanceEngine(NativeEnhanceEngine javaEngine, NativeEnhanceEngine pythonEngine) {
-        this(javaEngine, pythonEngine, new PackageXmlComparator(), new SlideXmlComparator());
+        this(javaEngine, pythonEngine, PptEngineProperties.defaults());
+    }
+
+    public RoutingNativeEnhanceEngine(
+            NativeEnhanceEngine javaEngine, NativeEnhanceEngine pythonEngine, PptEngineProperties properties) {
+        this(javaEngine, pythonEngine, properties, new PackageXmlComparator(), new SlideXmlComparator());
     }
 
     public RoutingNativeEnhanceEngine(
             NativeEnhanceEngine javaEngine,
             NativeEnhanceEngine pythonEngine,
+            PptEngineProperties properties,
             PackageXmlComparator packageComparator,
             SlideXmlComparator slideComparator) {
         this.javaEngine = Objects.requireNonNull(javaEngine, "javaEngine");
         this.pythonEngine = Objects.requireNonNull(pythonEngine, "pythonEngine");
+        this.properties = Objects.requireNonNull(properties, "properties");
         this.packageComparator = Objects.requireNonNull(packageComparator, "packageComparator");
         this.slideComparator = Objects.requireNonNull(slideComparator, "slideComparator");
     }
@@ -47,80 +57,89 @@ public final class RoutingNativeEnhanceEngine implements NativeEnhanceEngine {
     @Override
     public EngineResult init(
             Path sourcePptx, String name, Path projectDir, Path projectsRoot, Duration timeout) {
-        // Java subset does not implement init — delegate straight to Python.
-        return pythonEngine.init(sourcePptx, name, projectDir, projectsRoot, timeout);
+        // Init is Java-only: dual-running Python would create a second project tree.
+        return javaEngine.init(sourcePptx, name, projectDir, projectsRoot, timeout);
     }
 
     @Override
     public EngineResult validate(Path project, Duration timeout) {
-        EngineResult pythonResult = pythonEngine.validate(project, timeout);
-        if (JavaNativeEnhanceEngine.isNotesOnlyEligible(project)) {
-            EngineResult javaResult = runSafely(() -> javaEngine.validate(project, timeout), "java-validate");
-            if (!JavaNativeEnhanceEngine.isSkip(javaResult)
-                    && javaResult.successful() != pythonResult.successful()) {
-                log.warn(
-                        "native-enhance dual-run validate exit mismatch for {}: java exit={} python exit={}",
-                        project,
+        EngineResult javaResult = javaEngine.validate(project, timeout);
+        if (properties.isDualRunEnabled()) {
+            dualRunDiagnose("validate", () -> {
+                EngineResult pythonResult = pythonEngine.validate(project, timeout);
+                log.info(
+                        "native-enhance dual-run validate javaExit={} pythonExit={}",
                         javaResult.exitCode(),
                         pythonResult.exitCode());
-            }
+            });
         }
-        return pythonResult;
+        return javaResult;
     }
 
     @Override
     public EngineResult apply(List<String> arguments, Duration timeout) {
-        EngineResult pythonResult = pythonEngine.apply(arguments, timeout);
+        EngineResult javaResult = javaEngine.apply(arguments, timeout);
+        if (!javaResult.successful() || !properties.isDualRunEnabled()) {
+            return javaResult;
+        }
         Path project = extractProject(arguments);
-        if (project == null || !JavaNativeEnhanceEngine.isNotesOnlyEligible(project)) {
-            return pythonResult;
+        if (project == null) {
+            return javaResult;
         }
-        if (!pythonResult.successful()) {
-            // Still attempt Java dual-run for diagnostics when Python fails, but never override.
-            runSafely(() -> javaEngine.apply(arguments, timeout), "java-apply");
-            return pythonResult;
+        Path javaOut = resolveDefaultOutput(project, arguments);
+        if (javaOut == null || !Files.isRegularFile(javaOut)) {
+            log.info("native-enhance dual-run skipped: java output not found for {}", project);
+            return javaResult;
         }
-
-        Path pythonOut = resolveDefaultOutput(project, arguments);
-        if (pythonOut == null || !Files.isRegularFile(pythonOut)) {
-            log.info("native-enhance dual-run skipped: python output not found for {}", project);
-            return pythonResult;
-        }
-
         try {
-            Path dualDir = Files.createTempDirectory(pythonOut.getParent(), "dual-run-java-native-");
-            Path javaOut = dualDir.resolve(pythonOut.getFileName().toString());
-            List<String> javaArgs = withOutput(arguments, javaOut);
-            EngineResult javaResult = runSafely(() -> javaEngine.apply(javaArgs, timeout), "java-apply");
-            if (JavaNativeEnhanceEngine.isSkip(javaResult) || !javaResult.successful()) {
+            Path dualDir = Files.createTempDirectory(javaOut.getParent(), "dual-run-python-native-");
+            Path pythonOut = dualDir.resolve(javaOut.getFileName().toString());
+            List<String> pythonArgs = withOutput(arguments, pythonOut);
+            EngineResult pythonResult = runSafely(() -> pythonEngine.apply(pythonArgs, timeout), "python-apply");
+            if (!pythonResult.successful()) {
                 log.warn(
-                        "native-enhance dual-run java apply skipped/failed for {}: {}",
+                        "native-enhance dual-run python apply failed for {}: {}",
                         project,
-                        javaResult.output());
-                return pythonResult;
+                        pythonResult.output());
+                return javaResult;
             }
-            PackageXmlComparator.Result packageResult = packageComparator.compare(pythonOut, javaOut);
-            SlideXmlComparator.Result slideResult = slideComparator.compare(pythonOut, javaOut);
+            PackageXmlComparator.Result packageResult = packageComparator.compare(javaOut, pythonOut);
+            SlideXmlComparator.Result slideResult = slideComparator.compare(javaOut, pythonOut);
             if (!packageResult.equal() || !slideResult.equal()) {
-                log.warn(
-                        "native-enhance dual-run XML mismatch for {}: packageDiffs={} slideDiffs={}",
-                        pythonOut.getFileName(),
-                        packageResult.diffs().size(),
-                        slideResult.diffs().size());
+                String summary = "native-enhance dual-run XML mismatch for "
+                        + javaOut.getFileName()
+                        + ": packageDiffs="
+                        + packageResult.diffs().size()
+                        + " slideDiffs="
+                        + slideResult.diffs().size();
+                if (properties.isDualRunFailOnMismatch()) {
+                    throw new IllegalStateException(summary);
+                }
+                log.warn(summary);
             } else {
-                log.info("native-enhance dual-run package/slide XML match for {}", pythonOut.getFileName());
+                log.info("native-enhance dual-run package/slide XML match for {}", javaOut.getFileName());
             }
+        } catch (IllegalStateException ex) {
+            throw ex;
         } catch (Exception ex) {
-            log.warn("native-enhance dual-run compare failed for {}; python remains authority", project, ex);
+            log.warn("native-enhance dual-run compare failed for {}; java remains authority", project, ex);
         }
-        return pythonResult;
+        return javaResult;
+    }
+
+    private void dualRunDiagnose(String stage, DualCall call) {
+        try {
+            call.run();
+        } catch (Exception ex) {
+            log.warn("native-enhance dual-run {} diagnostic failed; java remains authority", stage, ex);
+        }
     }
 
     private static EngineResult runSafely(EngineCall call, String label) {
         try {
             return call.run();
         } catch (RuntimeException ex) {
-            log.warn("native-enhance {} threw; continuing with python authority", label, ex);
+            log.warn("native-enhance {} threw; continuing with java authority", label, ex);
             return new EngineResult(1, "[" + label + "] failed: " + ex.getMessage(), false);
         }
     }
@@ -183,5 +202,10 @@ public final class RoutingNativeEnhanceEngine implements NativeEnhanceEngine {
     @FunctionalInterface
     private interface EngineCall {
         EngineResult run();
+    }
+
+    @FunctionalInterface
+    private interface DualCall {
+        void run() throws Exception;
     }
 }

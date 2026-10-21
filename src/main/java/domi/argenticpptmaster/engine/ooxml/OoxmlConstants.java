@@ -25,6 +25,10 @@ public final class OoxmlConstants {
             "http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesMaster";
     public static final String THEME_REL_TYPE =
             "http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme";
+    public static final String SLIDE_LAYOUT_REL_TYPE =
+            "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout";
+    public static final String SLIDE_MASTER_REL_TYPE =
+            "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster";
 
     public static final String CONTENT_TYPE_NOTES_SLIDE =
             "application/vnd.openxmlformats-officedocument.presentationml.notesSlide+xml";

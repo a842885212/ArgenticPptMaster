@@ -14,9 +14,8 @@ import domi.argenticpptmaster.domain.PptJobNode;
 import domi.argenticpptmaster.domain.PptJobStatus;
 import domi.argenticpptmaster.domain.TemplateFillPlanMetadata;
 import domi.argenticpptmaster.engine.python.PythonProjectWorkspace;
-import domi.argenticpptmaster.engine.RoutingTemplateFillEngine;
 import domi.argenticpptmaster.engine.file.JavaTemplateFillEngine;
-import domi.argenticpptmaster.engine.python.PythonTemplateFillEngine;
+import domi.argenticpptmaster.engine.file.JavaTemplateFillEngineTests;
 import domi.argenticpptmaster.infra.PptMasterCommandExecutor;
 import domi.argenticpptmaster.repository.InMemoryPptJobRepository;
 import domi.argenticpptmaster.security.FixedPptAccessContextResolver;
@@ -86,11 +85,31 @@ class TemplateFillProductionAcceptanceTests {
         assertThat(created.ownerSubjectId()).contains("user-1");
         assertThat(lifecycleStore.read(created)).isPresent();
 
+        Path realTemplate = created.template().orElseThrow().storedPath();
+        JavaTemplateFillEngineTests.writeTemplate(realTemplate);
+
         Path slideLibrary = created.workspacePath().resolve("analysis/template.slide_library.json");
         Files.createDirectories(slideLibrary.getParent());
         Files.copy(getClass().getResourceAsStream("/template-fill/template.slide_library.json"), slideLibrary);
-        String draft = Files.readString(Path.of(
-                getClass().getResource("/template-fill/fill-plan-draft.json").toURI()));
+        String draft = """
+                {
+                  "schema": "template_fill_pptx_plan.v1",
+                  "status": "draft",
+                  "accepted_warnings": [],
+                  "slides": [
+                    {
+                      "source_slide": 1,
+                      "purpose": "cover",
+                      "replacements": [
+                        {"slot_id": "s01_sh1", "text": "模板填充集成方案"}
+                      ],
+                      "table_edits": [],
+                      "chart_edits": [],
+                      "transition": "fade"
+                    }
+                  ]
+                }
+                """;
         created.completeNode(PptJobNode.PROJECT_READY, Map.of());
         created.completeNode(PptJobNode.TEMPLATE_ANALYZED, Map.of());
         created.completeNode(PptJobNode.FILL_PLAN_DRAFTED, Map.of());
@@ -114,20 +133,6 @@ class TemplateFillProductionAcceptanceTests {
                 return new PptMasterCommandExecutor.CommandResult(0,
                         "[OK] Project initialized: " + project, false);
             }
-            if (script.endsWith("template_fill_pptx.py") && args.get(0).equals("analyze")) {
-                Files.copy(getClass().getResourceAsStream("/template-fill/template.slide_library.json"),
-                        Path.of(args.get(args.indexOf("-o") + 1)),
-                        java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-            }
-            if (script.endsWith("template_fill_pptx.py") && args.get(0).equals("check-plan")) {
-                Files.copy(getClass().getResourceAsStream("/template-fill/check_report.json"),
-                        Path.of(args.get(args.indexOf("-o") + 1)));
-            }
-            if (script.endsWith("template_fill_pptx.py") && args.get(0).equals("apply")) {
-                Path requestedOutput = Path.of(args.get(args.indexOf("-o") + 1));
-                Files.copy(getClass().getResourceAsStream("/template-fill/minimal-valid-export.pptx"),
-                        requestedOutput.resolveSibling("template-fill_20260720_000000.pptx"));
-            }
             return new PptMasterCommandExecutor.CommandResult(0, "ok", false);
         });
 
@@ -136,7 +141,7 @@ class TemplateFillProductionAcceptanceTests {
                 repository,
                 events,
                 new PythonProjectWorkspace(commands),
-                new RoutingTemplateFillEngine(new JavaTemplateFillEngine(), new PythonTemplateFillEngine(commands)),
+                new JavaTemplateFillEngine(),
                 new PptTemplateFillAnalysisReader(),
                 new PptTemplateFillConcurrencyLimiter(properties),
                 new TemplateFillCapabilityIndexLoader(),

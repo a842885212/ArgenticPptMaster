@@ -6,7 +6,7 @@ import io.agentscope.core.model.GenerateOptions;
 import io.agentscope.core.model.Model;
 import io.agentscope.core.model.ModelException;
 import io.agentscope.core.model.ToolSchema;
-import io.agentscope.core.model.exception.OpenAIException;
+import io.agentscope.extensions.model.openai.exception.OpenAIException;
 import java.net.SocketException;
 import java.net.SocketTimeoutException;
 import java.util.ArrayList;

@@ -74,6 +74,8 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
 
     private static final Logger log = LoggerFactory.getLogger(AgentScopePptAgentRunner.class);
     private static final int MAX_AUTO_ACKNOWLEDGEMENT_ROUNDS = 3;
+    /** 唯一允许进入人工确认门禁的工具名（与 UserPlanApprovalTool 一致）。 */
+    private static final String PLAN_CONFIRMATION_TOOL = "request_plan_confirmation";
 
     private final PptMasterProperties properties;
     private final AgentScopeProperties agentScopeProperties;
@@ -453,18 +455,18 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
     }
 
     /**
-     * 从 AgentScope 持久化状态中提取仍处于 pending 的工具调用。
+     * 从 AgentScope 持久化状态中提取仍处于 pending 的确认工具调用。
      * <p>
      * AgentScope 对外部挂起工具的落盘形态有两种：
      * </p>
      * <ul>
      *   <li>只有 tool_use，尚无对应 tool_result</li>
-     *   <li>已有同 id 的 {@link ToolResultBlock}，但其 {@link ToolResultState} 为 RUNNING</li>
+     *   <li>已有同 id 的 {@link ToolResultBlock}，但其为 suspended，或 {@link ToolResultState} 为 RUNNING</li>
      * </ul>
      * <p>
-     * 同时，最后一条 assistant 消息未必仍然携带工具调用；Agent 可能继续输出一段
-     * 纯文本总结。因此恢复时需要从最近的 assistant 消息中反向查找“最后一个带
-     * tool_use 的 assistant 消息”，并把没有结果或结果仍为 RUNNING 的工具视为待确认。
+     * 最后一条带 tool_use 的 assistant 消息可能是挂起后续跑的非确认工具
+     * （例如 {@code inspect_checkpoint_status}），且成功结果也可能默认 state=RUNNING。
+     * 因此恢复时必须向前扫描，只认 {@link #PLAN_CONFIRMATION_TOOL}。
      * </p>
      *
      * @param job PPT 任务信息
@@ -483,24 +485,13 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
     }
 
     /**
-     * 按 AgentScope 的挂起规则，从持久化状态中提取待确认工具调用。
+     * 按 AgentScope 的挂起规则，从持久化状态中提取待确认的 {@code request_plan_confirmation} 调用。
      *
      * @param state AgentScope 持久化状态
-     * @return 待确认工具调用列表
+     * @return 待确认工具调用列表（最近一条含未完成确认工具的 assistant 消息上的确认调用）
      */
     private List<ToolUseBlock> extractPendingToolCallsFromState(AgentState state) {
         List<Msg> context = state.getContext();
-        Msg lastAssistantWithToolUse = null;
-        for (int i = context.size() - 1; i >= 0; i--) {
-            Msg message = context.get(i);
-            if (message.getRole() == MsgRole.ASSISTANT && message.hasContentBlocks(ToolUseBlock.class)) {
-                lastAssistantWithToolUse = message;
-                break;
-            }
-        }
-        if (lastAssistantWithToolUse == null) {
-            return List.of();
-        }
         java.util.Map<String, ToolResultBlock> latestToolResults = new java.util.LinkedHashMap<>();
         for (Msg message : context) {
             for (ToolResultBlock result : message.getContentBlocks(ToolResultBlock.class)) {
@@ -509,25 +500,46 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
                 }
             }
         }
-        return lastAssistantWithToolUse.getContentBlocks(ToolUseBlock.class).stream()
-                .filter(toolUse -> isPendingToolUse(toolUse, latestToolResults))
-                .toList();
+        for (int i = context.size() - 1; i >= 0; i--) {
+            Msg message = context.get(i);
+            if (message.getRole() != MsgRole.ASSISTANT || !message.hasContentBlocks(ToolUseBlock.class)) {
+                continue;
+            }
+            List<ToolUseBlock> pendingConfirmations = message.getContentBlocks(ToolUseBlock.class).stream()
+                    .filter(toolUse -> PLAN_CONFIRMATION_TOOL.equals(toolUse.getName()))
+                    .filter(toolUse -> isPendingConfirmationToolUse(toolUse, latestToolResults))
+                    .toList();
+            if (!pendingConfirmations.isEmpty()) {
+                return pendingConfirmations;
+            }
+        }
+        return List.of();
     }
 
     /**
-     * 判断工具调用是否仍处于待人工确认状态。
+     * 判断确认工具调用是否仍处于待人工确认状态。
      * <p>
-     * 若没有任何结果，或最近一次结果的状态仍为 {@link ToolResultState#RUNNING}，
-     * 说明 Agent 仍在等待外部回填结果。
+     * 非确认工具一律不算 pending。确认工具在无结果、{@code isSuspended()}、
+     * 或 state 为 null/RUNNING 时视为待确认。
      * </p>
      *
      * @param toolUse           工具调用
      * @param latestToolResults 当前上下文中每个工具调用最新的结果
-     * @return true 表示该工具仍待确认
+     * @return true 表示该确认工具仍待人工回填
      */
-    private boolean isPendingToolUse(ToolUseBlock toolUse, java.util.Map<String, ToolResultBlock> latestToolResults) {
+    private boolean isPendingConfirmationToolUse(
+            ToolUseBlock toolUse, java.util.Map<String, ToolResultBlock> latestToolResults) {
+        if (!PLAN_CONFIRMATION_TOOL.equals(toolUse.getName())) {
+            return false;
+        }
         ToolResultBlock result = latestToolResults.get(toolUse.getId());
-        return result == null || result.getState() == null || result.getState() == ToolResultState.RUNNING;
+        if (result == null) {
+            return true;
+        }
+        if (result.isSuspended()) {
+            return true;
+        }
+        return result.getState() == null || result.getState() == ToolResultState.RUNNING;
     }
 
     /**
@@ -582,6 +594,14 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
                 payload.put("choices", choices);
             }
             Object contextData = input.get("contextData");
+            if (!PLAN_CONFIRMATION_TOOL.equals(firstCall.getName())) {
+                throw new IllegalStateException(
+                        "confirmation gate received non-confirmation tool '"
+                                + firstCall.getName()
+                                + "'; only "
+                                + PLAN_CONFIRMATION_TOOL
+                                + " can request human confirmation");
+            }
             if (job.workflowMode() != PptWorkflowMode.TEMPLATE_FILL
                     && job.workflowMode() != PptWorkflowMode.BEAUTIFY_PPTX
                     && job.workflowMode() != PptWorkflowMode.NATIVE_ENHANCE_PPTX

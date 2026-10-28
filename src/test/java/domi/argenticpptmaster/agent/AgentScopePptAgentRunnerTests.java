@@ -305,6 +305,117 @@ class AgentScopePptAgentRunnerTests {
         assertThat(job.confirmationPayload()).containsEntry("replyId", job.id().toString());
     }
 
+    /**
+     * 验证挂起后续跑的非确认工具即使结果 state=RUNNING，恢复时仍能找回此前的
+     * {@code request_plan_confirmation}，而不会误把门禁套到 inspect 工具上。
+     */
+    @Test
+    void startRecoversConfirmationWhenLaterNonConfirmationToolStillRunning() throws Exception {
+        RecordingAgentFactory factory = new RecordingAgentFactory();
+        factory.enqueue((messages, runtimeContext) -> Flux.just(
+                new AgentStartEvent("reply-1", runtimeContext.getSessionId(), "test-agent"),
+                new AgentResultEvent(new AssistantMessage("误以为可以继续检查 checkpoint"))));
+
+        Path sessionStorePath = Files.createTempDirectory("agentscope-session-store");
+        AgentScopeProperties properties = new AgentScopeProperties(
+                "openai", "dummy-model", null, null, 8, sessionStorePath,
+                "ppt-master-service", null, null, null);
+        AgentScopePptAgentRunner runner = new AgentScopePptAgentRunner(
+                pptMasterProperties(), properties, factory,
+                new PptWorkflowEvents(new PptJobEventPublisher()));
+        PptJob job = sampleJob();
+
+        ToolUseBlock approvalToolCall = new ToolUseBlock(
+                "call-confirm",
+                "request_plan_confirmation",
+                outlineConfirmationInput("persisted outline", "confirm outline"));
+        ToolResultBlock confirmationRunning = ToolResultBlock.builder()
+                .id(approvalToolCall.getId())
+                .name(approvalToolCall.getName())
+                .output(List.of(TextBlock.builder()
+                        .text("Error: Tool execution failed: Tool execution suspended")
+                        .build()))
+                .state(io.agentscope.core.message.ToolResultState.RUNNING)
+                .build();
+        ToolUseBlock inspectCall = new ToolUseBlock("call-inspect", "inspect_checkpoint_status", Map.of());
+        ToolResultBlock inspectRunning = ToolResultBlock.builder()
+                .id(inspectCall.getId())
+                .name(inspectCall.getName())
+                .output(List.of(TextBlock.builder().text("{\"ok\":true}").build()))
+                .state(io.agentscope.core.message.ToolResultState.RUNNING)
+                .build();
+        AgentState persistedState = AgentState.builder()
+                .sessionId(job.id().toString())
+                .userId("ppt-master-service")
+                .context(List.of(
+                        AssistantMessage.builder()
+                                .name("test-agent")
+                                .content(List.of(approvalToolCall))
+                                .build(),
+                        new io.agentscope.core.message.ToolResultMessage(List.of(confirmationRunning)),
+                        AssistantMessage.builder()
+                                .name("test-agent")
+                                .content(List.of(inspectCall))
+                                .build(),
+                        new io.agentscope.core.message.ToolResultMessage(List.of(inspectRunning)),
+                        new AssistantMessage("已检查 checkpoint，等待确认。")))
+                .build();
+        new JsonFileAgentStateStore(sessionStorePath)
+                .save("ppt-master-service", job.id().toString(), "agent_state", persistedState);
+
+        runner.start(job);
+
+        assertThat(job.status()).isEqualTo(PptJobStatus.WAITING_CONFIRMATION);
+        assertThat(job.confirmationPayload()).containsEntry("toolName", "request_plan_confirmation");
+        assertThat(job.confirmationPayload()).containsEntry("stage", "outline_confirmation");
+    }
+
+    /**
+     * 验证仅有非确认工具处于 RUNNING 时，不得抛出「首次确认必须是 outline_confirmation」误导错误。
+     */
+    @Test
+    void startDoesNotMisclassifyRunningNonConfirmationToolAsOutlineGate() throws Exception {
+        RecordingAgentFactory factory = new RecordingAgentFactory();
+        factory.enqueue((messages, runtimeContext) -> Flux.just(
+                new AgentStartEvent("reply-1", runtimeContext.getSessionId(), "test-agent"),
+                new AgentResultEvent(new AssistantMessage("仅检查了 checkpoint"))));
+
+        Path sessionStorePath = Files.createTempDirectory("agentscope-session-store");
+        AgentScopeProperties properties = new AgentScopeProperties(
+                "openai", "dummy-model", null, null, 8, sessionStorePath,
+                "ppt-master-service", null, null, null);
+        AgentScopePptAgentRunner runner = new AgentScopePptAgentRunner(
+                pptMasterProperties(), properties, factory,
+                new PptWorkflowEvents(new PptJobEventPublisher()));
+        PptJob job = sampleJob();
+
+        ToolUseBlock inspectCall = new ToolUseBlock("call-inspect", "inspect_checkpoint_status", Map.of());
+        ToolResultBlock inspectRunning = ToolResultBlock.builder()
+                .id(inspectCall.getId())
+                .name(inspectCall.getName())
+                .output(List.of(TextBlock.builder().text("{\"ok\":true}").build()))
+                .state(io.agentscope.core.message.ToolResultState.RUNNING)
+                .build();
+        AgentState persistedState = AgentState.builder()
+                .sessionId(job.id().toString())
+                .userId("ppt-master-service")
+                .context(List.of(
+                        AssistantMessage.builder()
+                                .name("test-agent")
+                                .content(List.of(inspectCall))
+                                .build(),
+                        new io.agentscope.core.message.ToolResultMessage(List.of(inspectRunning))))
+                .build();
+        new JsonFileAgentStateStore(sessionStorePath)
+                .save("ppt-master-service", job.id().toString(), "agent_state", persistedState);
+
+        assertThatThrownBy(() -> runner.start(job))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("agent finished without export artifact")
+                .hasMessageNotContaining("outline_confirmation");
+        assertThat(job.status()).isNotEqualTo(PptJobStatus.WAITING_CONFIRMATION);
+    }
+
     @Test
     void autoAcknowledgesApprovedPersistedPendingToolCallAndContinues() throws Exception {
         RecordingAgentFactory factory = new RecordingAgentFactory();

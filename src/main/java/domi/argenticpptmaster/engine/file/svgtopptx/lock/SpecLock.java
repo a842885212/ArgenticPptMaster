@@ -17,7 +17,10 @@ import java.util.regex.Pattern;
  */
 public final class SpecLock {
 
-    private static final Pattern LOCK_ROW = Pattern.compile("^\\-\\s+([A-Za-z0-9_]+)\\s*:\\s*(.+?)\\s*$");
+    private static final Pattern LOCK_ROW =
+            Pattern.compile("^\\-\\s+([A-Za-z0-9_.-]+)\\s*:\\s*(.+?)\\s*$");
+    private static final Pattern HEX_TOKEN =
+            Pattern.compile("#(?:[0-9A-Fa-f]{3}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})\\b");
 
     public record ThemeColorSpec(Map<String, String> slots, Map<String, String> roles, Map<String, String> roleSlots) {
         public String schemeFor(String color, String usage) {
@@ -222,19 +225,51 @@ public final class SpecLock {
         for (String rawLine : text.split("\\R")) {
             String line = rawLine.strip();
             if (line.startsWith("## ")) {
-                current = line.substring(3).strip();
+                current = line.substring(3).strip().toLowerCase(Locale.ROOT);
                 sections.putIfAbsent(current, new LinkedHashMap<>());
                 continue;
             }
-            if (current == null) {
+            Matcher matcher = LOCK_ROW.matcher(line);
+            if (!matcher.matches()) {
                 continue;
             }
-            Matcher matcher = LOCK_ROW.matcher(line);
-            if (matcher.matches()) {
-                sections.get(current).put(matcher.group(1), matcher.group(2));
-            }
+            putLockRow(sections, current, matcher.group(1), matcher.group(2));
         }
         return sections;
+    }
+
+    private static void putLockRow(
+            Map<String, Map<String, String>> sections, String current, String rawKey, String rawValue) {
+        String key = rawKey.replace('-', '_');
+        String section;
+        String field;
+        int dot = key.indexOf('.');
+        if (dot > 0 && dot < key.length() - 1) {
+            section = key.substring(0, dot).toLowerCase(Locale.ROOT);
+            field = key.substring(dot + 1);
+        } else if (current != null) {
+            section = current;
+            field = key;
+        } else {
+            return;
+        }
+        String value = rawValue;
+        if ("colors".equals(section)) {
+            value = extractColorValue(rawValue);
+        }
+        sections.computeIfAbsent(section, ignored -> new LinkedHashMap<>()).put(field, value);
+    }
+
+    /** Prefer the first hex token in colors values; otherwise keep the raw string. */
+    private static String extractColorValue(String raw) {
+        if (raw == null) {
+            return null;
+        }
+        Matcher matcher = HEX_TOKEN.matcher(raw);
+        if (matcher.find()) {
+            return matcher.group();
+        }
+        return raw;
     }
 
     private static Integer parseIntOrNull(String raw) {

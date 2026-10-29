@@ -625,11 +625,12 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                 6. spec_lock.md 必须包含导出用的机器可读权威块（小写 ## 段名 + `- key: value` 行；key 仅字母数字下划线）：
                    - ## canvas：至少 `- viewBox: 0 0 1280 720`（或当前画布），建议含 `- format: ppt169`
                    - ## colors：SVG 实际使用的每个色值一行纯 `#RRGGBB`（可用 bg/primary/text 等角色名；禁止 ink-900 连字符 key，禁止把 YAML/表格/JSON 当权威源）
-                   - ## typography：至少 `- font_family:` / `- title_family:` / `- body_family:`（有等宽栈时加 `- code_family:`）；字号为无单位数字
+                   - ## typography：至少 `- font_family:` / `- title_family:` / `- body_family:`（有等宽栈时加 `- code_family:`）；字号为无单位数字；SVG 中出现超过两次的字号必须各自登记语义槽位（如 footer/tag/body/title/metric_*）
                    - ## pptx_structure：`- mode: flat`
                    中文说明可写在权威块之后；不得仅用 front matter、Markdown 表格或 fenced JSON 承载上述字段。
-                7. 所有图片最终必须落在 project/images/<filename>；image_prompts.json 是图片阶段的共享契约。
-                8. 如果缺少前置条件，清楚说明缺了什么，不要伪造“已完成”。
+                7. design_spec.md 必须包含字面标题 `## IX. Content Outline`，其下按 `#### Slide NN` 列出每页，且每页有 `- Audience move:`（before→after）；可与中文分节并存，不得省略该英文节。
+                8. 所有图片最终必须落在 project/images/<filename>；image_prompts.json 是图片阶段的共享契约。
+                9. 如果缺少前置条件，清楚说明缺了什么，不要伪造“已完成”。
                 """;
     }
 
@@ -652,8 +653,8 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                 4. 如果用户要求修改（REQUEST_REVISION），必须将整体意见和 slideEdits 逐项落实，重新生成完整逐页大纲并再次调用同一确认；锁定版本再次修改前必须先取得 revisionImpactToken；在 APPROVE 前不得写任何下游产物。
                 5. 在写 design_spec.md、spec_lock.md、notes/total.md、svg_output/*.svg 之前，必须完成上述大纲确认。
                 6. 用户确认后，产出：
-                   - design_spec.md
-                   - spec_lock.md（必须含小写权威块：## canvas / ## colors / ## typography / ## pptx_structure，见上游核心规则）
+                   - design_spec.md（须含字面 `## IX. Content Outline` + 每页 `#### Slide NN` 与 `- Audience move:`）
+                   - spec_lock.md（必须含小写权威块：## canvas / ## colors / ## typography / ## pptx_structure；typography 须登记所有 recurring 字号槽位，见上游核心规则）
                    - notes/total.md
                    - svg_output/*.svg
                 7. 生成 svg_output 后，调用 validate_svg_output，再调用 split_speaker_notes、finalize_project_svg，最后调用 export_project_pptx。
@@ -678,7 +679,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                 2. 导入完成后，调用 collect_source_markdown、inspect_project_info、list_project_files、read_project_text_file 了解 sources/ 与 analysis/ 的真实内容。
                 3. 完成资料分析后，先生成按 slideNo 升序排列的逐页大纲并写入 outline.json（version 从 1 开始、locked=false）；每页必须包含 slideNo、title、keyMessage、bullets、visualSuggestion 和可选 imageRequirement，并通过 request_plan_confirmation（stage="outline_confirmation"）在 contextData 中以 {type:"ppt_outline", version, parentVersion, diff, locked:false, slides:[...]} 返回；确认载荷中需说明将启用文生图。
                 4. 如果用户要求修改（REQUEST_REVISION），必须将整体意见和 slideEdits 逐项落实，重新生成完整逐页大纲并再次调用同一确认；锁定版本再次修改前必须先取得 revisionImpactToken；在 APPROVE 前不得写 design_spec.md、spec_lock.md 或任何图片/下游产物。
-                5. 用户批准逐页大纲后，先产出 design_spec.md 与 spec_lock.md（spec_lock 必须含小写权威块：## canvas / ## colors / ## typography / ## pptx_structure）。
+                5. 用户批准逐页大纲后，先产出 design_spec.md（须含字面 `## IX. Content Outline` + 每页 `#### Slide NN` 与 `- Audience move:`）与 spec_lock.md（必须含小写权威块：## canvas / ## colors / ## typography / ## pptx_structure；typography 须登记所有 recurring 字号槽位）。
                 6. 必须调用 derive_image_manifest_from_locked_outline 从已锁定 outline.json 中各页的 imageRequirement 派生 images/image_prompts.json；不得由 design_spec 新增或改变图片需求。每个 item 必须包含 outlineVersion、slideNo、purpose、filename、prompt、aspect_ratio、status（初始为 Pending）。
                    写入后必须调用 request_plan_confirmation，stage 固定为 "image_manifest_confirmation"，并在 contextData 中返回 {type:"ppt_image_manifest", outlineVersion, items}；不得在用户 APPROVE 前调用 generate_project_images。
                    - 没有 imageRequirement 时也必须提交空清单确认；确认后不得调用图片生成命令。

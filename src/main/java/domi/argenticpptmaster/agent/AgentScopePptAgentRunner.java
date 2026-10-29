@@ -1022,7 +1022,7 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
                 ? """
                 3. 完成资料分析后，先生成逐页大纲并写入 outline.json（version 从 1 开始、locked=false），通过 request_plan_confirmation（stage="outline_confirmation"）在 contextData 中返回 {type:"ppt_outline", version, locked:false, slides:[...]}。
                 4. 收到 REQUEST_REVISION 时，读取 Operator 的整体意见、outline_slide_edits 和 outline_edits，重生成完整的新版本大纲并再次请求 outline_confirmation；在 APPROVE 前不得写 design_spec.md、spec_lock.md、notes 或 svg。
-                5. 用户批准后，先产出 design_spec.md 与 spec_lock.md（spec_lock 须含小写权威块 ## canvas / ## colors / ## typography / ## pptx_structure，`- key: value`，纯 #RRGGBB，mode: flat；勿用 YAML/表格/JSON 当权威源）。
+                5. 用户批准后，先产出 design_spec.md（须含字面 `## IX. Content Outline` + 每页 `#### Slide NN` 与 `- Audience move:`）与 spec_lock.md（spec_lock 须含小写权威块 ## canvas / ## colors / ## typography / ## pptx_structure，`- key: value`，纯 #RRGGBB，mode: flat；typography 须登记 SVG 中 recurring 字号语义槽位；勿用 YAML/表格/JSON 当权威源）。
                 6. 调用 derive_image_manifest_from_locked_outline 从锁定大纲派生 images/image_prompts.json；调用 request_plan_confirmation（stage="image_manifest_confirmation"）展示清单。只有 APPROVE 后才调用 generate_project_images；收到 REQUEST_REVISION 时保留锁定大纲版本，重新派生未生成清单并再次请求确认。
                 7. 调用 inspect_image_manifest_status 检查图片状态：
                    - 若有 Failed：不要结束任务，不要输出总结；调用 request_plan_confirmation（stage="image_retry_decision"）询问用户是否重试失败图片，用户要求重试后再调用 generate_project_images，循环直到全部 Generated。
@@ -1033,7 +1033,7 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
                 : """
                 3. 完成资料分析后，先生成逐页大纲并写入 outline.json（version 从 1 开始、locked=false），通过 request_plan_confirmation（stage="outline_confirmation"）在 contextData 中返回 {type:"ppt_outline", version, locked:false, slides:[...]}。
                 4. 收到 REQUEST_REVISION 时，读取 Operator 的整体意见、outline_slide_edits 和 outline_edits，重生成完整的新版本大纲并再次请求 outline_confirmation；在 APPROVE 前不得写 design_spec.md、spec_lock.md、notes 或 svg。
-                5. 用户批准后，先产出 design_spec.md 与 spec_lock.md（spec_lock 须含小写权威块 ## canvas / ## colors / ## typography / ## pptx_structure，`- key: value`，纯 #RRGGBB，mode: flat；勿用 YAML/表格/JSON 当权威源），再写 notes/svg，然后 validate、finalize 和导出。
+                5. 用户批准后，先产出 design_spec.md（须含字面 `## IX. Content Outline` + 每页 `#### Slide NN` 与 `- Audience move:`）与 spec_lock.md（spec_lock 须含小写权威块 ## canvas / ## colors / ## typography / ## pptx_structure，`- key: value`，纯 #RRGGBB，mode: flat；typography 须登记 SVG 中 recurring 字号语义槽位；勿用 YAML/表格/JSON 当权威源），再写 notes/svg，然后 validate、finalize 和导出。
                 """;
         return """
                 请为当前 PPT 任务建立 ppt-master 工作区，并按 markdown 路线推进：

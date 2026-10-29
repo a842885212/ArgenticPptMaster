@@ -3,6 +3,8 @@
 
 package domi.argenticpptmaster.engine.file.svgquality;
 
+import domi.argenticpptmaster.engine.file.svgfinalize.GeometryMaterializer;
+import domi.argenticpptmaster.engine.file.svgfinalize.LocalUseExpander;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -16,10 +18,8 @@ import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
 
 /**
- * Self-contained forbidden-element blocklist from {@code svg_contracts.check_forbidden_elements}.
- *
- * <p>Omits checks that require {@code svg_to_pptx} (inline geometry materialization and local
- * {@code <use>} expansion).</p>
+ * Forbidden-element blocklist from {@code svg_contracts.check_forbidden_elements}, plus
+ * read-only inline geometry and local {@code <use>} validation (no on-disk SVG mutation).
  */
 final class ForbiddenElementsQualitySupport {
 
@@ -58,6 +58,27 @@ final class ForbiddenElementsQualitySupport {
         }
         if (AT_IMPORT.matcher(contentLower).find()) {
             errors.add("Detected forbidden @import (external CSS references forbidden)");
+        }
+        Element root = document.getDocumentElement();
+        if (root != null) {
+            for (String error : GeometryMaterializer.validateInlineGeometry(root)) {
+                errors.add("Invalid inline geometry property: " + error);
+            }
+        }
+        boolean hasGenericUse = false;
+        NodeList all = document.getElementsByTagName("*");
+        for (int i = 0; i < all.getLength(); i++) {
+            if (all.item(i) instanceof Element element
+                    && "use".equalsIgnoreCase(SvgQualityXml.localName(element))
+                    && !element.hasAttribute("data-icon")) {
+                hasGenericUse = true;
+                break;
+            }
+        }
+        if (hasGenericUse) {
+            for (String error : LocalUseExpander.validateLocalUseReferences(document)) {
+                errors.add("Invalid local <use> reference: " + error);
+            }
         }
         if (localNames.contains("foreignobject")) {
             errors.add("Detected forbidden <foreignObject> element (use <tspan> for manual line breaks)");

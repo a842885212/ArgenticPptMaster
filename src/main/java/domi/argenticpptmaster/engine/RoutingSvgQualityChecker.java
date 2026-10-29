@@ -1,5 +1,6 @@
 package domi.argenticpptmaster.engine;
 
+import domi.argenticpptmaster.config.PptEngineProperties;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Objects;
@@ -7,12 +8,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Dual-runs the Java SVG quality subset and the Python checker, returning the Python
- * result as the production authority.
+ * Production SVG quality checker: Java subset is the authority (including
+ * {@code validation/svg_quality_report.json}).
  *
- * <p>Java must not alone gate finalize/export until it covers every blocking rule the
- * service path exercises in ppt-master. Until then Python decides exit success; Java
- * findings are logged for dual-run drift detection.</p>
+ * <p>When {@code ppt-master.engine.dual-run-enabled=true}, Python runs as secondary diagnostics
+ * only; exit-code drift is logged and never replaces the Java result.</p>
  */
 public final class RoutingSvgQualityChecker implements SvgQualityChecker {
 
@@ -20,47 +20,55 @@ public final class RoutingSvgQualityChecker implements SvgQualityChecker {
 
     private final SvgQualityChecker javaChecker;
     private final SvgQualityChecker pythonChecker;
+    private final PptEngineProperties properties;
 
     public RoutingSvgQualityChecker(SvgQualityChecker javaChecker, SvgQualityChecker pythonChecker) {
+        this(javaChecker, pythonChecker, PptEngineProperties.defaults());
+    }
+
+    public RoutingSvgQualityChecker(
+            SvgQualityChecker javaChecker,
+            SvgQualityChecker pythonChecker,
+            PptEngineProperties properties) {
         this.javaChecker = Objects.requireNonNull(javaChecker, "javaChecker");
         this.pythonChecker = Objects.requireNonNull(pythonChecker, "pythonChecker");
+        this.properties = Objects.requireNonNull(properties, "properties");
     }
 
     @Override
     public EngineResult check(Path project, String format, Duration timeout) {
-        EngineResult javaResult = runSafely(javaChecker, project, format, timeout, "java");
-        EngineResult pythonResult = pythonChecker.check(project, format, timeout);
-
-        if (javaResult.successful() != pythonResult.successful()) {
-            log.warn(
-                    "svg quality dual-run exit mismatch for {} format={}: java exit={} timedOut={} python exit={} timedOut={}",
-                    project,
-                    format,
-                    javaResult.exitCode(),
-                    javaResult.timedOut(),
-                    pythonResult.exitCode(),
-                    pythonResult.timedOut());
-        } else if (!javaResult.successful()) {
-            log.info(
-                    "svg quality dual-run both failed for {} format={} (python is authority)",
-                    project,
-                    format);
+        EngineResult javaResult = javaChecker.check(project, format, timeout);
+        if (properties.isDualRunEnabled()) {
+            dualRunDiagnose(project, format, timeout, javaResult);
         }
-
-        return pythonResult;
+        return javaResult;
     }
 
-    private static EngineResult runSafely(
-            SvgQualityChecker checker,
-            Path project,
-            String format,
-            Duration timeout,
-            String label) {
+    private void dualRunDiagnose(Path project, String format, Duration timeout, EngineResult javaResult) {
         try {
-            return checker.check(project, format, timeout);
+            EngineResult pythonResult = pythonChecker.check(project, format, timeout);
+            if (javaResult.successful() != pythonResult.successful()) {
+                log.warn(
+                        "svg quality dual-run exit mismatch for {} format={}: java exit={} timedOut={} python exit={} timedOut={}",
+                        project,
+                        format,
+                        javaResult.exitCode(),
+                        javaResult.timedOut(),
+                        pythonResult.exitCode(),
+                        pythonResult.timedOut());
+            } else if (!javaResult.successful()) {
+                log.info(
+                        "svg quality dual-run both failed for {} format={} (java is authority)",
+                        project,
+                        format);
+            } else {
+                log.info(
+                        "svg quality dual-run both passed for {} format={} (java is authority)",
+                        project,
+                        format);
+            }
         } catch (RuntimeException ex) {
-            log.warn("svg quality {} checker threw; continuing with python authority", label, ex);
-            return new EngineResult(1, "[" + label + "] checker failed: " + ex.getMessage(), false);
+            log.warn("svg quality dual-run diagnostic failed; java remains authority", ex);
         }
     }
 }

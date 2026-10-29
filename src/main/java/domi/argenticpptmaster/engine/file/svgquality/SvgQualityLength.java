@@ -4,6 +4,7 @@
 package domi.argenticpptmaster.engine.file.svgquality;
 
 import java.util.Locale;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -17,7 +18,81 @@ final class SvgQualityLength {
     private static final Pattern LENGTH_RE = Pattern.compile(
             "^\\s*([-+]?(?:\\d*\\.\\d+|\\d+\\.?)(?:[eE][-+]?\\d+)?)\\s*([A-Za-z%]*)\\s*$");
 
+    /** Canonical project geometry numeric spelling (no leading +, exponent, or trailing '.'). */
+    private static final Pattern CANONICAL_PROJECT_GEOMETRY_LENGTH_RE =
+            Pattern.compile("^-?(?:\\d+(?:\\.\\d+)?|\\.\\d+)$");
+
+    private static final Set<String> NON_NEGATIVE_LENGTH_ATTRIBUTES =
+            Set.of("width", "height", "r", "rx", "ry", "stroke-width");
+
     private SvgQualityLength() {}
+
+    /** Parse one finite SVG length into its numeric part and lowercase unit. */
+    static LengthParts parseSvgLengthParts(String val) {
+        if (val == null) {
+            throw new IllegalArgumentException("SVG length must be one finite literal, got 'null'");
+        }
+        Matcher match = LENGTH_RE.matcher(val);
+        if (!match.matches()) {
+            throw new IllegalArgumentException("SVG length must be one finite literal, got '" + val + "'");
+        }
+        double number = Double.parseDouble(match.group(1));
+        if (!Double.isFinite(number)) {
+            throw new IllegalArgumentException("SVG length must be finite, got '" + val + "'");
+        }
+        return new LengthParts(number, match.group(2).toLowerCase(Locale.ROOT));
+    }
+
+    /**
+     * Parse one project geometry value (unitless or {@code px} only; canonical numeric spelling).
+     */
+    static double parseProjectGeometryLength(String raw, String attribute) {
+        LengthParts parts = parseSvgLengthParts(raw);
+        if (!parts.unit().isEmpty() && !"px".equals(parts.unit())) {
+            throw new IllegalArgumentException(
+                    "uses unsupported unit '" + parts.unit()
+                            + "'; project geometry accepts only unitless values or the compatible px suffix");
+        }
+        String numericLiteral = raw.strip();
+        if ("px".equals(parts.unit())) {
+            numericLiteral = numericLiteral.substring(0, numericLiteral.length() - 2).strip();
+        }
+        if (!CANONICAL_PROJECT_GEOMETRY_LENGTH_RE.matcher(numericLiteral).matches()) {
+            throw new IllegalArgumentException(
+                    "uses an unsupported numeric spelling; use an ordinary decimal "
+                            + "without a leading plus sign, exponent, or trailing decimal point");
+        }
+        if (NON_NEGATIVE_LENGTH_ATTRIBUTES.contains(attribute) && parts.number() < 0) {
+            throw new IllegalArgumentException("must be non-negative");
+        }
+        return parts.number();
+    }
+
+    /**
+     * Parse and clamp one opacity value from the closed project grammar.
+     *
+     * @param allowPercentage when true, {@code %} units are accepted (stop/flood opacity)
+     */
+    static double parseProjectOpacity(String raw, boolean allowPercentage) {
+        LengthParts parts;
+        try {
+            parts = parseSvgLengthParts(raw);
+        } catch (IllegalArgumentException ex) {
+            throw new IllegalArgumentException("must be one finite numeric opacity");
+        }
+        double number = parts.number();
+        if ("%".equals(parts.unit())) {
+            if (!allowPercentage) {
+                throw new IllegalArgumentException("must be unitless; percentages are not supported");
+            }
+            number /= 100.0;
+        } else if (!parts.unit().isEmpty()) {
+            throw new IllegalArgumentException("uses unsupported unit '" + parts.unit() + "'");
+        }
+        return Math.max(0.0, Math.min(1.0, number));
+    }
+
+    record LengthParts(double number, String unit) {}
 
     static double parseSvgLength(String val, double defaultValue, Double percentBase, double fontSize) {
         if (val == null) {

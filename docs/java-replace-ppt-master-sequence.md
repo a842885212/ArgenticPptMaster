@@ -42,11 +42,11 @@ Java 服务只编排任务。脚本通过 `PptMasterCommandExecutor.runPythonScr
 | --- | --- | --- |
 | `project_manager` init / import-sources（纯文件） | `RoutingProjectWorkspace` → `JavaProjectWorkspace`；Office/PDF/URL import 回落 Python | 已接线 |
 | `total_md_split` | `JavaSpeakerNotesSplitter` | 已接线 |
-| `svg_quality_checker` | `RoutingSvgQualityChecker`：`JavaSvgQualityChecker` 子集 dual-run + **`PythonSvgQualityChecker` 权威门禁** | 部分移植；**禁止**把 Java 子集单独当生产门禁 |
+| `svg_quality_checker` | `RoutingSvgQualityChecker` → **`JavaSvgQualityChecker` 权威**（写出 `validation/svg_quality_report.json`）；可选 dual-run 时 `PythonSvgQualityChecker` 仅诊断（默认关） | **已完成（Java 子集权威）** |
 
-`JavaSvgQualityChecker` 已覆盖服务路径上自包含的阻塞子集：viewBox、forbidden elements（不含依赖 `svg_to_pptx` 的 geometry/`<use>` 展开）、authoring-property contract、font-size 语法、外部图引用、icon placeholder。
+`JavaSvgQualityChecker` 已覆盖服务路径 **phase-1 + phase-2 + phase-3 blocking** 子集：viewBox、forbidden elements（含只读 geometry materialize + 非 `data-icon` local `<use>`）、authoring-property contract、font-size 语法、外部图引用、icon placeholder、legacy pptx 属性改名、unsupported visuals（白名单对齐 `SvgSlideConverter`）、opacity / geometry length / stroke **errors**、paint compatibility **errors**、clip/mask 与 definition / paint-reference / marker contracts、transform / freeform grammar / gradient·filter 子集 / image aspect-ratio·nested-crop / text-property **errors** / hyperlinks / pattern-fill presets / native replace·formula markers；以及 phase-3：仅当存在相关标记时的 preset geometry metadata/transform fail-closed、仅当存在 preserved 载荷时的 txBody 契约、module bounds **error** 路径、pin 对齐的 text bounds 溢出、`spec_lock` **字号 recurring-role（第 3 次）** blocking（颜色/字体漂移仍非门禁）。`check()` 通过/失败均落盘 gate 兼容的 `validation/svg_quality_report.json`（`schema` / `stage=final` / `categories.blocking` / `source_fingerprint`），供导出 `QualityReportGate` 使用。
 
-仍由 Python 权威门禁覆盖（Java 未移植或强依赖 DrawingML / native_objects / register_template / spec_lock / animations）：paint/opacity/transform/freeform/geometry length、unsupported visuals、preset geometry、native markers、pptx structure、spec_lock 对齐、illustration/animation/communication contracts、template-mode 等。完成定义：Java 与 pin 上 `project --format X` 的退出码与关键 ERROR 对齐后，才可把 Bean 切成纯 Java。
+产品取舍：导出门禁以 Java 已移植子集为准。**仍推迟（残差）**：完整 transform DML 语义 / thick-circle 边角、完整 freeform→DrawingML、完整 gradient geometry / imported-effect、authored-preset tree / preview-fingerprint 深比对、fragmented-tspan 与 missing-bounds 等 pin **warnings-only**、pptx structure、illustration/animation/communication contracts、template-mode，以及 paint/opacity/geometry/stroke/text 的 **canonical 拼写 warnings**。`spec_lock.md` 仍由导出器单独加载校验。`PythonSvgQualityChecker` 保留为 dual-run 诊断入口（Java 权威不变）。
 
 ### 3. 换 OOXML 改写
 
@@ -136,7 +136,7 @@ Java 服务只编排任务。脚本通过 `PptMasterCommandExecutor.runPythonScr
 - `pptx_structure` 的 `structured` / `preserve` / 模板镜像
 - `--native-charts-and-tables` 全量 native chart/table 样式与 workbook 对齐
 - 完整 formula AST / mhchem；完整 freeform path / shape-boolean；完整 object animation 注册表
-- 替换 `svg_quality_checker` Python 权威（仍属第 2 步部分移植）
+- （第 2 步）全量移植 Python 剩余 blocking 规则进 Java 子集（非当前 release 门禁阻断项）
 
 ### 7. 出图改 Java 直连（IMAGE_ENHANCED Path A）
 
@@ -155,7 +155,7 @@ Java 服务只编排任务。脚本通过 `PptMasterCommandExecutor.runPythonScr
 - 并发取 `ppt.image.concurrency`（默认 5），单条请求受 `ppt.image.item-timeout`（默认 180s）约束，整批仍受 `ppt-master.command-timeout` 兜底。
 - 清单回写用进程内互斥 + 临时文件 `ATOMIC_MOVE`，不提供跨进程锁。
 - `ppt.image.base-url` 必填，不复用对话侧 `agentscope.base-url`；`ppt.image.api-key` 缺省时回落对话密钥。
-- 未启用 Python fallback 时，启动前置不再要求仓库里存在 `image_gen.py`。
+- Markdown / 冷 SVG 编排启动前置不再要求 `project_manager.py`、`finalize_svg.py`、`total_md_split.py`、`svg_quality_checker.py` 落盘（这些能力已由 Java 生产权威承接；Python 实现与 dual-run 钩子仍保留）。未启用 Python fallback 时也不再要求 `image_gen.py`；仅 `ppt.image.python-fallback=true`（出图权威为 Python 适配器）时才校验该脚本存在。
 
 明确不做：多厂商 `IMAGE_BACKEND` 注册表、`--render-md` / `--summary` 视图、512px/2K/4K size preset、限流时的全局并发降级。
 

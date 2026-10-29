@@ -12,26 +12,35 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import org.w3c.dom.Document;
 
 /**
  * Java SVG quality subset for the service path ({@code project --format X}, stage final).
  *
- * <p>Covers self-contained blocking rules that do not require the DrawingML exporter:
- * viewBox, forbidden elements, authoring-property contract, font-size grammar, external
- * image references, and icon placeholders.</p>
+ * <p>Phase-1 + phase-2 + phase-3 blocking rules. Pin behavioral reference:
+ * {@code /tmp/ppt-master-cc535363} → {@code skills/ppt-master/scripts/svg_quality/checker.py}.
+ * Phase-3 boundaries: typography recurring-role only (color/font info); preset fail-closed when
+ * marked; preserved txBody only with payload; text/module bounds pin-aligned error paths.</p>
  *
- * <p>Not a full replacement for ppt-master {@code svg_quality_checker.py}. Production
- * wiring must keep Python as the authority gate via {@code RoutingSvgQualityChecker}
- * until geometry/paint/native-object/spec-lock/roster checks are ported.</p>
+ * <p>On every completed scan (pass or fail) writes gate-compatible
+ * {@code validation/svg_quality_report.json}. Production authority via
+ * {@code RoutingSvgQualityChecker}; Python remains dual-run diagnostics only.</p>
  */
 public final class JavaSvgQualityChecker implements SvgQualityChecker {
 
     static final String SUBSET_HEADER =
-            "[JAVA-SUBSET] viewBox, forbidden elements, authoring properties, "
-                    + "font-size, image references, icon placeholders";
+            "[JAVA-SUBSET] viewBox, forbidden elements (+geometry/<use>), authoring properties, "
+                    + "font-size, image references, icon placeholders, legacy pptx attrs, "
+                    + "unsupported visuals, opacity/geometry/stroke errors, paint errors, "
+                    + "clip/mask/defs/paint-ref/marker contracts, "
+                    + "transform/freeform/gradient-filter/image-contract/text-property/"
+                    + "hyperlink/pattern-fill/native-marker, "
+                    + "preset-geometry(marked)/preserved-txbody(payload)/module-bounds/"
+                    + "text-bounds/spec_lock-size-recurrence";
 
     @Override
     public EngineResult check(Path project, String format, Duration timeout) {
@@ -61,6 +70,7 @@ public final class JavaSvgQualityChecker implements SvgQualityChecker {
 
         String expectedCompressed = ViewBoxQualitySupport.compressViewBoxWhitespace(expectedViewBox);
         List<String> failures = new ArrayList<>();
+        Map<Path, Document> parsedDocuments = new LinkedHashMap<>();
 
         for (Path svgFile : svgFiles) {
             String fileLabel = svgFile.getFileName().toString();
@@ -95,6 +105,8 @@ public final class JavaSvgQualityChecker implements SvgQualityChecker {
             }
 
             Document doc = document.get();
+            parsedDocuments.put(svgFile, doc);
+            // Stable phase-1 order: existing subset first, then new blocking families.
             for (String error : ForbiddenElementsQualitySupport.checkForbiddenElements(content, doc)) {
                 failures.add(fileLabel + ": " + error);
             }
@@ -110,7 +122,81 @@ public final class JavaSvgQualityChecker implements SvgQualityChecker {
             for (String error : IconPlaceholderQualitySupport.checkIconPlaceholders(svgFile, doc)) {
                 failures.add(fileLabel + ": " + error);
             }
+            for (String error : LegacyPptxAttributeQualitySupport.checkLegacyPptxAttributes(doc)) {
+                failures.add(fileLabel + ": " + error);
+            }
+            for (String error : UnsupportedVisualsQualitySupport.checkUnsupportedVisualElements(doc)) {
+                failures.add(fileLabel + ": " + error);
+            }
+            for (String error : OpacityQualitySupport.checkOpacityValues(doc)) {
+                failures.add(fileLabel + ": " + error);
+            }
+            for (String error : GeometryLengthQualitySupport.checkGeometryLengthValues(doc)) {
+                failures.add(fileLabel + ": " + error);
+            }
+            for (String error : StrokeStyleQualitySupport.checkStrokeStyleValues(doc)) {
+                failures.add(fileLabel + ": " + error);
+            }
+            for (String error : PaintCompatibilityQualitySupport.checkPaintCompatibility(doc)) {
+                failures.add(fileLabel + ": " + error);
+            }
+            for (String error : ClipMaskContractQualitySupport.checkClipAndMaskContracts(doc)) {
+                failures.add(fileLabel + ": " + error);
+            }
+            for (String error :
+                    DefinitionPaintMarkerContractQualitySupport.checkDefinitionPaintMarkerContracts(doc)) {
+                failures.add(fileLabel + ": " + error);
+            }
+            // Phase-2 blocking families (stable order).
+            for (String error : TransformQualitySupport.checkTransformValues(doc)) {
+                failures.add(fileLabel + ": " + error);
+            }
+            for (String error : FreeformGeometryQualitySupport.checkFreeformGeometryValues(doc)) {
+                failures.add(fileLabel + ": " + error);
+            }
+            for (String error : GradientFilterQualitySupport.checkGradientAndFilterContracts(doc)) {
+                failures.add(fileLabel + ": " + error);
+            }
+            for (String error : ImageContractQualitySupport.checkImageContract(doc)) {
+                failures.add(fileLabel + ": " + error);
+            }
+            for (String error : TextPropertyQualitySupport.checkTextPropertyContract(doc)) {
+                failures.add(fileLabel + ": " + error);
+            }
+            for (String error : HyperlinkQualitySupport.checkHyperlinks(doc)) {
+                failures.add(fileLabel + ": " + error);
+            }
+            for (String error : PatternFillQualitySupport.checkPatternFills(doc)) {
+                failures.add(fileLabel + ": " + error);
+            }
+            for (String error : NativeObjectMarkerQualitySupport.checkNativeObjectMarkers(doc)) {
+                failures.add(fileLabel + ": " + error);
+            }
+            // Phase-3 blocking families (stable order; per-file).
+            for (String error : PresetGeometryQualitySupport.checkPresetGeometry(doc)) {
+                failures.add(fileLabel + ": " + error);
+            }
+            for (String error : PreservedTxBodyQualitySupport.checkPreservedTxBody(doc)) {
+                failures.add(fileLabel + ": " + error);
+            }
+            for (String error : ModuleBoundsQualitySupport.checkModuleBounds(doc)) {
+                failures.add(fileLabel + ": " + error);
+            }
+            for (String error : TextBoundsQualitySupport.checkTextBounds(doc)) {
+                failures.add(fileLabel + ": " + error);
+            }
         }
+
+        for (Map.Entry<Path, List<String>> entry :
+                SpecLockTypographyRecurrenceQualitySupport.checkProject(project, svgFiles, parsedDocuments)
+                        .entrySet()) {
+            String fileLabel = entry.getKey().getFileName().toString();
+            for (String error : entry.getValue()) {
+                failures.add(fileLabel + ": " + error);
+            }
+        }
+
+        String reportError = writeReport(project, svgFiles, failures);
 
         if (!failures.isEmpty()) {
             StringBuilder output = new StringBuilder();
@@ -119,7 +205,17 @@ public final class JavaSvgQualityChecker implements SvgQualityChecker {
             for (String line : failures) {
                 output.append("  - ").append(line).append('\n');
             }
+            if (reportError != null) {
+                output.append("[ERROR] failed to write svg_quality_report.json: ").append(reportError);
+            }
             return new EngineResult(1, output.toString().stripTrailing(), false);
+        }
+
+        if (reportError != null) {
+            return new EngineResult(
+                    1,
+                    SUBSET_HEADER + "\n[ERROR] failed to write svg_quality_report.json: " + reportError,
+                    false);
         }
 
         StringBuilder output = new StringBuilder();
@@ -130,5 +226,14 @@ public final class JavaSvgQualityChecker implements SvgQualityChecker {
             output.append("  - ").append(svgFile.getFileName()).append('\n');
         }
         return new EngineResult(0, output.toString().stripTrailing(), false);
+    }
+
+    private static String writeReport(Path project, List<Path> svgFiles, List<String> failures) {
+        try {
+            SvgQualityReportWriter.writeFinalReport(project, svgFiles, failures);
+            return null;
+        } catch (IOException ex) {
+            return ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
+        }
     }
 }

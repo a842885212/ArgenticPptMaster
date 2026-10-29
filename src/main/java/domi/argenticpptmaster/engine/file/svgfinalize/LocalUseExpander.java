@@ -73,6 +73,20 @@ public final class LocalUseExpander {
         return new Expander(document).expand();
     }
 
+    /**
+     * Validate local {@code <use>} references without mutating {@code document}.
+     *
+     * @return empty on success; a single error message on the first failure
+     */
+    public static List<String> validateLocalUseReferences(Document document) {
+        try {
+            expand((Document) document.cloneNode(true));
+            return List.of();
+        } catch (UseExpansionException ex) {
+            return List.of(ex.getMessage());
+        }
+    }
+
     private static final class Expander {
         private final Document document;
         private final Element root;

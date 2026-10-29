@@ -15,10 +15,6 @@ import domi.argenticpptmaster.engine.ImageGenerationGateway;
 import domi.argenticpptmaster.engine.PptEngineBundle;
 import domi.argenticpptmaster.engine.PptEngineTestSupport;
 import domi.argenticpptmaster.engine.python.PythonImageGenerationGateway;
-import domi.argenticpptmaster.engine.python.PythonProjectWorkspace;
-import domi.argenticpptmaster.engine.python.PythonSpeakerNotesSplitter;
-import domi.argenticpptmaster.engine.python.PythonSvgFinalizer;
-import domi.argenticpptmaster.engine.python.PythonSvgQualityChecker;
 import domi.argenticpptmaster.infra.PptMasterCommandExecutor;
 import domi.argenticpptmaster.service.PptJobEventPublisher;
 import domi.argenticpptmaster.service.PptOutlineStore;
@@ -238,12 +234,12 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
     }
 
     /**
-     * 验证 image_gen.py 只在出图权威为 Python 适配器时才是启动前置条件。
+     * 验证 Markdown 冷路径启动不再要求 project_manager / finalize_svg / total_md_split /
+     * svg_quality_checker 落盘；仅当出图权威为 Python 适配器时才把 image_gen.py 当作启动前置。
      */
     @Test
     void imageGenScriptIsPrerequisiteOnlyWhenPythonGatewayIsWired() throws IOException {
         TestContext base = createContext();
-        createMarkdownPrerequisiteScripts(base.properties.repoPath());
 
         DefaultAgentScopeWorkflowAgentFactory pythonAuthority = factoryWithImageGateway(
                 base, new PythonImageGenerationGateway(base.executor));
@@ -346,8 +342,8 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
     }
 
     /**
-     * 验证后处理工具：svg quality / notes split 仍走 Python；finalize_svg 已由 Java 权威处理，
-     * 不再调用 finalize_svg.py。
+     * 验证后处理工具：svg quality 走 Java 权威（写 validation/svg_quality_report.json）；
+     * notes split 仍走 Python；finalize_svg 已由 Java 权威处理，不再调用 finalize_svg.py。
      */
     @Test
     void postProcessingToolsDelegateToExpectedScripts() throws IOException {
@@ -363,13 +359,12 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
         context.tools.splitSpeakerNotes(context.runtime);
         context.tools.finalizeProjectSvg(context.runtime);
 
+        assertThat(Files.isRegularFile(context.projectPath.resolve("validation/svg_quality_report.json")))
+                .isTrue();
         assertThat(context.executor.calledScripts()).containsExactly(
-                "skills/ppt-master/scripts/svg_quality_checker.py",
                 "skills/ppt-master/scripts/total_md_split.py");
         assertThat(context.executor.calledScripts())
                 .doesNotContain("skills/ppt-master/scripts/finalize_svg.py");
-        assertThat(context.executor.argumentsFor("skills/ppt-master/scripts/svg_quality_checker.py"))
-                .containsExactly(context.projectPath.toString(), "--format", "ppt169");
         assertThat(Files.isRegularFile(context.projectPath.resolve("svg_final/01_cover.svg"))).isTrue();
     }
 
@@ -653,19 +648,6 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
     /** 构造一个只记录调用的出图网关，模拟 Java 权威且不发起任何网络请求。 */
     private ImageGenerationGateway recordingGateway() {
         return (manifest, outputDir, timeout) -> new EngineResult(0, "java gateway generated 1 image", false);
-    }
-
-    /** 落地 markdown 路径必需的 ppt-master 脚本，但故意缺少 image_gen.py。 */
-    private void createMarkdownPrerequisiteScripts(Path repoPath) throws IOException {
-        for (String script : List.of(
-                PythonProjectWorkspace.SCRIPT,
-                PythonSvgFinalizer.SCRIPT,
-                PythonSpeakerNotesSplitter.SCRIPT,
-                PythonSvgQualityChecker.SCRIPT)) {
-            Path target = repoPath.resolve(script);
-            Files.createDirectories(target.getParent());
-            Files.writeString(target, "#!/usr/bin/env python3\n");
-        }
     }
 
     /** 用指定出图网关重建工厂与引擎包，其余能力仍使用 Python 适配器。 */

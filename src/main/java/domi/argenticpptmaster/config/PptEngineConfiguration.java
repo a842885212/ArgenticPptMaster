@@ -74,10 +74,10 @@ public class PptEngineConfiguration {
     }
 
     @Bean
-    SvgQualityChecker svgQualityChecker(PptMasterCommandExecutor commands) {
-        // Java subset dual-runs; Python remains the production authority until parity.
+    SvgQualityChecker svgQualityChecker(PptMasterCommandExecutor commands, PptEngineProperties engineProperties) {
+        // Java is the production authority. Optional dual-run keeps Python as secondary diagnostics only.
         return new RoutingSvgQualityChecker(
-                new JavaSvgQualityChecker(), new PythonSvgQualityChecker(commands));
+                new JavaSvgQualityChecker(), new PythonSvgQualityChecker(commands), engineProperties);
     }
 
     @Bean

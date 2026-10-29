@@ -51,6 +51,20 @@ public final class GeometryMaterializer {
         return count;
     }
 
+    /**
+     * Validate inline geometry without mutating {@code root} (clone + materialize).
+     *
+     * @return empty on success; a single error message on the first failure
+     */
+    public static List<String> validateInlineGeometry(Element root) {
+        try {
+            materialize((Element) root.cloneNode(true));
+            return List.of();
+        } catch (GeometryStyleException ex) {
+            return List.of(ex.getMessage());
+        }
+    }
+
     public static int materialize(Element root) {
         int materialized = 0;
         List<Element> elements = new ArrayList<>();

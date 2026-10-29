@@ -17,9 +17,6 @@ import domi.argenticpptmaster.engine.PptEngineBundle;
 import domi.argenticpptmaster.engine.python.PythonBeautifyAnalysisEngine;
 import domi.argenticpptmaster.engine.python.PythonImageGenerationGateway;
 import domi.argenticpptmaster.engine.python.PythonProjectWorkspace;
-import domi.argenticpptmaster.engine.python.PythonSpeakerNotesSplitter;
-import domi.argenticpptmaster.engine.python.PythonSvgFinalizer;
-import domi.argenticpptmaster.engine.python.PythonSvgQualityChecker;
 import domi.argenticpptmaster.engine.python.PythonSvgToPptxExporter;
 import domi.argenticpptmaster.engine.python.PythonTemplateFillEngine;
 import domi.argenticpptmaster.service.PptWorkflowEvents;
@@ -91,9 +88,6 @@ import reactor.core.publisher.Flux;
 public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflowAgentFactory {
 
     private static final String PROJECT_MANAGER_SCRIPT = PythonProjectWorkspace.SCRIPT;
-    private static final String FINALIZE_SVG_SCRIPT = PythonSvgFinalizer.SCRIPT;
-    private static final String TOTAL_MD_SPLIT_SCRIPT = PythonSpeakerNotesSplitter.SCRIPT;
-    private static final String SVG_QUALITY_CHECKER_SCRIPT = PythonSvgQualityChecker.SCRIPT;
     private static final String EXPORT_SCRIPT = PythonSvgToPptxExporter.SCRIPT;
     private static final String IMAGE_GEN_SCRIPT = PythonImageGenerationGateway.SCRIPT;
     private static final String BEAUTIFY_IDENTITY_SCRIPT = PythonBeautifyAnalysisEngine.IDENTITY_SCRIPT;
@@ -251,25 +245,15 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
     }
 
     /**
-     * 确保代理运行的前置条件满足。
+     * 确保 Markdown / 冷 SVG 编排可启动。
      * <p>
-     * 检查所需的 ppt-master 脚本文件是否存在，以及主模型组是否已配置。
-     * 如果前置条件不满足，则抛出 {@link IllegalStateException}。
+     * 质量检查、finalize、notes split、project init 等已由 Java 生产权威承接，
+     * 启动时不再要求对应 ppt-master 脚本落盘。仅当出图权威显式为
+     * {@link PythonImageGenerationGateway}（python-fallback）时，才校验 {@code image_gen.py}；
+     * 另校验主模型组已配置。不满足时抛出 {@link IllegalStateException}。
      * </p>
      */
     private void ensureMarkdownAgentPrerequisites() {
-        if (!Files.exists(pptMasterProperties.repoPath().resolve(PROJECT_MANAGER_SCRIPT))) {
-            throw new IllegalStateException("ppt-master project manager not found under " + pptMasterProperties.repoPath());
-        }
-        if (!Files.exists(pptMasterProperties.repoPath().resolve(FINALIZE_SVG_SCRIPT))) {
-            throw new IllegalStateException("ppt-master finalize_svg not found under " + pptMasterProperties.repoPath());
-        }
-        if (!Files.exists(pptMasterProperties.repoPath().resolve(TOTAL_MD_SPLIT_SCRIPT))) {
-            throw new IllegalStateException("ppt-master total_md_split not found under " + pptMasterProperties.repoPath());
-        }
-        if (!Files.exists(pptMasterProperties.repoPath().resolve(SVG_QUALITY_CHECKER_SCRIPT))) {
-            throw new IllegalStateException("ppt-master svg_quality_checker not found under " + pptMasterProperties.repoPath());
-        }
         // 只有当出图权威是 Python 适配器时才需要 image_gen.py；默认 Java 网关不依赖 ppt-master 脚本。
         if (engines.imageGeneration() instanceof PythonImageGenerationGateway
                 && !Files.exists(pptMasterProperties.repoPath().resolve(IMAGE_GEN_SCRIPT))) {
@@ -1431,8 +1415,8 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
          * 验证 SVG 输出质量。
          * <p>
          * 通过 {@link domi.argenticpptmaster.engine.SvgQualityChecker}
-         * （Java 子集 dual-run + Python 权威门禁）对当前项目的 SVG 输出做质量检查，
-         * 确保符合规范后再 finalize/导出。
+         * （Java 子集权威，写出 {@code validation/svg_quality_report.json}；可选 dual-run 时 Python 仅诊断）
+         * 对当前项目的 SVG 输出做质量检查，确保符合规范后再 finalize/导出。
          * </p>
          *
          * @param runtime 工具运行时上下文
@@ -1440,7 +1424,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
          */
         @Tool(
                 name = "validate_svg_output",
-                description = "Validate SVG quality for the current project (Java subset dual-run; Python svg_quality_checker.py remains the authority gate) before finalize/export.",
+                description = "Validate SVG quality for the current project (Java subset is the authority; writes validation/svg_quality_report.json) before finalize/export.",
                 readOnly = true)
         public String validateSvgOutput(PptAgentToolRuntime runtime) {
             requireApprovedOutline(runtime, "validate SVG");

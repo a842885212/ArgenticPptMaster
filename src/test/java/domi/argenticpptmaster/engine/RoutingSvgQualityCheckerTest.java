@@ -2,6 +2,7 @@ package domi.argenticpptmaster.engine;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import domi.argenticpptmaster.config.PptEngineProperties;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -14,50 +15,69 @@ class RoutingSvgQualityCheckerTest {
     Path tempDir;
 
     @Test
-    void returnsPythonResultEvenWhenJavaFails() {
+    void usesJavaAuthorityByDefaultWithoutCallingPython() {
         AtomicInteger javaCalls = new AtomicInteger();
         AtomicInteger pythonCalls = new AtomicInteger();
         SvgQualityChecker java = (project, format, timeout) -> {
             javaCalls.incrementAndGet();
-            return new EngineResult(1, "[JAVA] fail", false);
+            return new EngineResult(0, "[JAVA] ok", false);
         };
         SvgQualityChecker python = (project, format, timeout) -> {
             pythonCalls.incrementAndGet();
-            return new EngineResult(0, "[PYTHON] ok", false);
+            return new EngineResult(1, "[PYTHON] fail", false);
         };
 
-        EngineResult result = new RoutingSvgQualityChecker(java, python)
+        EngineResult result = new RoutingSvgQualityChecker(java, python, PptEngineProperties.defaults())
                 .check(tempDir, "ppt169", Duration.ZERO);
 
         assertThat(result.successful()).isTrue();
-        assertThat(result.output()).isEqualTo("[PYTHON] ok");
+        assertThat(result.output()).isEqualTo("[JAVA] ok");
         assertThat(javaCalls.get()).isEqualTo(1);
+        assertThat(pythonCalls.get()).isZero();
+    }
+
+    @Test
+    void returnsJavaFailureEvenWhenPythonWouldPass() {
+        SvgQualityChecker java = (project, format, timeout) -> new EngineResult(1, "[JAVA] fail", false);
+        SvgQualityChecker python = (project, format, timeout) -> new EngineResult(0, "[PYTHON] ok", false);
+
+        EngineResult result = new RoutingSvgQualityChecker(java, python, PptEngineProperties.defaults())
+                .check(tempDir, "ppt169", Duration.ZERO);
+
+        assertThat(result.exitCode()).isEqualTo(1);
+        assertThat(result.output()).isEqualTo("[JAVA] fail");
+    }
+
+    @Test
+    void dualRunCallsPythonButKeepsJavaAuthority() {
+        AtomicInteger pythonCalls = new AtomicInteger();
+        SvgQualityChecker java = (project, format, timeout) -> new EngineResult(0, "[JAVA] authority", false);
+        SvgQualityChecker python = (project, format, timeout) -> {
+            pythonCalls.incrementAndGet();
+            return new EngineResult(1, "[PYTHON] fail", false);
+        };
+
+        EngineResult result =
+                new RoutingSvgQualityChecker(java, python, new PptEngineProperties(true, false))
+                        .check(tempDir, "ppt169", Duration.ZERO);
+
+        assertThat(result.output()).isEqualTo("[JAVA] authority");
+        assertThat(result.successful()).isTrue();
         assertThat(pythonCalls.get()).isEqualTo(1);
     }
 
     @Test
-    void returnsPythonFailureWhenPythonFailsAndJavaPasses() {
+    void dualRunPythonThrowDoesNotReplaceJavaResult() {
         SvgQualityChecker java = (project, format, timeout) -> new EngineResult(0, "[JAVA] ok", false);
-        SvgQualityChecker python = (project, format, timeout) -> new EngineResult(1, "[PYTHON] fail", false);
-
-        EngineResult result = new RoutingSvgQualityChecker(java, python)
-                .check(tempDir, "ppt169", Duration.ZERO);
-
-        assertThat(result.exitCode()).isEqualTo(1);
-        assertThat(result.output()).isEqualTo("[PYTHON] fail");
-    }
-
-    @Test
-    void continuesWithPythonWhenJavaThrows() {
-        SvgQualityChecker java = (project, format, timeout) -> {
+        SvgQualityChecker python = (project, format, timeout) -> {
             throw new IllegalStateException("boom");
         };
-        SvgQualityChecker python = (project, format, timeout) -> new EngineResult(0, "[PYTHON] ok", false);
 
-        EngineResult result = new RoutingSvgQualityChecker(java, python)
-                .check(tempDir, "ppt169", Duration.ZERO);
+        EngineResult result =
+                new RoutingSvgQualityChecker(java, python, new PptEngineProperties(true, false))
+                        .check(tempDir, "ppt169", Duration.ZERO);
 
         assertThat(result.successful()).isTrue();
-        assertThat(result.output()).isEqualTo("[PYTHON] ok");
+        assertThat(result.output()).isEqualTo("[JAVA] ok");
     }
 }

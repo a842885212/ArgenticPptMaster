@@ -60,9 +60,8 @@ public final class JavaSvgToPptxExporter implements SvgToPptxExporter {
                         "Error: default release export requires a passing final SVG quality "
                                 + "report for the current svg_output/; found "
                                 + gate.status()
-                                + ".\nRun: python3 skills/ppt-master/scripts/svg_quality_checker.py \""
-                                + project
-                                + "\" --stage final --json");
+                                + ".\nCall validate_svg_output on this project (writes "
+                                + "validation/svg_quality_report.json), then retry export.");
             }
 
             List<SvgSlideConverter.SlideConversion> slides = new ArrayList<>();

@@ -262,6 +262,76 @@ class PinnedPythonGoldenComparisonTests {
         assertThat(javaResult.output()).contains("viewBox mismatch");
     }
 
+    @Test
+    void svgQualityLegacyAttrExitMatchesPinnedPython(@TempDir Path tempDir) throws Exception {
+        Path project = tempDir.resolve("legacy-gate");
+        Path svgDir = project.resolve("svg_output");
+        Files.createDirectories(svgDir);
+        Files.writeString(
+                svgDir.resolve("slide_01.svg"),
+                "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1280 720\">"
+                        + "<rect data-pptx-module-bounds=\"0 0 10 10\" width=\"10\" height=\"10\"/>"
+                        + "</svg>",
+                StandardCharsets.UTF_8);
+
+        GoldenComparisonSupport.ProcessResult pythonRun = GoldenComparisonSupport.runPython(
+                python,
+                svgQualityCheckerScript,
+                List.of(project.toString(), "--format", "ppt169"));
+        EngineResult javaResult = new JavaSvgQualityChecker().check(project, "ppt169", Duration.ofSeconds(60));
+
+        assertThat(pythonRun.exitCode()).isEqualTo(1);
+        assertThat(javaResult.exitCode()).isEqualTo(1);
+        assertThat(pythonRun.output()).contains("legacy");
+        assertThat(javaResult.output()).contains("legacy data-pptx-module-bounds");
+    }
+
+    @Test
+    void svgQualityBadOpacityExitMatchesPinnedPython(@TempDir Path tempDir) throws Exception {
+        Path project = tempDir.resolve("opacity-gate");
+        Path svgDir = project.resolve("svg_output");
+        Files.createDirectories(svgDir);
+        Files.writeString(
+                svgDir.resolve("slide_01.svg"),
+                "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1280 720\">"
+                        + "<rect opacity=\"12px\" width=\"10\" height=\"10\"/>"
+                        + "</svg>",
+                StandardCharsets.UTF_8);
+
+        GoldenComparisonSupport.ProcessResult pythonRun = GoldenComparisonSupport.runPython(
+                python,
+                svgQualityCheckerScript,
+                List.of(project.toString(), "--format", "ppt169"));
+        EngineResult javaResult = new JavaSvgQualityChecker().check(project, "ppt169", Duration.ofSeconds(60));
+
+        assertThat(pythonRun.exitCode()).isEqualTo(1);
+        assertThat(javaResult.exitCode()).isEqualTo(1);
+        assertThat(javaResult.output()).contains("opacity=");
+    }
+
+    @Test
+    void svgQualityUnsupportedTagExitMatchesPinnedPython(@TempDir Path tempDir) throws Exception {
+        Path project = tempDir.resolve("mesh-gate");
+        Path svgDir = project.resolve("svg_output");
+        Files.createDirectories(svgDir);
+        Files.writeString(
+                svgDir.resolve("slide_01.svg"),
+                "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1280 720\">"
+                        + "<mesh id=\"bad\"/>"
+                        + "</svg>",
+                StandardCharsets.UTF_8);
+
+        GoldenComparisonSupport.ProcessResult pythonRun = GoldenComparisonSupport.runPython(
+                python,
+                svgQualityCheckerScript,
+                List.of(project.toString(), "--format", "ppt169"));
+        EngineResult javaResult = new JavaSvgQualityChecker().check(project, "ppt169", Duration.ofSeconds(60));
+
+        assertThat(pythonRun.exitCode()).isEqualTo(1);
+        assertThat(javaResult.exitCode()).isEqualTo(1);
+        assertThat(javaResult.output()).contains("Unsupported visual SVG element");
+    }
+
     private Path initPythonProject(Path projectsDir, String name) throws Exception {
         Files.createDirectories(projectsDir);
         GoldenComparisonSupport.ProcessResult init = GoldenComparisonSupport.runPython(

@@ -65,6 +65,8 @@ class JavaSvgToPptxExporterTests {
         var result = new JavaSvgToPptxExporter().export(project, Duration.ZERO);
         assertThat(result.successful()).isFalse();
         assertThat(result.output()).containsIgnoringCase("quality");
+        assertThat(result.output()).contains("validate_svg_output");
+        assertThat(result.output()).doesNotContain("svg_quality_checker.py");
     }
 
     @Test

@@ -15,8 +15,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Per-source project import routing: Java handles file + Office MD converters; Python retains
- * URL, PDF, and pandoc-long-tail document conversion.
+ * Per-source project import routing: Java handles file + Office/PDF MD converters; Python retains
+ * URL and pandoc-long-tail document conversion.
  */
 public final class RoutingProjectWorkspace implements ProjectWorkspace {
 
@@ -24,7 +24,6 @@ public final class RoutingProjectWorkspace implements ProjectWorkspace {
 
     /** Formats that still require Python converters (not covered by Java import authority). */
     private static final Set<String> PYTHON_IMPORT_SUFFIXES = Set.of(
-            ".pdf",
             ".doc",
             ".odt",
             ".rtf",

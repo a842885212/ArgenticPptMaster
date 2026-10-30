@@ -12,6 +12,8 @@ public final class ImportSourceFormats {
 
     public static final Set<String> DOCX_HTML = Set.of(".docx", ".html", ".htm");
 
+    public static final Set<String> PDF = Set.of(".pdf");
+
     public static final String LEGACY_PPT = ".ppt";
 
     private ImportSourceFormats() {}

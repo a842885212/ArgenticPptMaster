@@ -16,6 +16,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
+import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.pdmodel.PDPage;
+import org.apache.pdfbox.pdmodel.PDPageContentStream;
+import org.apache.pdfbox.pdmodel.common.PDRectangle;
+import org.apache.pdfbox.pdmodel.font.PDType1Font;
+import org.apache.pdfbox.pdmodel.font.Standard14Fonts;
 import org.apache.poi.ss.usermodel.Row;
 import org.apache.poi.ss.usermodel.Sheet;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
@@ -269,6 +275,49 @@ class JavaProjectWorkspaceTests {
                 .contains("Hello from html");
     }
 
+    @Test
+    void importSourcesConvertsPdfToMarkdown() throws Exception {
+        Path project = initProject("pdfproj", "ppt169");
+        Path pdf = tempDir.resolve("briefing.pdf");
+        writeSimpleTextPdf(pdf, "Enough extractable text for the PDF import conversion path.");
+
+        EngineResult result = workspace.importSources(project, List.of(pdf), true, Duration.ofSeconds(30));
+
+        assertThat(result.successful()).isTrue();
+        Path md = project.resolve("sources/briefing.md");
+        assertThat(md).isRegularFile();
+        assertThat(Files.readString(md, StandardCharsets.UTF_8))
+                .contains("Enough extractable text for the PDF import conversion path.");
+    }
+
+    @Test
+    void importSourcesFailsClosedOnNearEmptyPdf() throws Exception {
+        Path project = initProject("pdfempty", "ppt169");
+        Path pdf = tempDir.resolve("empty.pdf");
+        writeSimpleTextPdf(pdf, "x");
+
+        EngineResult result = workspace.importSources(project, List.of(pdf), true, Duration.ofSeconds(20));
+
+        assertThat(result.exitCode()).isEqualTo(1);
+        assertThat(result.output()).startsWith("[ERROR]").contains("PDF conversion failed");
+    }
+
+    @Test
+    void importSourcesSkipsPdfWhenSameStemMarkdownProvided() throws Exception {
+        Path project = initProject("pdfskip", "ppt169");
+        Path pdf = tempDir.resolve("report.pdf");
+        Path md = tempDir.resolve("report.md");
+        writeSimpleTextPdf(pdf, "This PDF text should not overwrite the provided markdown source file content.");
+        Files.writeString(md, "# Provided\n\nKeep me.\n", StandardCharsets.UTF_8);
+
+        EngineResult result = workspace.importSources(project, List.of(pdf, md), true, Duration.ofSeconds(30));
+
+        assertThat(result.successful()).isTrue();
+        assertThat(Files.readString(project.resolve("sources/report.md"), StandardCharsets.UTF_8))
+                .contains("Keep me.");
+        assertThat(result.output()).contains("skipped PDF auto-conversion");
+    }
+
     private Path initProject(String name, String format) {
         Path projectsDir = tempDir.resolve("projects-" + name);
         EngineResult init = workspace.init(name, format, projectsDir, Duration.ofSeconds(30));
@@ -404,6 +453,21 @@ class JavaProjectWorkspaceTests {
                 zip.write(entry.getValue().getBytes(StandardCharsets.UTF_8));
                 zip.closeEntry();
             }
+        }
+    }
+
+    private static void writeSimpleTextPdf(Path pdf, String text) throws Exception {
+        try (PDDocument doc = new PDDocument()) {
+            PDPage page = new PDPage(PDRectangle.LETTER);
+            doc.addPage(page);
+            try (PDPageContentStream cs = new PDPageContentStream(doc, page)) {
+                cs.beginText();
+                cs.setFont(new PDType1Font(Standard14Fonts.FontName.HELVETICA), 12);
+                cs.newLineAtOffset(72, 720);
+                cs.showText(text);
+                cs.endText();
+            }
+            doc.save(pdf.toFile());
         }
     }
 }

@@ -40,7 +40,7 @@ Java 服务只编排任务。脚本通过 `PptMasterCommandExecutor.runPythonScr
 
 | 能力 | 生产 Bean | 状态 |
 | --- | --- | --- |
-| `project_manager` init / import-sources | `RoutingProjectWorkspace` → **`JavaProjectWorkspace` 权威**（纯文件 + PPTX intake + PPTX/Excel/docx/html→MD；按源分流）；URL / PDF / pandoc 长尾仍 Python；`.ppt` Java 只归档；可选 `ppt-master.engine.import-python-dual-run` 诊断（默认关） | **已完成（Java 子集权威）** |
+| `project_manager` init / import-sources | `RoutingProjectWorkspace` → **`JavaProjectWorkspace` 权威**（纯文件 + PPTX intake + PPTX/Excel/docx/html/PDF→MD；按源分流）；URL / pandoc 长尾仍 Python；`.ppt` Java 只归档；可选 `ppt-master.engine.import-python-dual-run` 诊断（默认关）。PDF 用 PDFBox（合同级对齐 `pdf_to_md` 导入路径；复杂表 / 矢量图栅格化为残差；近空与加密 PDF 硬失败） | **已完成（Java 子集权威）** |
 | `total_md_split` | `JavaSpeakerNotesSplitter` | 已接线 |
 | `svg_quality_checker` | `RoutingSvgQualityChecker` → **`JavaSvgQualityChecker` 权威**（写出 `validation/svg_quality_report.json`）；可选 dual-run 时 `PythonSvgQualityChecker` 仅诊断（默认关） | **已完成（Java 子集权威）** |
 

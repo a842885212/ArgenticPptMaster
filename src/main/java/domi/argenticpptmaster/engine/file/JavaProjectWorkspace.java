@@ -10,6 +10,8 @@ import domi.argenticpptmaster.engine.file.importconvert.ExcelToMarkdownConverter
 import domi.argenticpptmaster.engine.file.importconvert.HtmlToMarkdownConverter;
 import domi.argenticpptmaster.engine.file.importconvert.ImportConversionException;
 import domi.argenticpptmaster.engine.file.importconvert.ImportSourceFormats;
+import domi.argenticpptmaster.engine.file.importconvert.PdfManifestPropagator;
+import domi.argenticpptmaster.engine.file.importconvert.PdfToMarkdownConverter;
 import domi.argenticpptmaster.engine.file.importconvert.PptxToMarkdownConverter;
 import domi.argenticpptmaster.engine.ooxml.beautify.BeautifyIntakeOps;
 import java.io.IOException;
@@ -37,7 +39,7 @@ import java.util.stream.Stream;
 
 /**
  * File-system project init/import with Java-authoritative converters for PPTX intake,
- * PPTX/Excel/docx/html → Markdown.
+ * PPTX/Excel/docx/html/PDF → Markdown.
  */
 public final class JavaProjectWorkspace implements ProjectWorkspace {
 
@@ -48,7 +50,6 @@ public final class JavaProjectWorkspace implements ProjectWorkspace {
             ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".tif");
     private static final Set<String> IMAGE_ASSET_SUFFIXES = union(
             BITMAP_IMAGE_SUFFIXES, Set.of(".emf", ".wmf", ".svg"));
-    private static final Set<String> PDF_SUFFIXES = Set.of(".pdf");
     private static final Set<String> LEGACY_EXCEL_SUFFIXES = Set.of(".xls");
     private static final Set<String> PYTHON_LONG_TAIL_DOCS = Set.of(
             ".doc", ".odt", ".rtf", ".epub", ".tex", ".latex", ".rst", ".org", ".ipynb", ".typ");
@@ -256,7 +257,9 @@ public final class JavaProjectWorkspace implements ProjectWorkspace {
                     convertExcel(item, archivedPath, projectDir, sourcesDir, explicitMarkdownStems, summary);
                 } else if (ImportSourceFormats.DOCX_HTML.contains(suffix)) {
                     convertDocOrHtml(item, archivedPath, projectDir, sourcesDir, explicitMarkdownStems, summary);
-                } else if (PDF_SUFFIXES.contains(suffix) || PYTHON_LONG_TAIL_DOCS.contains(suffix)) {
+                } else if (ImportSourceFormats.PDF.contains(suffix)) {
+                    convertPdf(item, archivedPath, projectDir, sourcesDir, explicitMarkdownStems, summary);
+                } else if (PYTHON_LONG_TAIL_DOCS.contains(suffix)) {
                     summary.notes.add(item + ": " + JAVA_NO_CONVERSION_NOTE);
                 } else if (LEGACY_EXCEL_SUFFIXES.contains(suffix)) {
                     summary.notes.add(
@@ -399,6 +402,52 @@ public final class JavaProjectWorkspace implements ProjectWorkspace {
         } catch (Exception ex) {
             throw new ImportConversionException(
                     item + ": document conversion failed (" + ex.getMessage() + ")", ex);
+        }
+    }
+
+    private static void convertPdf(
+            String item,
+            Path archivedPath,
+            Path projectDir,
+            Path sourcesDir,
+            Set<String> explicitMarkdownStems,
+            ImportSummary summary)
+            throws Exception {
+        Path canonicalMarkdown = sourcesDir.resolve(stem(archivedPath) + ".md");
+        if (explicitMarkdownStems.contains(stem(archivedPath))) {
+            summary.notes.add(
+                    item + ": skipped PDF auto-conversion because a same-stem Markdown source was provided");
+            return;
+        }
+        if (Files.exists(canonicalMarkdown)) {
+            summary.markdown.add(canonicalMarkdown.toString());
+            Path assetDir = canonicalMarkdown.resolveSibling(stem(canonicalMarkdown) + "_files");
+            if (Files.isDirectory(assetDir)) {
+                summary.assets.add(assetDir.toString());
+                PdfManifestPropagator.propagate(assetDir, projectDir);
+            }
+            summary.notes.add(
+                    item + ": skipped PDF auto-conversion because " + canonicalMarkdown.getFileName()
+                            + " already exists");
+            return;
+        }
+        try {
+            PdfToMarkdownConverter.convert(archivedPath, canonicalMarkdown);
+            summary.markdown.add(canonicalMarkdown.toString());
+            Path assetDir = canonicalMarkdown.resolveSibling(stem(canonicalMarkdown) + "_files");
+            if (Files.isDirectory(assetDir)) {
+                summary.assets.add(assetDir.toString());
+                int copied = PdfManifestPropagator.propagate(assetDir, projectDir);
+                if (copied > 0) {
+                    summary.images.add(projectDir.resolve("images").toString());
+                }
+            }
+        } catch (ImportConversionException ex) {
+            throw new ImportConversionException(
+                    item + ": PDF conversion failed (" + ex.getMessage() + ")", ex);
+        } catch (Exception ex) {
+            throw new ImportConversionException(
+                    item + ": PDF conversion failed (" + ex.getMessage() + ")", ex);
         }
     }
 

@@ -66,7 +66,7 @@ class RoutingSvgFinalizerTest {
             }
         };
 
-        PptEngineProperties props = new PptEngineProperties(true, true);
+        PptEngineProperties props = new PptEngineProperties(true, true, false);
         assertThatThrownBy(() -> new RoutingSvgFinalizer(java, python, props).finalizeSvg(project, Duration.ZERO))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("finalize-svg dual-run");
@@ -102,7 +102,7 @@ class RoutingSvgFinalizerTest {
         };
 
         EngineResult result =
-                new RoutingSvgFinalizer(java, python, new PptEngineProperties(true, false))
+                new RoutingSvgFinalizer(java, python, new PptEngineProperties(true, false, false))
                         .finalizeSvg(project, Duration.ZERO);
         assertThat(result.output()).isEqualTo("java-authority");
         assertThat(Files.readString(project.resolve("svg_final/a.svg"))).contains("id=\"java\"");

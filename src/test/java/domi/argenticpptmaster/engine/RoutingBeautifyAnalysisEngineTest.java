@@ -45,7 +45,7 @@ class RoutingBeautifyAnalysisEngineTest {
                 counting(new AtomicInteger(), new EngineResult(0, "{\"slide_count\":1,\"source\":\"/a\"}", false));
         BeautifyAnalysisEngine python =
                 counting(new AtomicInteger(), new EngineResult(0, "{\"slide_count\":2,\"source\":\"/b\"}", false));
-        PptEngineProperties props = new PptEngineProperties(true, true);
+        PptEngineProperties props = new PptEngineProperties(true, true, false);
 
         assertThatThrownBy(() -> new RoutingBeautifyAnalysisEngine(java, python, props)
                         .identify(pptx, Duration.ZERO))

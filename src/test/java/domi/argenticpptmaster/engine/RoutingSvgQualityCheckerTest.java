@@ -58,7 +58,7 @@ class RoutingSvgQualityCheckerTest {
         };
 
         EngineResult result =
-                new RoutingSvgQualityChecker(java, python, new PptEngineProperties(true, false))
+                new RoutingSvgQualityChecker(java, python, new PptEngineProperties(true, false, false))
                         .check(tempDir, "ppt169", Duration.ZERO);
 
         assertThat(result.output()).isEqualTo("[JAVA] authority");
@@ -74,7 +74,7 @@ class RoutingSvgQualityCheckerTest {
         };
 
         EngineResult result =
-                new RoutingSvgQualityChecker(java, python, new PptEngineProperties(true, false))
+                new RoutingSvgQualityChecker(java, python, new PptEngineProperties(true, false, false))
                         .check(tempDir, "ppt169", Duration.ZERO);
 
         assertThat(result.successful()).isTrue();

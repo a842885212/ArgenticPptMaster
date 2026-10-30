@@ -1,34 +1,56 @@
 package domi.argenticpptmaster.engine;
 
+import domi.argenticpptmaster.config.PptEngineProperties;
 import java.io.IOException;
 import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.stream.Stream;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
- * Sends file-only project commands to the Java workspace and leaves Office, PDF, and URL
- * conversion on the Python workspace.
+ * Per-source project import routing: Java handles file + Office MD converters; Python retains
+ * URL, PDF, and pandoc-long-tail document conversion.
  */
 public final class RoutingProjectWorkspace implements ProjectWorkspace {
 
+    private static final Logger log = LoggerFactory.getLogger(RoutingProjectWorkspace.class);
+
+    /** Formats that still require Python converters (not covered by Java import authority). */
     private static final Set<String> PYTHON_IMPORT_SUFFIXES = Set.of(
             ".pdf",
-            ".pptx", ".pptm", ".ppsx", ".ppsm", ".potx", ".potm", ".ppt",
-            ".xlsx", ".xlsm",
-            ".docx", ".doc", ".odt", ".rtf", ".epub", ".html", ".htm",
-            ".tex", ".latex", ".rst", ".org", ".ipynb", ".typ");
+            ".doc",
+            ".odt",
+            ".rtf",
+            ".epub",
+            ".ipynb",
+            ".tex",
+            ".latex",
+            ".rst",
+            ".org",
+            ".typ");
 
     private final ProjectWorkspace fileWorkspace;
     private final ProjectWorkspace pythonWorkspace;
+    private final PptEngineProperties properties;
 
     public RoutingProjectWorkspace(ProjectWorkspace fileWorkspace, ProjectWorkspace pythonWorkspace) {
+        this(fileWorkspace, pythonWorkspace, PptEngineProperties.defaults());
+    }
+
+    public RoutingProjectWorkspace(
+            ProjectWorkspace fileWorkspace,
+            ProjectWorkspace pythonWorkspace,
+            PptEngineProperties properties) {
         this.fileWorkspace = fileWorkspace;
         this.pythonWorkspace = pythonWorkspace;
+        this.properties = properties == null ? PptEngineProperties.defaults() : properties;
     }
 
     @Override
@@ -38,10 +60,41 @@ public final class RoutingProjectWorkspace implements ProjectWorkspace {
 
     @Override
     public EngineResult importSources(Path project, List<Path> sources, boolean copy, Duration timeout) {
-        if (requiresPythonImport(sources)) {
-            return pythonWorkspace.importSources(project, sources, copy, timeout);
+        List<Path> expanded = expandSources(sources);
+        List<Path> javaSources = new ArrayList<>();
+        List<Path> pythonSources = new ArrayList<>();
+        for (Path source : expanded) {
+            if (requiresPythonImport(source)) {
+                pythonSources.add(source);
+            } else {
+                javaSources.add(source);
+            }
         }
-        return fileWorkspace.importSources(project, sources, copy, timeout);
+
+        if (javaSources.isEmpty() && pythonSources.isEmpty()) {
+            return fileWorkspace.importSources(project, sources == null ? List.of() : sources, copy, timeout);
+        }
+
+        EngineResult javaResult = null;
+        if (!javaSources.isEmpty()) {
+            javaResult = fileWorkspace.importSources(project, javaSources, copy, timeout);
+            if (!javaResult.successful()) {
+                return javaResult;
+            }
+            maybeDualRun(project, javaSources, copy, timeout);
+        }
+
+        if (pythonSources.isEmpty()) {
+            return javaResult != null
+                    ? javaResult
+                    : new EngineResult(1, "[ERROR] No sources to import", false);
+        }
+
+        EngineResult pythonResult = pythonWorkspace.importSources(project, pythonSources, copy, timeout);
+        if (javaResult == null) {
+            return pythonResult;
+        }
+        return mergeResults(javaResult, pythonResult);
     }
 
     @Override
@@ -54,32 +107,72 @@ public final class RoutingProjectWorkspace implements ProjectWorkspace {
         return pythonWorkspace.validate(project, timeout);
     }
 
-    private static boolean requiresPythonImport(List<Path> sources) {
-        if (sources == null || sources.isEmpty()) {
-            return false;
+    private void maybeDualRun(Path project, List<Path> javaSources, boolean copy, Duration timeout) {
+        if (!properties.isImportPythonDualRun()) {
+            return;
+        }
+        try {
+            EngineResult dual = pythonWorkspace.importSources(project, javaSources, copy, timeout);
+            log.info(
+                    "import dual-run diagnostic exit={} timedOut={} sources={}",
+                    dual.exitCode(),
+                    dual.timedOut(),
+                    javaSources.size());
+        } catch (RuntimeException ex) {
+            log.warn("import dual-run diagnostic failed: {}", ex.toString());
+        }
+    }
+
+    private static EngineResult mergeResults(EngineResult javaResult, EngineResult pythonResult) {
+        StringBuilder out = new StringBuilder();
+        if (javaResult.output() != null && !javaResult.output().isBlank()) {
+            out.append(javaResult.output().stripTrailing());
+        }
+        if (pythonResult.output() != null && !pythonResult.output().isBlank()) {
+            if (out.length() > 0) {
+                out.append("\n\n");
+            }
+            out.append(pythonResult.output().stripTrailing());
+        }
+        // Java already succeeded; Python import-sources is soft for remaining formats.
+        return new EngineResult(0, out.toString(), javaResult.timedOut() || pythonResult.timedOut());
+    }
+
+    private static List<Path> expandSources(List<Path> sources) {
+        List<Path> expanded = new ArrayList<>();
+        if (sources == null) {
+            return expanded;
         }
         for (Path source : sources) {
             if (source == null) {
                 continue;
             }
-            String raw = source.toString();
-            if (isUrl(raw)) {
-                return true;
-            }
-            if (needsPythonConversion(source)) {
-                return true;
+            if (isUrl(source.toString())) {
+                expanded.add(source);
+                continue;
             }
             if (Files.isDirectory(source)) {
                 try (Stream<Path> children = Files.list(source)) {
-                    if (children.anyMatch(RoutingProjectWorkspace::needsPythonConversion)) {
-                        return true;
-                    }
+                    children.filter(Files::isRegularFile).sorted().forEach(expanded::add);
                 } catch (IOException ex) {
-                    return true;
+                    expanded.add(source);
                 }
+                continue;
             }
+            expanded.add(source);
         }
-        return false;
+        return expanded;
+    }
+
+    private static boolean requiresPythonImport(Path source) {
+        if (source == null) {
+            return false;
+        }
+        String raw = source.toString();
+        if (isUrl(raw)) {
+            return true;
+        }
+        return needsPythonConversion(source);
     }
 
     private static boolean needsPythonConversion(Path path) {

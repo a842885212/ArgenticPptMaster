@@ -57,8 +57,10 @@ public class PptEngineConfiguration {
     private static final Logger log = LoggerFactory.getLogger(PptEngineConfiguration.class);
 
     @Bean
-    ProjectWorkspace projectWorkspace(PptMasterCommandExecutor commands) {
-        return new RoutingProjectWorkspace(new JavaProjectWorkspace(), new PythonProjectWorkspace(commands));
+    ProjectWorkspace projectWorkspace(PptMasterCommandExecutor commands, PptEngineProperties engineProperties) {
+        // Java is the production authority for file + Office MD import; optional import dual-run is diagnostic only.
+        return new RoutingProjectWorkspace(
+                new JavaProjectWorkspace(), new PythonProjectWorkspace(commands), engineProperties);
     }
 
     @Bean

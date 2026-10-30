@@ -8,11 +8,14 @@ import org.springframework.boot.context.properties.bind.ConstructorBinding;
  *
  * @param dualRunEnabled         when true, dual-run secondary exporters when wired
  * @param dualRunFailOnMismatch  when true, mismatch throws; otherwise warn-only
+ * @param importPythonDualRun    when true, after Java-authoritative import conversion,
+ *                               optionally run Python import diagnostics (never overrides Java)
  */
 @ConfigurationProperties(prefix = "ppt-master.engine")
 public record PptEngineProperties(
         Boolean dualRunEnabled,
-        Boolean dualRunFailOnMismatch) {
+        Boolean dualRunFailOnMismatch,
+        Boolean importPythonDualRun) {
 
     @ConstructorBinding
     public PptEngineProperties {
@@ -22,10 +25,13 @@ public record PptEngineProperties(
         if (dualRunFailOnMismatch == null) {
             dualRunFailOnMismatch = false;
         }
+        if (importPythonDualRun == null) {
+            importPythonDualRun = false;
+        }
     }
 
     public static PptEngineProperties defaults() {
-        return new PptEngineProperties(false, false);
+        return new PptEngineProperties(false, false, false);
     }
 
     public boolean isDualRunEnabled() {
@@ -34,5 +40,9 @@ public record PptEngineProperties(
 
     public boolean isDualRunFailOnMismatch() {
         return Boolean.TRUE.equals(dualRunFailOnMismatch);
+    }
+
+    public boolean isImportPythonDualRun() {
+        return Boolean.TRUE.equals(importPythonDualRun);
     }
 }

@@ -43,7 +43,7 @@ class RoutingSvgToPptxExporterTest {
         when(pythonEngine.export(any(), any())).thenReturn(new EngineResult(0, "python-ok", false));
 
         RoutingSvgToPptxExporter routing = new RoutingSvgToPptxExporter(
-                javaEngine, pythonEngine, new PptEngineProperties(true, false));
+                javaEngine, pythonEngine, new PptEngineProperties(true, false, false));
         EngineResult result = routing.export(tempDir, Duration.ZERO);
 
         assertThat(result.output()).isEqualTo("java-ok");

@@ -16,7 +16,7 @@ public final class CanvasFormats {
             "Canvas is determined during authoring and recorded in spec_lock.md "
                     + "(Default) or the first SVG (Quick).";
 
-    public record CanvasFormat(String key, String name, String dimensions) {}
+    public record CanvasFormat(String key, String name, String dimensions, String viewBox) {}
 
     private static final Map<String, String> ALIASES = Map.of(
             "xhs", "xiaohongshu",
@@ -31,14 +31,14 @@ public final class CanvasFormats {
 
     private static Map<String, CanvasFormat> buildFormats() {
         Map<String, CanvasFormat> map = new LinkedHashMap<>();
-        map.put("ppt169", new CanvasFormat("ppt169", "PPT 16:9", "1280×720"));
-        map.put("ppt43", new CanvasFormat("ppt43", "PPT 4:3", "1024×768"));
-        map.put("wechat", new CanvasFormat("wechat", "WeChat Article Header", "900×383"));
-        map.put("xiaohongshu", new CanvasFormat("xiaohongshu", "小红书", "1242×1660"));
-        map.put("moments", new CanvasFormat("moments", "Moments/Instagram", "1080×1080"));
-        map.put("story", new CanvasFormat("story", "Story/Vertical", "1080×1920"));
-        map.put("banner", new CanvasFormat("banner", "Horizontal Banner", "1920×1080"));
-        map.put("a4", new CanvasFormat("a4", "A4 Print", "1240×1754"));
+        map.put("ppt169", new CanvasFormat("ppt169", "PPT 16:9", "1280×720", "0 0 1280 720"));
+        map.put("ppt43", new CanvasFormat("ppt43", "PPT 4:3", "1024×768", "0 0 1024 768"));
+        map.put("wechat", new CanvasFormat("wechat", "WeChat Article Header", "900×383", "0 0 900 383"));
+        map.put("xiaohongshu", new CanvasFormat("xiaohongshu", "小红书", "1242×1660", "0 0 1242 1660"));
+        map.put("moments", new CanvasFormat("moments", "Moments/Instagram", "1080×1080", "0 0 1080 1080"));
+        map.put("story", new CanvasFormat("story", "Story/Vertical", "1080×1920", "0 0 1080 1920"));
+        map.put("banner", new CanvasFormat("banner", "Horizontal Banner", "1920×1080", "0 0 1920 1080"));
+        map.put("a4", new CanvasFormat("a4", "A4 Print", "1240×1754", "0 0 1240 1754"));
         return Map.copyOf(map);
     }
 

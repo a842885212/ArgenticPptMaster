@@ -12,11 +12,15 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Project import routing: Java is the sole authority for {@code import-sources}.
- * Python remains for {@code info}/{@code validate} and optional dual-run diagnostics
- * written under {@code sources/.dual-run/} (never overwrites authoritative {@code sources/}).
+ * Project workspace routing: Java is the authority for {@code init}, {@code import-sources},
+ * {@code info} and {@code validate}. Optional dual-run diagnostics re-run Python
+ * {@code info}/{@code validate} after a successful Java result (warn-only, never overrides
+ * the Java outcome) and import diagnostics are written under {@code sources/.dual-run/}
+ * (never overwrites authoritative {@code sources/}).
  *
- * <p>Enabling import dual-run requires a working Python + ppt-master environment.
+ * <p>Enabling dual-run requires a working Python + ppt-master environment.
+ * {@code dual-run-fail-on-mismatch} does not apply to the free-text {@code info}/{@code validate}
+ * commands; mismatches are logged as warnings only.
  */
 public final class RoutingProjectWorkspace implements ProjectWorkspace {
 
@@ -63,12 +67,72 @@ public final class RoutingProjectWorkspace implements ProjectWorkspace {
 
     @Override
     public EngineResult info(Path project, Duration timeout) {
-        return pythonWorkspace.info(project, timeout);
+        EngineResult javaResult = fileWorkspace.info(project, timeout);
+        if (javaResult.successful() && properties.isDualRunEnabled()) {
+            dualRunDiagnose("info", project, timeout, javaResult);
+        }
+        return javaResult;
     }
 
     @Override
     public EngineResult validate(Path project, Duration timeout) {
-        return pythonWorkspace.validate(project, timeout);
+        EngineResult javaResult = fileWorkspace.validate(project, timeout);
+        if (javaResult.successful() && properties.isDualRunEnabled()) {
+            dualRunDiagnose("validate", project, timeout, javaResult);
+        }
+        return javaResult;
+    }
+
+    /**
+     * Warn-only Python secondary run for {@code info}/{@code validate}.
+     *
+     * <p>Exit-code or output mismatches are logged with a line-level diff; Python failures
+     * (non-zero exit, timeout, exception) are logged as warnings. Never affects the
+     * authoritative Java result.</p>
+     */
+    private void dualRunDiagnose(String command, Path project, Duration timeout, EngineResult javaResult) {
+        try {
+            EngineResult pythonResult = "info".equals(command)
+                    ? pythonWorkspace.info(project, timeout)
+                    : pythonWorkspace.validate(project, timeout);
+            if (pythonResult.exitCode() != javaResult.exitCode()
+                    || !pythonResult.output().equals(javaResult.output())) {
+                log.warn(
+                        "workspace {} dual-run mismatch for {}: java exit={} python exit={} timedOut={} diff:\n{}",
+                        command,
+                        project,
+                        javaResult.exitCode(),
+                        pythonResult.exitCode(),
+                        pythonResult.timedOut(),
+                        lineDiff(javaResult.output(), pythonResult.output()));
+            } else {
+                log.info("workspace {} dual-run match for {} (java is authority)", command, project);
+            }
+        } catch (RuntimeException ex) {
+            log.warn("workspace {} dual-run diagnostic failed; java remains authority", command, ex);
+        }
+    }
+
+    /** Render differing lines as {@code < java} / {@code > python}, capped for log readability. */
+    private static String lineDiff(String javaOutput, String pythonOutput) {
+        String[] javaLines = javaOutput.split("\n", -1);
+        String[] pythonLines = pythonOutput.split("\n", -1);
+        StringBuilder diff = new StringBuilder();
+        int max = Math.max(javaLines.length, pythonLines.length);
+        int reported = 0;
+        for (int i = 0; i < max && reported < 20; i++) {
+            String javaLine = i < javaLines.length ? javaLines[i] : "<missing>";
+            String pythonLine = i < pythonLines.length ? pythonLines[i] : "<missing>";
+            if (!javaLine.equals(pythonLine)) {
+                diff.append("< ").append(javaLine).append('\n');
+                diff.append("> ").append(pythonLine).append('\n');
+                reported++;
+            }
+        }
+        if (diff.isEmpty()) {
+            diff.append("<identical text, exit codes differ>");
+        }
+        return diff.toString();
     }
 
     /**

@@ -207,13 +207,13 @@ class JavaProjectWorkspaceTests {
     }
 
     @Test
-    void infoIsNotImplemented() throws Exception {
+    void infoIsJavaAuthoritative() throws Exception {
         Path project = initProject("infoproj", "ppt169");
 
         EngineResult result = workspace.info(project, Duration.ofSeconds(5));
 
-        assertThat(result.exitCode()).isEqualTo(1);
-        assertThat(result.output()).isEqualTo("[ERROR] info is still provided by the Python project workspace");
+        assertThat(result.exitCode()).isZero();
+        assertThat(result.output()).contains("Project info: infoproj");
     }
 
     @Test

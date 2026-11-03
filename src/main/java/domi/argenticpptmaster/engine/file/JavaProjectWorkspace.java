@@ -537,14 +537,12 @@ public final class JavaProjectWorkspace implements ProjectWorkspace {
 
     @Override
     public EngineResult info(Path project, Duration ignoredTimeout) {
-        return new EngineResult(
-                1, "[ERROR] info is still provided by the Python project workspace", false);
+        return ProjectInfoInspector.info(project);
     }
 
     @Override
     public EngineResult validate(Path project, Duration ignoredTimeout) {
-        return new EngineResult(
-                1, "[ERROR] validate is still provided by the Python project workspace", false);
+        return ProjectStructureValidator.validate(project);
     }
 
     private static EngineResult buildImportResult(Path projectDir, ImportSummary summary) {

@@ -40,7 +40,7 @@ Java 服务只编排任务。脚本通过 `PptMasterCommandExecutor.runPythonScr
 
 | 能力 | 生产 Bean | 状态 |
 | --- | --- | --- |
-| `project_manager` init / import-sources | `RoutingProjectWorkspace` → **`JavaProjectWorkspace` 权威**（纯文件 + PPTX intake + PPTX/Excel/docx/html/PDF→MD；按源分流）；URL / pandoc 长尾仍 Python；`.ppt` Java 只归档；可选 `ppt-master.engine.import-python-dual-run` 诊断（默认关）。PDF 用 PDFBox（合同级对齐 `pdf_to_md` 导入路径；复杂表 / 矢量图栅格化为残差；近空与加密 PDF 硬失败） | **已完成（Java 子集权威）** |
+| `project_manager` init / import-sources | `RoutingProjectWorkspace` → **`JavaProjectWorkspace` 权威**（纯文件 + PPTX intake + PPTX/Excel/docx/html/PDF/URL/pandoc→MD；`import-sources` 不再回落 Python）。URL：HttpClient + Jsoup（合同级对齐 `web_to_md`；基础 SSRF；失败写 `.url.txt` 后整次失败）。pandoc：ProcessBuilder 调系统 `ppt-master.pandoc-command`（默认 `pandoc`）转换 `.doc/.odt/.rtf/.tex/.latex/.rst/.org/.typ`（全部 `--extract-media`）。**`.epub` / `.ipynb` 暂不支持**（上传与引擎硬拒绝）。`.ppt` Java 只归档；可选 `ppt-master.engine.import-python-dual-run` 诊断（默认关，产物写 `sources/.dual-run/`，不覆盖权威 `sources/`，开启才需要 Python）。PDF 用 PDFBox（合同级对齐 `pdf_to_md`；复杂表 / 矢量图栅格化为残差；近空与加密 PDF 硬失败） | **已完成（Java 权威）** |
 | `total_md_split` | `JavaSpeakerNotesSplitter` | 已接线 |
 | `svg_quality_checker` | `RoutingSvgQualityChecker` → **`JavaSvgQualityChecker` 权威**（写出 `validation/svg_quality_report.json`）；可选 dual-run 时 `PythonSvgQualityChecker` 仅诊断（默认关） | **已完成（Java 子集权威）** |
 
@@ -155,7 +155,7 @@ Java 服务只编排任务。脚本通过 `PptMasterCommandExecutor.runPythonScr
 - 并发取 `ppt.image.concurrency`（默认 5），单条请求受 `ppt.image.item-timeout`（默认 180s）约束，整批仍受 `ppt-master.command-timeout` 兜底。
 - 清单回写用进程内互斥 + 临时文件 `ATOMIC_MOVE`，不提供跨进程锁。
 - `ppt.image.base-url` 必填，不复用对话侧 `agentscope.base-url`；`ppt.image.api-key` 缺省时回落对话密钥。
-- Markdown / 冷 SVG 编排启动前置不再要求 `project_manager.py`、`finalize_svg.py`、`total_md_split.py`、`svg_quality_checker.py` 落盘（这些能力已由 Java 生产权威承接；Python 实现与 dual-run 钩子仍保留）。未启用 Python fallback 时也不再要求 `image_gen.py`；仅 `ppt.image.python-fallback=true`（出图权威为 Python 适配器）时才校验该脚本存在。
+- Markdown / 冷 SVG 编排启动前置不再要求 `project_manager.py`、`finalize_svg.py`、`total_md_split.py`、`svg_quality_checker.py` 落盘（这些能力已由 Java 生产权威承接；Python 实现与 dual-run 钩子仍保留）。默认 `import-sources` 亦不再需要 Python（需系统 `pandoc` 处理长尾文档后缀；`.epub`/`.ipynb` 暂拒）。未启用 Python fallback 时也不再要求 `image_gen.py`；仅 `ppt.image.python-fallback=true`（出图权威为 Python 适配器）时才校验该脚本存在。开启 `ppt-master.engine.import-python-dual-run` 时才需要 Python + ppt-master（诊断写 `sources/.dual-run/`）。
 
 明确不做：多厂商 `IMAGE_BACKEND` 注册表、`--render-md` / `--summary` 视图、512px/2K/4K size preset、限流时的全局并发降级。
 

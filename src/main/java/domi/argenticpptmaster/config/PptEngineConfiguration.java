@@ -44,7 +44,9 @@ import domi.argenticpptmaster.engine.python.PythonTemplateFillEngine;
 import domi.argenticpptmaster.infra.PptMasterCommandExecutor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import java.time.Clock;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -57,10 +59,19 @@ public class PptEngineConfiguration {
     private static final Logger log = LoggerFactory.getLogger(PptEngineConfiguration.class);
 
     @Bean
-    ProjectWorkspace projectWorkspace(PptMasterCommandExecutor commands, PptEngineProperties engineProperties) {
-        // Java is the production authority for file + Office MD import; optional import dual-run is diagnostic only.
+    ProjectWorkspace projectWorkspace(
+            PptMasterCommandExecutor commands,
+            PptEngineProperties engineProperties,
+            @Value("${ppt-master.pandoc-command:${ppt-master.engine.pandoc-command:pandoc}}") String pandocCommand) {
+        // Java is the production authority for all import-sources (incl. URL + pandoc).
+        // Optional import dual-run writes diagnostics under sources/.dual-run/ only.
+        String resolvedPandoc = (pandocCommand == null || pandocCommand.isBlank())
+                ? engineProperties.resolvedPandocCommand()
+                : pandocCommand;
         return new RoutingProjectWorkspace(
-                new JavaProjectWorkspace(), new PythonProjectWorkspace(commands), engineProperties);
+                new JavaProjectWorkspace(Clock.systemDefaultZone(), resolvedPandoc),
+                new PythonProjectWorkspace(commands),
+                engineProperties);
     }
 
     @Bean

@@ -3,6 +3,9 @@ package domi.argenticpptmaster.engine.file;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import domi.argenticpptmaster.engine.EngineResult;
+import domi.argenticpptmaster.engine.file.importconvert.ImportConversionException;
+import domi.argenticpptmaster.engine.file.importconvert.PandocToMarkdownConverter;
+import domi.argenticpptmaster.engine.file.importconvert.UrlToMarkdownImporter;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -316,6 +319,85 @@ class JavaProjectWorkspaceTests {
         assertThat(Files.readString(project.resolve("sources/report.md"), StandardCharsets.UTF_8))
                 .contains("Keep me.");
         assertThat(result.output()).contains("skipped PDF auto-conversion");
+    }
+
+    @Test
+    void importSourcesRejectsEpubWithUnsupportedMessage() throws Exception {
+        Path project = initProject("epubproj", "ppt169");
+        Path epub = tempDir.resolve("book.epub");
+        Files.writeString(epub, "epub", StandardCharsets.UTF_8);
+
+        EngineResult result = workspace.importSources(project, List.of(epub), true, Duration.ofSeconds(10));
+
+        assertThat(result.exitCode()).isEqualTo(1);
+        assertThat(result.output()).startsWith("[ERROR]").contains("temporarily unsupported");
+    }
+
+    @Test
+    void importSourcesRejectsIpynbWithUnsupportedMessage() throws Exception {
+        Path project = initProject("ipynbproj", "ppt169");
+        Path notebook = tempDir.resolve("nb.ipynb");
+        Files.writeString(notebook, "{}", StandardCharsets.UTF_8);
+
+        EngineResult result = workspace.importSources(project, List.of(notebook), true, Duration.ofSeconds(10));
+
+        assertThat(result.exitCode()).isEqualTo(1);
+        assertThat(result.output()).startsWith("[ERROR]").contains("temporarily unsupported");
+    }
+
+    @Test
+    void importSourcesImportsUrlViaJavaImporter() throws Exception {
+        Path projectsDir = tempDir.resolve("projects-url");
+        UrlToMarkdownImporter urlImporter = new UrlToMarkdownImporter(
+                uri -> new UrlToMarkdownImporter.FetchedPage(
+                        """
+                        <html><head><title>From URL</title></head><body>
+                        <article><p>Enough text content here for main content extraction heuristics to succeed on article tag.</p>
+                        <p>More paragraphs so the score stays high enough for selection.</p></article>
+                        </body></html>
+                        """),
+                uri -> {
+                    throw new ImportConversionException("no images");
+                });
+        JavaProjectWorkspace custom = new JavaProjectWorkspace(
+                FIXED_CLOCK, new PandocToMarkdownConverter("pandoc"), urlImporter);
+        EngineResult init = custom.init("urlproj", "ppt169", projectsDir, Duration.ofSeconds(10));
+        assertThat(init.successful()).isTrue();
+        Path project = projectsDir.resolve("urlproj_ppt169_20260315");
+
+        EngineResult result = custom.importSources(
+                project, List.of(Path.of("https://example.com/posts/from-url")), true, Duration.ofSeconds(10));
+
+        assertThat(result.successful()).isTrue();
+        assertThat(result.output()).contains("Normalized markdown:");
+        assertThat(Files.list(project.resolve("sources"))
+                        .filter(path -> path.getFileName().toString().endsWith(".md"))
+                        .findFirst())
+                .isPresent();
+    }
+
+    @Test
+    void importSourcesWritesUrlTxtThenFailsOnUrlError() throws Exception {
+        Path projectsDir = tempDir.resolve("projects-urlfail");
+        UrlToMarkdownImporter urlImporter = new UrlToMarkdownImporter(
+                uri -> {
+                    throw new ImportConversionException("down");
+                },
+                uri -> new UrlToMarkdownImporter.FetchedBytes(new byte[0], "image/png"));
+        JavaProjectWorkspace custom = new JavaProjectWorkspace(
+                FIXED_CLOCK, new PandocToMarkdownConverter("pandoc"), urlImporter);
+        EngineResult init = custom.init("urlfail", "ppt169", projectsDir, Duration.ofSeconds(10));
+        assertThat(init.successful()).isTrue();
+        Path project = projectsDir.resolve("urlfail_ppt169_20260315");
+
+        EngineResult result = custom.importSources(
+                project, List.of(Path.of("https://example.com/fail")), true, Duration.ofSeconds(10));
+
+        assertThat(result.exitCode()).isEqualTo(1);
+        assertThat(result.output()).startsWith("[ERROR]").contains("https://example.com/fail");
+        assertThat(Files.list(project.resolve("sources"))
+                        .anyMatch(path -> path.getFileName().toString().endsWith(".url.txt")))
+                .isTrue();
     }
 
     private Path initProject(String name, String format) {

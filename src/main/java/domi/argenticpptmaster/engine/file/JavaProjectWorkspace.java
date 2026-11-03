@@ -10,9 +10,11 @@ import domi.argenticpptmaster.engine.file.importconvert.ExcelToMarkdownConverter
 import domi.argenticpptmaster.engine.file.importconvert.HtmlToMarkdownConverter;
 import domi.argenticpptmaster.engine.file.importconvert.ImportConversionException;
 import domi.argenticpptmaster.engine.file.importconvert.ImportSourceFormats;
+import domi.argenticpptmaster.engine.file.importconvert.PandocToMarkdownConverter;
 import domi.argenticpptmaster.engine.file.importconvert.PdfManifestPropagator;
 import domi.argenticpptmaster.engine.file.importconvert.PdfToMarkdownConverter;
 import domi.argenticpptmaster.engine.file.importconvert.PptxToMarkdownConverter;
+import domi.argenticpptmaster.engine.file.importconvert.UrlToMarkdownImporter;
 import domi.argenticpptmaster.engine.ooxml.beautify.BeautifyIntakeOps;
 import java.io.IOException;
 import java.net.URI;
@@ -39,7 +41,7 @@ import java.util.stream.Stream;
 
 /**
  * File-system project init/import with Java-authoritative converters for PPTX intake,
- * PPTX/Excel/docx/html/PDF → Markdown.
+ * PPTX/Excel/docx/html/PDF/URL/pandoc → Markdown.
  */
 public final class JavaProjectWorkspace implements ProjectWorkspace {
 
@@ -51,22 +53,33 @@ public final class JavaProjectWorkspace implements ProjectWorkspace {
     private static final Set<String> IMAGE_ASSET_SUFFIXES = union(
             BITMAP_IMAGE_SUFFIXES, Set.of(".emf", ".wmf", ".svg"));
     private static final Set<String> LEGACY_EXCEL_SUFFIXES = Set.of(".xls");
-    private static final Set<String> PYTHON_LONG_TAIL_DOCS = Set.of(
-            ".doc", ".odt", ".rtf", ".epub", ".tex", ".latex", ".rst", ".org", ".ipynb", ".typ");
 
-    private static final String JAVA_NO_CONVERSION_NOTE =
-            "archived only; automatic conversion is not provided by this Java engine";
     private static final String COPY_ONLY_NOTE =
             "copy=false was requested; this Java engine always copies sources and does not move or delete them";
+    private static final String UNSUPPORTED_EPUB_IPYNB_MESSAGE =
+            "is not supported yet (.epub / .ipynb are temporarily unsupported; convert locally or use another format)";
 
     private final Clock clock;
+    private final PandocToMarkdownConverter pandocConverter;
+    private final UrlToMarkdownImporter urlImporter;
 
     public JavaProjectWorkspace() {
-        this(Clock.systemDefaultZone());
+        this(Clock.systemDefaultZone(), "pandoc");
     }
 
     public JavaProjectWorkspace(Clock clock) {
+        this(clock, "pandoc");
+    }
+
+    public JavaProjectWorkspace(Clock clock, String pandocCommand) {
+        this(clock, new PandocToMarkdownConverter(pandocCommand), new UrlToMarkdownImporter());
+    }
+
+    public JavaProjectWorkspace(
+            Clock clock, PandocToMarkdownConverter pandocConverter, UrlToMarkdownImporter urlImporter) {
         this.clock = clock;
+        this.pandocConverter = pandocConverter == null ? new PandocToMarkdownConverter() : pandocConverter;
+        this.urlImporter = urlImporter == null ? new UrlToMarkdownImporter() : urlImporter;
     }
 
     @Override
@@ -196,7 +209,7 @@ public final class JavaProjectWorkspace implements ProjectWorkspace {
 
             for (String item : expandedItems) {
                 if (isUrl(item)) {
-                    summary.skipped.add(item + ": URL fetch is not performed by this Java engine");
+                    importUrl(restoreUrlFromPathString(item), projectDir, sourcesDir, summary);
                     continue;
                 }
 
@@ -211,6 +224,9 @@ public final class JavaProjectWorkspace implements ProjectWorkspace {
                 }
 
                 String suffix = suffixLower(sourcePath);
+                if (ImportSourceFormats.UNSUPPORTED_EPUB_IPYNB.contains(suffix)) {
+                    throw new ImportConversionException(item + ": " + UNSUPPORTED_EPUB_IPYNB_MESSAGE);
+                }
                 if (MARKDOWN_SUFFIXES.contains(suffix)) {
                     Path duplicate = findEquivalentMarkdown(sourcePath, sourcesDir);
                     if (duplicate != null) {
@@ -259,8 +275,8 @@ public final class JavaProjectWorkspace implements ProjectWorkspace {
                     convertDocOrHtml(item, archivedPath, projectDir, sourcesDir, explicitMarkdownStems, summary);
                 } else if (ImportSourceFormats.PDF.contains(suffix)) {
                     convertPdf(item, archivedPath, projectDir, sourcesDir, explicitMarkdownStems, summary);
-                } else if (PYTHON_LONG_TAIL_DOCS.contains(suffix)) {
-                    summary.notes.add(item + ": " + JAVA_NO_CONVERSION_NOTE);
+                } else if (ImportSourceFormats.PANDOC_SUFFIXES.contains(suffix)) {
+                    convertPandoc(item, archivedPath, projectDir, sourcesDir, explicitMarkdownStems, summary);
                 } else if (LEGACY_EXCEL_SUFFIXES.contains(suffix)) {
                     summary.notes.add(
                             item + ": archived only; legacy .xls is not converted automatically. "
@@ -448,6 +464,74 @@ public final class JavaProjectWorkspace implements ProjectWorkspace {
         } catch (Exception ex) {
             throw new ImportConversionException(
                     item + ": PDF conversion failed (" + ex.getMessage() + ")", ex);
+        }
+    }
+
+    private void convertPandoc(
+            String item,
+            Path archivedPath,
+            Path projectDir,
+            Path sourcesDir,
+            Set<String> explicitMarkdownStems,
+            ImportSummary summary)
+            throws Exception {
+        Path canonicalMarkdown = sourcesDir.resolve(stem(archivedPath) + ".md");
+        if (explicitMarkdownStems.contains(stem(archivedPath))) {
+            summary.notes.add(
+                    item + ": skipped pandoc auto-conversion because a same-stem Markdown source was provided");
+            return;
+        }
+        if (Files.exists(canonicalMarkdown)) {
+            summary.markdown.add(canonicalMarkdown.toString());
+            Path assetDir = canonicalMarkdown.resolveSibling(stem(canonicalMarkdown) + "_files");
+            if (Files.isDirectory(assetDir)) {
+                summary.assets.add(assetDir.toString());
+                propagateImageAssets(assetDir, projectDir);
+            }
+            summary.notes.add(
+                    item + ": skipped pandoc auto-conversion because " + canonicalMarkdown.getFileName()
+                            + " already exists");
+            return;
+        }
+        try {
+            pandocConverter.convert(archivedPath, canonicalMarkdown);
+            summary.markdown.add(canonicalMarkdown.toString());
+            Path assetDir = canonicalMarkdown.resolveSibling(stem(canonicalMarkdown) + "_files");
+            if (Files.isDirectory(assetDir)) {
+                summary.assets.add(assetDir.toString());
+                propagateImageAssets(assetDir, projectDir);
+            }
+        } catch (ImportConversionException ex) {
+            throw new ImportConversionException(
+                    item + ": pandoc conversion failed (" + ex.getMessage() + ")", ex);
+        } catch (Exception ex) {
+            throw new ImportConversionException(
+                    item + ": pandoc conversion failed (" + ex.getMessage() + ")", ex);
+        }
+    }
+
+    private void importUrl(String item, Path projectDir, Path sourcesDir, ImportSummary summary)
+            throws Exception {
+        String basename = UrlToMarkdownImporter.deriveUrlBasename(item);
+        Path canonicalMarkdown = sourcesDir.resolve(basename + ".md");
+        try {
+            urlImporter.importUrl(item, canonicalMarkdown);
+            summary.markdown.add(canonicalMarkdown.toString());
+            Path assetDir = canonicalMarkdown.resolveSibling(stem(canonicalMarkdown) + "_files");
+            if (Files.isDirectory(assetDir)) {
+                summary.assets.add(assetDir.toString());
+                propagateImageAssets(assetDir, projectDir);
+            }
+        } catch (ImportConversionException ex) {
+            Path record = UrlToMarkdownImporter.writeUrlFailureRecord(sourcesDir, item);
+            summary.urlRecords.add(record.toString());
+            throw new ImportConversionException(
+                    item + ": URL import failed (" + ex.getMessage() + ")", ex);
+        } catch (Exception ex) {
+            Path record = UrlToMarkdownImporter.writeUrlFailureRecord(sourcesDir, item);
+            summary.urlRecords.add(record.toString());
+            throw new ImportConversionException(
+                    item + ": URL import failed (" + ex.getMessage() + ")", ex);
         }
     }
 
@@ -723,9 +807,24 @@ public final class JavaProjectWorkspace implements ProjectWorkspace {
         }
     }
 
+    /**
+     * {@link Path#of(String, String...)} collapses {@code https://} to {@code https:/} on Unix.
+     * Restore a usable URL string before scheme/host checks.
+     */
+    static String restoreUrlFromPathString(String value) {
+        if (value == null) {
+            return null;
+        }
+        String trimmed = value.trim();
+        if (trimmed.matches("(?i)https?:/[^/].*")) {
+            return trimmed.replaceFirst("(?i)^(https?):/", "$1://");
+        }
+        return trimmed;
+    }
+
     private static boolean isUrl(String value) {
         try {
-            URI uri = URI.create(value.trim());
+            URI uri = URI.create(restoreUrlFromPathString(value));
             String scheme = uri.getScheme();
             return scheme != null
                     && (scheme.equalsIgnoreCase("http") || scheme.equalsIgnoreCase("https"))

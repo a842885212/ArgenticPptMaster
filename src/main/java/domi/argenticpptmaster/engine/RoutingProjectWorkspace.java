@@ -2,38 +2,28 @@ package domi.argenticpptmaster.engine;
 
 import domi.argenticpptmaster.config.PptEngineProperties;
 import java.io.IOException;
-import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
-import java.util.Set;
 import java.util.stream.Stream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Per-source project import routing: Java handles file + Office/PDF MD converters; Python retains
- * URL and pandoc-long-tail document conversion.
+ * Project import routing: Java is the sole authority for {@code import-sources}.
+ * Python remains for {@code info}/{@code validate} and optional dual-run diagnostics
+ * written under {@code sources/.dual-run/} (never overwrites authoritative {@code sources/}).
+ *
+ * <p>Enabling import dual-run requires a working Python + ppt-master environment.
  */
 public final class RoutingProjectWorkspace implements ProjectWorkspace {
 
     private static final Logger log = LoggerFactory.getLogger(RoutingProjectWorkspace.class);
 
-    /** Formats that still require Python converters (not covered by Java import authority). */
-    private static final Set<String> PYTHON_IMPORT_SUFFIXES = Set.of(
-            ".doc",
-            ".odt",
-            ".rtf",
-            ".epub",
-            ".ipynb",
-            ".tex",
-            ".latex",
-            ".rst",
-            ".org",
-            ".typ");
+    /** Sidecar project root relative to the real project: {@code sources/.dual-run/}. */
+    public static final String DUAL_RUN_SIDECAR = "sources/.dual-run";
 
     private final ProjectWorkspace fileWorkspace;
     private final ProjectWorkspace pythonWorkspace;
@@ -60,40 +50,15 @@ public final class RoutingProjectWorkspace implements ProjectWorkspace {
     @Override
     public EngineResult importSources(Path project, List<Path> sources, boolean copy, Duration timeout) {
         List<Path> expanded = expandSources(sources);
-        List<Path> javaSources = new ArrayList<>();
-        List<Path> pythonSources = new ArrayList<>();
-        for (Path source : expanded) {
-            if (requiresPythonImport(source)) {
-                pythonSources.add(source);
-            } else {
-                javaSources.add(source);
-            }
-        }
-
-        if (javaSources.isEmpty() && pythonSources.isEmpty()) {
+        if (expanded.isEmpty()) {
             return fileWorkspace.importSources(project, sources == null ? List.of() : sources, copy, timeout);
         }
 
-        EngineResult javaResult = null;
-        if (!javaSources.isEmpty()) {
-            javaResult = fileWorkspace.importSources(project, javaSources, copy, timeout);
-            if (!javaResult.successful()) {
-                return javaResult;
-            }
-            maybeDualRun(project, javaSources, copy, timeout);
+        EngineResult javaResult = fileWorkspace.importSources(project, expanded, copy, timeout);
+        if (javaResult.successful()) {
+            maybeDualRun(project, expanded, copy, timeout);
         }
-
-        if (pythonSources.isEmpty()) {
-            return javaResult != null
-                    ? javaResult
-                    : new EngineResult(1, "[ERROR] No sources to import", false);
-        }
-
-        EngineResult pythonResult = pythonWorkspace.importSources(project, pythonSources, copy, timeout);
-        if (javaResult == null) {
-            return pythonResult;
-        }
-        return mergeResults(javaResult, pythonResult);
+        return javaResult;
     }
 
     @Override
@@ -106,35 +71,28 @@ public final class RoutingProjectWorkspace implements ProjectWorkspace {
         return pythonWorkspace.validate(project, timeout);
     }
 
+    /**
+     * Optional Python diagnostic import into {@link #DUAL_RUN_SIDECAR}. Never overwrites
+     * authoritative {@code sources/} Markdown/media and never flips success/failure.
+     */
     private void maybeDualRun(Path project, List<Path> javaSources, boolean copy, Duration timeout) {
         if (!properties.isImportPythonDualRun()) {
             return;
         }
         try {
-            EngineResult dual = pythonWorkspace.importSources(project, javaSources, copy, timeout);
+            Path dualProject = project.resolve(DUAL_RUN_SIDECAR);
+            Files.createDirectories(dualProject.resolve("sources"));
+            EngineResult dual = pythonWorkspace.importSources(dualProject, javaSources, copy, timeout);
             log.info(
-                    "import dual-run diagnostic exit={} timedOut={} sources={}",
+                    "import dual-run diagnostic exit={} timedOut={} sidecar={} sources={} "
+                            + "(requires Python + ppt-master; does not overwrite authoritative sources/)",
                     dual.exitCode(),
                     dual.timedOut(),
+                    dualProject,
                     javaSources.size());
-        } catch (RuntimeException ex) {
+        } catch (RuntimeException | IOException ex) {
             log.warn("import dual-run diagnostic failed: {}", ex.toString());
         }
-    }
-
-    private static EngineResult mergeResults(EngineResult javaResult, EngineResult pythonResult) {
-        StringBuilder out = new StringBuilder();
-        if (javaResult.output() != null && !javaResult.output().isBlank()) {
-            out.append(javaResult.output().stripTrailing());
-        }
-        if (pythonResult.output() != null && !pythonResult.output().isBlank()) {
-            if (out.length() > 0) {
-                out.append("\n\n");
-            }
-            out.append(pythonResult.output().stripTrailing());
-        }
-        // Java already succeeded; Python import-sources is soft for remaining formats.
-        return new EngineResult(0, out.toString(), javaResult.timedOut() || pythonResult.timedOut());
     }
 
     private static List<Path> expandSources(List<Path> sources) {
@@ -146,8 +104,10 @@ public final class RoutingProjectWorkspace implements ProjectWorkspace {
             if (source == null) {
                 continue;
             }
-            if (isUrl(source.toString())) {
-                expanded.add(source);
+            String raw = restoreUrlFromPathString(source.toString());
+            if (isUrl(raw)) {
+                // Re-wrap so downstream toString() keeps a parseable http(s) URL.
+                expanded.add(Path.of(raw));
                 continue;
             }
             if (Files.isDirectory(source)) {
@@ -163,32 +123,23 @@ public final class RoutingProjectWorkspace implements ProjectWorkspace {
         return expanded;
     }
 
-    private static boolean requiresPythonImport(Path source) {
-        if (source == null) {
-            return false;
+    /**
+     * {@link Path#of(String, String...)} collapses {@code https://} to {@code https:/} on Unix.
+     */
+    static String restoreUrlFromPathString(String value) {
+        if (value == null) {
+            return null;
         }
-        String raw = source.toString();
-        if (isUrl(raw)) {
-            return true;
+        String trimmed = value.trim();
+        if (trimmed.matches("(?i)https?:/[^/].*")) {
+            return trimmed.replaceFirst("(?i)^(https?):/", "$1://");
         }
-        return needsPythonConversion(source);
-    }
-
-    private static boolean needsPythonConversion(Path path) {
-        if (path == null || isUrl(path.toString()) || Files.isDirectory(path)) {
-            return false;
-        }
-        String name = path.getFileName() == null ? "" : path.getFileName().toString().toLowerCase(Locale.ROOT);
-        int dot = name.lastIndexOf('.');
-        if (dot < 0) {
-            return false;
-        }
-        return PYTHON_IMPORT_SUFFIXES.contains(name.substring(dot));
+        return trimmed;
     }
 
     private static boolean isUrl(String value) {
         try {
-            URI uri = URI.create(value.trim());
+            java.net.URI uri = java.net.URI.create(restoreUrlFromPathString(value));
             String scheme = uri.getScheme();
             return scheme != null
                     && (scheme.equalsIgnoreCase("http") || scheme.equalsIgnoreCase("https"))

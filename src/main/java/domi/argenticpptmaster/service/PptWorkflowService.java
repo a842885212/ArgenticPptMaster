@@ -76,7 +76,33 @@ public class PptWorkflowService {
     private static final int MAX_RESUME_ATTEMPTS = 5;
 
     private static final Set<String> ALLOWED_EXTENSIONS = Set.of(
-            "md", "markdown", "pdf", "ppt", "pptx", "doc", "docx", "xls", "xlsx", "xlsm", "csv", "tsv", "html");
+            "md",
+            "markdown",
+            "pdf",
+            "ppt",
+            "pptx",
+            "pptm",
+            "ppsx",
+            "ppsm",
+            "potx",
+            "potm",
+            "doc",
+            "docx",
+            "odt",
+            "rtf",
+            "tex",
+            "latex",
+            "rst",
+            "org",
+            "typ",
+            "xls",
+            "xlsx",
+            "xlsm",
+            "csv",
+            "tsv",
+            "html",
+            "htm");
+    private static final Set<String> UNSUPPORTED_EPUB_IPYNB = Set.of("epub", "ipynb");
     private static final Map<String, String> CANVAS_FORMATS = Map.ofEntries(
             Map.entry("ppt169", "ppt169"),
             Map.entry("ppt43", "ppt43"),
@@ -1781,6 +1807,12 @@ public class PptWorkflowService {
             throw new PptJobStateException("source file must have an extension");
         }
         String extension = fileName.substring(dotIndex + 1).toLowerCase();
+        if (UNSUPPORTED_EPUB_IPYNB.contains(extension)) {
+            throw new PptJobStateException(
+                    "unsupported source file extension: "
+                            + extension
+                            + " (.epub / .ipynb are temporarily unsupported)");
+        }
         if (!ALLOWED_EXTENSIONS.contains(extension)) {
             throw new PptJobStateException("unsupported source file extension: " + extension);
         }

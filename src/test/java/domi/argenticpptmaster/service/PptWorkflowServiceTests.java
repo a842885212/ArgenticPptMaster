@@ -375,6 +375,23 @@ class PptWorkflowServiceTests {
                 .hasMessage("unsupported source file extension: exe");
     }
 
+    @Test
+    void rejectsEpubAndIpynbAsTemporarilyUnsupported() {
+        MockMultipartFile epub = new MockMultipartFile(
+                "files", "book.epub", MediaType.APPLICATION_OCTET_STREAM_VALUE, "epub".getBytes());
+        MockMultipartFile ipynb = new MockMultipartFile(
+                "files", "nb.ipynb", MediaType.APPLICATION_JSON_VALUE, "{}".getBytes());
+
+        assertThatThrownBy(() -> workflowService.createJob(java.util.List.of(epub), "demo", "ppt169", null, null))
+                .isInstanceOf(PptJobStateException.class)
+                .hasMessageContaining("epub")
+                .hasMessageContaining("temporarily unsupported");
+        assertThatThrownBy(() -> workflowService.createJob(java.util.List.of(ipynb), "demo", "ppt169", null, null))
+                .isInstanceOf(PptJobStateException.class)
+                .hasMessageContaining("ipynb")
+                .hasMessageContaining("temporarily unsupported");
+    }
+
     /**
      * 验证传入不支持的画布格式（如包含路径遍历的 "../bad"）时，
      * 服务抛出 {@link PptJobStateException} 异常并提示不支持的格式。

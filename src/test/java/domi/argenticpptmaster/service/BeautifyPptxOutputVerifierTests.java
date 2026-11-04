@@ -49,7 +49,7 @@ class BeautifyPptxOutputVerifierTests {
         BeautifyPptxPlanStore.confirmDraft(job, draft.version(), draft.digest());
 
         PptMasterCommandExecutor commands = mock(PptMasterCommandExecutor.class);
-        when(commands.runPythonScript(eq("skills/ppt-master/scripts/ppt_to_md.py"), anyList(), any(Duration.class)))
+        when(commands.runPythonScript(eq(PythonPptxMarkdownReadback.SCRIPT), anyList(), any(Duration.class)))
                 .thenAnswer(invocation -> {
                     Path output = Path.of((String) ((java.util.List<?>) invocation.getArgument(1)).get(2));
                     Files.createDirectories(output.getParent());
@@ -58,7 +58,7 @@ class BeautifyPptxOutputVerifierTests {
                 });
 
         BeautifyPptxOutputVerifier.ReadbackResult result = new BeautifyPptxOutputVerifier(
-                new PythonPptxMarkdownReadback(commands, PythonPptxMarkdownReadback.BEAUTIFY_SCRIPT),
+                new PythonPptxMarkdownReadback(commands, PythonPptxMarkdownReadback.SCRIPT),
                 mock(PptWorkflowEvents.class))
                 .verify(job, export, project, Duration.ofSeconds(5));
 
@@ -91,7 +91,7 @@ class BeautifyPptxOutputVerifierTests {
         });
 
         BeautifyPptxOutputVerifier.ReadbackResult result = new BeautifyPptxOutputVerifier(
-                new PythonPptxMarkdownReadback(commands, PythonPptxMarkdownReadback.BEAUTIFY_SCRIPT),
+                new PythonPptxMarkdownReadback(commands, PythonPptxMarkdownReadback.SCRIPT),
                 mock(PptWorkflowEvents.class))
                 .verify(job, export, project, Duration.ofSeconds(5));
 
@@ -117,7 +117,7 @@ class BeautifyPptxOutputVerifierTests {
                 .thenReturn(new PptMasterCommandExecutor.CommandResult(1, "boom", false));
 
         assertThatThrownBy(() -> new BeautifyPptxOutputVerifier(
-                new PythonPptxMarkdownReadback(commands, PythonPptxMarkdownReadback.BEAUTIFY_SCRIPT),
+                new PythonPptxMarkdownReadback(commands, PythonPptxMarkdownReadback.SCRIPT),
                 mock(PptWorkflowEvents.class))
                 .verify(job, export, project, Duration.ofSeconds(5)))
                 .isInstanceOf(BeautifyPptxAnalysisException.class)

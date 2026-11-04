@@ -6,6 +6,7 @@ import domi.argenticpptmaster.engine.NativeEnhanceEngine;
 import domi.argenticpptmaster.engine.NotesAudioGateway;
 import domi.argenticpptmaster.engine.PptEngineBundle;
 import domi.argenticpptmaster.engine.PptxMarkdownReadback;
+import domi.argenticpptmaster.engine.RoutingPptxMarkdownReadback;
 import domi.argenticpptmaster.engine.ProjectWorkspace;
 import domi.argenticpptmaster.engine.RoutingBeautifyAnalysisEngine;
 import domi.argenticpptmaster.engine.RoutingNativeEnhanceEngine;
@@ -29,6 +30,7 @@ import domi.argenticpptmaster.engine.python.PythonPptxMarkdownReadback;
 import domi.argenticpptmaster.engine.file.JavaBeautifyAnalysisEngine;
 import domi.argenticpptmaster.engine.file.JavaImageGenerationGateway;
 import domi.argenticpptmaster.engine.file.JavaNativeEnhanceEngine;
+import domi.argenticpptmaster.engine.file.JavaPptxMarkdownReadback;
 import domi.argenticpptmaster.engine.file.JavaProjectWorkspace;
 import domi.argenticpptmaster.engine.file.JavaSpeakerNotesSplitter;
 import domi.argenticpptmaster.engine.file.JavaSvgFinalizer;
@@ -124,14 +126,24 @@ public class PptEngineConfiguration {
     @Bean
     @Primary
     @Qualifier("beautifyPptxMarkdownReadback")
-    PptxMarkdownReadback beautifyPptxMarkdownReadback(PptMasterCommandExecutor commands) {
-        return new PythonPptxMarkdownReadback(commands, PythonPptxMarkdownReadback.BEAUTIFY_SCRIPT);
+    PptxMarkdownReadback beautifyPptxMarkdownReadback(
+            PptMasterCommandExecutor commands, PptEngineProperties engineProperties) {
+        // Java is the production authority. Optional dual-run keeps Python as secondary diagnostics only.
+        return new RoutingPptxMarkdownReadback(
+                new JavaPptxMarkdownReadback(),
+                new PythonPptxMarkdownReadback(commands, PythonPptxMarkdownReadback.SCRIPT),
+                engineProperties);
     }
 
     @Bean
     @Qualifier("nativeEnhancePptxMarkdownReadback")
-    PptxMarkdownReadback nativeEnhancePptxMarkdownReadback(PptMasterCommandExecutor commands) {
-        return new PythonPptxMarkdownReadback(commands, PythonPptxMarkdownReadback.NATIVE_ENHANCE_SCRIPT);
+    PptxMarkdownReadback nativeEnhancePptxMarkdownReadback(
+            PptMasterCommandExecutor commands, PptEngineProperties engineProperties) {
+        // Java is the production authority. Optional dual-run keeps Python as secondary diagnostics only.
+        return new RoutingPptxMarkdownReadback(
+                new JavaPptxMarkdownReadback(),
+                new PythonPptxMarkdownReadback(commands, PythonPptxMarkdownReadback.SCRIPT),
+                engineProperties);
     }
 
     /**

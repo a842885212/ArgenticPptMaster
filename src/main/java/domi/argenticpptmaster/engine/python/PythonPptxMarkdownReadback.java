@@ -10,8 +10,17 @@ import java.util.Objects;
 
 public final class PythonPptxMarkdownReadback implements PptxMarkdownReadback {
 
-    public static final String BEAUTIFY_SCRIPT = "skills/ppt-master/scripts/ppt_to_md.py";
-    public static final String NATIVE_ENHANCE_SCRIPT = "skills/ppt-master/scripts/source_to_md/ppt_to_md.py";
+    /**
+     * ppt_to_md.py 唯一有效路径：ppt-master c4823393 已将脚本移入 source_to_md/ 子包，
+     * 顶层 scripts/ppt_to_md.py 路径已失效。保留旧常量名作为 deprecated alias，去 Python 化时清理。
+     */
+    public static final String SCRIPT = "skills/ppt-master/scripts/source_to_md/ppt_to_md.py";
+    /** @deprecated 使用 {@link #SCRIPT}（同一脚本，路径已修正）。 */
+    @Deprecated
+    public static final String BEAUTIFY_SCRIPT = SCRIPT;
+    /** @deprecated 使用 {@link #SCRIPT}（同一脚本，路径已修正）。 */
+    @Deprecated
+    public static final String NATIVE_ENHANCE_SCRIPT = SCRIPT;
 
     private final PptMasterCommandExecutor commands;
     private final String scriptRelativePath;

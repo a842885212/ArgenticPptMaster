@@ -5,6 +5,7 @@ import domi.argenticpptmaster.domain.BeautifyPptxErrorCode;
 import domi.argenticpptmaster.domain.NativeEnhanceErrorCode;
 import domi.argenticpptmaster.domain.PptConfirmation;
 import domi.argenticpptmaster.domain.PptConfirmationAction;
+import domi.argenticpptmaster.domain.PptConfirmationMode;
 import domi.argenticpptmaster.domain.PptJob;
 import domi.argenticpptmaster.domain.PptJobEvent;
 import domi.argenticpptmaster.domain.PptJobEventType;
@@ -390,7 +391,22 @@ public class PptWorkflowService {
                 : domi.argenticpptmaster.domain.TemplateFillConstraints.empty();
         UUID jobId = UUID.randomUUID();
         Path jobWorkspace = properties.workspacePath().resolve("jobs").resolve(jobId.toString()).toAbsolutePath().normalize();
-        PptJob job = new PptJob(jobId, normalizedProjectName, normalizedFormat, command.instruction(), mode, jobWorkspace);
+        PptConfirmationMode confirmationMode = command.resolvedConfirmationMode();
+        if (confirmationMode == PptConfirmationMode.AUTO
+                && mode != PptWorkflowMode.BASIC
+                && mode != PptWorkflowMode.IMAGE_ENHANCED
+                && mode != PptWorkflowMode.TEMPLATE_FILL) {
+            throw new PptJobStateException(
+                    "confirmationMode=AUTO is only supported for basic, image-enhanced, and template-fill workflows");
+        }
+        PptJob job = new PptJob(
+                jobId,
+                normalizedProjectName,
+                normalizedFormat,
+                command.instruction(),
+                mode,
+                confirmationMode,
+                jobWorkspace);
         if (mode == PptWorkflowMode.TEMPLATE_FILL) {
             job.assignTemplateConstraints(templateConstraints);
             job.assignOwnership(access.subjectId(), access.tenantId());
@@ -532,6 +548,9 @@ public class PptWorkflowService {
             Integer outlineVersion, List<PptOutlineEditRequest> outlineEdits, String revisionImpactToken) {
         PptJob job = getJob(jobId);
         jobAccessAuthorizer.assertCanAccess(job);
+        if (job.confirmationMode() == PptConfirmationMode.AUTO) {
+            throw new PptJobStateException("AUTO jobs do not accept manual confirmation");
+        }
         PptConfirmationAction effectiveAction = action == null
                 ? (approved ? PptConfirmationAction.APPROVE : PptConfirmationAction.CANCEL)
                 : action;
@@ -615,9 +634,9 @@ public class PptWorkflowService {
                 }
             }
             lockApprovedOutline(job, outlineVersion);
-            if (confirmedNode == PptJobNode.OUTLINE_CONFIRMED
-                    && job.currentNode().orElse(null) == PptJobNode.OUTLINE_DRAFTED) {
-                job.completeNode(PptJobNode.OUTLINE_DRAFTED, Map.of("confirmed", true));
+            if (confirmedNode == PptJobNode.OUTLINE_CONFIRMED) {
+                PptOneShotApprovalEffects.completeOutlineDraftedIfNeeded(
+                        job, Map.of("confirmed", true));
             }
             if (beautifyPlan == null) {
                 job.confirmNode(confirmedNode);
@@ -835,12 +854,16 @@ public class PptWorkflowService {
         if (outline.locked()) {
             return;
         }
-        PptOutline locked = outline.lock();
-        job.projectPath().ifPresent(path -> outlineStore.write(path, locked));
+        if (job.projectPath().isPresent()) {
+            PptOneShotApprovalEffects.lockOutlineAtVersion(outlineStore, job, payloadVersion);
+            outline = currentOutline(job, payloadVersion);
+        } else {
+            outline = outline.lock();
+        }
         if (contextData instanceof Map<?, ?> map) {
             Map<String, Object> updatedContext = new java.util.LinkedHashMap<>();
             map.forEach((key, value) -> updatedContext.put(String.valueOf(key), value));
-            updatedContext.put("version", locked.version());
+            updatedContext.put("version", outline.version());
             updatedContext.put("locked", true);
             Map<String, Object> payload = new java.util.LinkedHashMap<>(job.confirmationPayload());
             payload.put("contextData", updatedContext);
@@ -1086,8 +1109,13 @@ public class PptWorkflowService {
             }
             int expectedVersion = extractPositiveInt(context.get("version"), "version");
             String expectedDigest = extractNonBlankString(context.get("digest"), "digest");
-            templateFillPlanStore.confirmCurrentDraft(job, confirmationId, expectedVersion, expectedDigest);
-            job.confirmNode(PptJobNode.FILL_PLAN_CONFIRMED);
+            java.nio.file.Path planPath;
+            try {
+                planPath = PptOneShotApprovalEffects.confirmTemplateFillDraft(
+                        templateFillPlanStore, job, confirmationId, expectedVersion, expectedDigest);
+            } catch (IllegalStateException ex) {
+                throw new PptJobStateException(ex.getMessage());
+            }
             PptConfirmation confirmation = new PptConfirmation(
                     confirmationId, true, Map.of(), null, Instant.now(),
                     action, null, List.of(), null, List.of());
@@ -1096,11 +1124,10 @@ public class PptWorkflowService {
             events.record(job, PptJobEvent.of(PptJobEventType.CONFIRMATION_RECEIVED, "confirmation received",
                     Map.of("confirmationId", confirmationId, "confirmedNode", PptJobNode.FILL_PLAN_CONFIRMED.name(),
                             "action", action.name())));
-            java.nio.file.Path planPath = templateFillPlanStore.findConfirmedPlan(job)
-                    .orElseThrow(() -> new PptJobStateException("confirmed fill plan is missing"));
-            if (!job.markTemplateFillExecutionStarted()) {
-                throw new domi.argenticpptmaster.exception.PptTemplateFillConflictException(
-                        "template-fill execution has already started");
+            try {
+                PptOneShotApprovalEffects.claimTemplateFillExecution(job);
+            } catch (IllegalStateException ex) {
+                throw new domi.argenticpptmaster.exception.PptTemplateFillConflictException(ex.getMessage());
             }
             repository.save(job);
             events.record(job, PptJobEvent.of(PptJobEventType.TEMPLATE_FILL_PLAN_ACCEPTED,

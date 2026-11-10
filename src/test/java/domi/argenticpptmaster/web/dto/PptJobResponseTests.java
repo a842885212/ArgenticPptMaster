@@ -56,6 +56,7 @@ class PptJobResponseTests {
 
         assertThat(response.status()).isEqualTo(domi.argenticpptmaster.domain.PptJobStatus.FAILED);
         assertThat(response.workflowMode()).isEqualTo("BASIC");
+        assertThat(response.confirmationMode()).isEqualTo("INTERACTIVE");
         assertThat(response.lastCompletedNode()).isEqualTo(PptJobNode.PROJECT_READY);
         assertThat(response.lastFailureNode()).isEqualTo(PptJobNode.PLAN_CONFIRMED);
         assertThat(response.resumeCount()).isEqualTo(0);

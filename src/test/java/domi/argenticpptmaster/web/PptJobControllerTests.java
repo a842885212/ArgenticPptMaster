@@ -11,6 +11,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import domi.argenticpptmaster.domain.PptConfirmationMode;
 import domi.argenticpptmaster.domain.PptJob;
 import domi.argenticpptmaster.domain.PptJobNode;
 import domi.argenticpptmaster.domain.PptConfirmationAction;
@@ -127,7 +128,71 @@ class PptJobControllerTests {
 
         verify(workflowService).createJob(argThat(command ->
                 constraints.equals(command.templateConstraintsJson())
-                        && "template-fill".equals(command.workflowMode())));
+                        && "template-fill".equals(command.workflowMode())
+                        && command.resolvedConfirmationMode() == PptConfirmationMode.INTERACTIVE));
+    }
+
+    @Test
+    void createAutoForcesAutoConfirmationMode() throws Exception {
+        PptJob job = new PptJob(
+                JOB_ID,
+                "demo",
+                "ppt169",
+                "make a deck",
+                PptWorkflowMode.BASIC,
+                PptConfirmationMode.AUTO,
+                Path.of("workspace"));
+        given(workflowService.createJob(any(PptJobCreateCommand.class))).willReturn(job);
+
+        MockMultipartFile source = new MockMultipartFile("files", "source.md", "text/markdown", "# title".getBytes());
+
+        mockMvc.perform(multipart("/api/ppt-jobs/auto").file(source).param("workflowMode", "basic"))
+                .andExpect(status().isAccepted())
+                .andExpect(jsonPath("$.confirmationMode").value("AUTO"))
+                .andExpect(jsonPath("$.workflowMode").value("BASIC"));
+
+        verify(workflowService).createJob(argThat(command ->
+                command.resolvedConfirmationMode() == PptConfirmationMode.AUTO
+                        && "basic".equals(command.workflowMode())));
+    }
+
+    @Test
+    void createAutoRejectsUnsupportedWorkflowModes() throws Exception {
+        given(workflowService.createJob(any(PptJobCreateCommand.class)))
+                .willThrow(new PptJobStateException(
+                        "confirmationMode=AUTO is only supported for basic, image-enhanced, and template-fill workflows"));
+
+        MockMultipartFile source = new MockMultipartFile("files", "deck.pptx", "application/octet-stream", "pptx".getBytes());
+
+        mockMvc.perform(multipart("/api/ppt-jobs/auto").file(source).param("workflowMode", "beautify-pptx"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message", containsString("confirmationMode=AUTO")));
+    }
+
+    @Test
+    void confirmRejectsAutoJobs() throws Exception {
+        given(workflowService.submitConfirmation(
+                eq(JOB_ID),
+                eq("c-1"),
+                eq(true),
+                any(),
+                any(),
+                eq(PptConfirmationAction.APPROVE),
+                any(),
+                any()))
+                .willThrow(new PptJobStateException("AUTO jobs do not accept manual confirmation"));
+
+        mockMvc.perform(post("/api/ppt-jobs/{jobId}/confirm", JOB_ID)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "confirmationId":"c-1",
+                                  "approved":true,
+                                  "action":"APPROVE"
+                                }
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message", containsString("AUTO jobs do not accept manual confirmation")));
     }
 
     @Test

@@ -1,5 +1,6 @@
 package domi.argenticpptmaster.agent;
 
+import domi.argenticpptmaster.domain.PptConfirmationMode;
 import domi.argenticpptmaster.domain.PptJob;
 import domi.argenticpptmaster.domain.PptJobNode;
 import domi.argenticpptmaster.domain.PptJobNodeStatus;
@@ -14,12 +15,15 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 根据已持久化的工作流证据决定确认阶段是否需要再次等待用户。
  *
  * <p>该策略不修改任务状态。调用方只有在得到 {@link Disposition#WAIT_FOR_USER}
  * 后才可以创建确认；已完成的一次性阶段返回 {@link Disposition#AUTO_ACKNOWLEDGE}，
+ * {@code confirmationMode=AUTO} 下首次合法一次性阶段返回 {@link Disposition#AUTO_APPROVE}，
+ * AUTO 图片失败决策返回 {@link Disposition#AUTO_IMAGE_RETRY}，
  * 非法顺序或版本冲突返回 {@link Disposition#REJECT}。</p>
  */
 final class PptConfirmationStagePolicy {
@@ -27,6 +31,8 @@ final class PptConfirmationStagePolicy {
     enum Disposition {
         WAIT_FOR_USER,
         AUTO_ACKNOWLEDGE,
+        AUTO_APPROVE,
+        AUTO_IMAGE_RETRY,
         REJECT
     }
 
@@ -39,16 +45,31 @@ final class PptConfirmationStagePolicy {
             return new Decision(Disposition.AUTO_ACKNOWLEDGE, node, "stage is already approved");
         }
 
+        private static Decision autoApprove(PptJobNode node) {
+            return new Decision(Disposition.AUTO_APPROVE, node, "auto confirmation mode approved default content");
+        }
+
+        private static Decision autoImageRetry(PptJobNode node) {
+            return new Decision(Disposition.AUTO_IMAGE_RETRY, node, "auto confirmation mode retries failed images");
+        }
+
         private static Decision reject(PptJobNode node, String reason) {
             return new Decision(Disposition.REJECT, node, reason);
         }
     }
 
+    private static final Set<String> ONE_SHOT_AUTO_APPROVE_STAGES = Set.of(
+            "outline_confirmation",
+            "plan_confirmation",
+            "image_manifest_confirmation",
+            "image_ready_continue_confirmation",
+            "template_fill_plan");
+
     private final PptOutlineStore outlineStore = new PptOutlineStore();
     private final PptImageManifestStore manifestStore = new PptImageManifestStore();
 
     Decision evaluate(PptJob job, String stage, Map<String, Object> contextData) {
-        return switch (stage) {
+        Decision decision = switch (stage) {
             case "outline_confirmation" -> evaluateOutline(job, contextData);
             case "plan_confirmation" -> evaluatePlan(job);
             case "image_manifest_confirmation" -> evaluateImageManifest(job, contextData);
@@ -60,6 +81,21 @@ final class PptConfirmationStagePolicy {
             case "audio_voice_confirmation" -> evaluateAudioVoice(job, contextData);
             default -> Decision.waitFor(null);
         };
+        return remapForConfirmationMode(job, stage, decision);
+    }
+
+    private Decision remapForConfirmationMode(PptJob job, String stage, Decision decision) {
+        if (job.confirmationMode() != PptConfirmationMode.AUTO
+                || decision.disposition() != Disposition.WAIT_FOR_USER) {
+            return decision;
+        }
+        if ("image_retry_decision".equals(stage)) {
+            return Decision.autoImageRetry(decision.confirmedNode());
+        }
+        if (ONE_SHOT_AUTO_APPROVE_STAGES.contains(stage)) {
+            return Decision.autoApprove(decision.confirmedNode());
+        }
+        return decision;
     }
 
     private Decision evaluateEnhancementPlan(PptJob job, Map<String, Object> contextData) {

@@ -7,8 +7,10 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import domi.argenticpptmaster.config.AgentScopeProperties;
 import domi.argenticpptmaster.config.PptMasterProperties;
+import domi.argenticpptmaster.config.PptAutoProperties;
 import domi.argenticpptmaster.domain.PptConfirmation;
 import domi.argenticpptmaster.domain.PptConfirmationAction;
+import domi.argenticpptmaster.domain.PptConfirmationMode;
 import domi.argenticpptmaster.domain.PptOutline;
 import domi.argenticpptmaster.domain.PptSlideEdit;
 import domi.argenticpptmaster.domain.PptJob;
@@ -18,10 +20,14 @@ import domi.argenticpptmaster.domain.PptJobStatus;
 import domi.argenticpptmaster.domain.PptSourceFile;
 import domi.argenticpptmaster.domain.PptWorkflowMode;
 import domi.argenticpptmaster.domain.SlideOutline;
+import domi.argenticpptmaster.service.PptAutoConfirmationApplier;
 import domi.argenticpptmaster.service.PptImageManifestStore;
 import domi.argenticpptmaster.service.PptJobEventPublisher;
 import domi.argenticpptmaster.service.PptOutlineStore;
+import domi.argenticpptmaster.service.PptTemplateFillAsyncRunner;
+import domi.argenticpptmaster.service.PptTemplateFillPlanStore;
 import domi.argenticpptmaster.service.PptWorkflowEvents;
+import domi.argenticpptmaster.service.TemplateFillPlanValidator;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
 import io.agentscope.core.event.AgentResultEvent;
@@ -1346,6 +1352,247 @@ class AgentScopePptAgentRunnerTests {
         assertThat(text).contains("如果发现 checkpoint 与真实文件状态不一致");
     }
 
+    @Test
+    void autoModeApprovesOutlineWithoutWaitingConfirmation() {
+        PptJob job = autoSampleJob();
+        RecordingAgentFactory factory = new RecordingAgentFactory();
+        factory.enqueue((messages, runtimeContext) -> Flux.just(
+                new AgentStartEvent("reply-1", runtimeContext.getSessionId(), "test-agent"),
+                new RequireExternalExecutionEvent(
+                        "reply-1",
+                        List.of(new ToolUseBlock(
+                                "call-1",
+                                "request_plan_confirmation",
+                                outlineConfirmationInput("auto outline", "continue"))))));
+        factory.enqueue((messages, runtimeContext) -> Flux.concat(
+                Flux.just(new AgentStartEvent("reply-2", runtimeContext.getSessionId(), "test-agent")),
+                Flux.defer(() -> {
+                    job.complete(Path.of("var/ppt-master/exports/auto-outline.pptx"));
+                    return Flux.just(new AgentResultEvent(new AssistantMessage("completed")));
+                })));
+
+        PptWorkflowEvents events = new PptWorkflowEvents(new PptJobEventPublisher());
+        AgentScopePptAgentRunner runner = new AgentScopePptAgentRunner(
+                pptMasterProperties(),
+                agentScopeProperties(),
+                factory,
+                events,
+                new PptAutoConfirmationApplier(
+                        new PptTemplateFillPlanStore(pptMasterProperties(), new TemplateFillPlanValidator()),
+                        new NoOpTemplateFillAsyncRunner(),
+                        events),
+                PptAutoProperties.defaults());
+
+        runner.start(job);
+
+        assertThat(job.status()).isEqualTo(PptJobStatus.COMPLETED);
+        assertThat(job.currentConfirmationId()).isEmpty();
+        assertThat(job.nodeExecution(PptJobNode.OUTLINE_CONFIRMED).status().name()).isEqualTo("COMPLETED");
+        assertThat(job.events()).filteredOn(event -> event.type() == PptJobEventType.CONFIRMATION_REQUIRED).isEmpty();
+        assertThat(job.events()).filteredOn(event -> event.type() == PptJobEventType.CONFIRMATION_RECEIVED)
+                .singleElement()
+                .satisfies(event -> assertThat(event.data())
+                        .containsEntry("actor", "system")
+                        .containsEntry("confirmationMode", "AUTO"));
+        ToolResultBlock result = factory.messages().get(1).get(0).getContentBlocks(ToolResultBlock.class).get(0);
+        assertThat(((TextBlock) result.getOutput().get(0)).getText()).contains("AUTO_APPROVED");
+    }
+
+    @Test
+    void autoModeApprovesImageManifestAndReadyGates() {
+        PptJob job = autoImageEnhancedJob();
+        prepareImageWorkflow(job, "Pending");
+        RecordingAgentFactory factory = new RecordingAgentFactory();
+        Map<String, Object> manifestInput = Map.of(
+                "stage", "image_manifest_confirmation",
+                "contextData", Map.of(
+                        "type", "ppt_image_manifest",
+                        "outlineVersion", 1,
+                        "items", List.of()));
+        factory.enqueue((messages, runtimeContext) -> Flux.just(
+                new AgentStartEvent("reply-1", runtimeContext.getSessionId(), "test-agent"),
+                new RequireExternalExecutionEvent("reply-1", List.of(new ToolUseBlock(
+                        "manifest-1", "request_plan_confirmation", manifestInput)))));
+        factory.enqueue((messages, runtimeContext) -> {
+            updateManifestStatus(job, "Generated");
+            job.completeNode(PptJobNode.IMAGES_GENERATED, Map.of());
+            Map<String, Object> readyInput = Map.of(
+                    "stage", "image_ready_continue_confirmation",
+                    "contextData", Map.of(
+                            "type", "ppt_image_manifest",
+                            "outlineVersion", 1,
+                            "items", List.of()));
+            return Flux.just(
+                    new AgentStartEvent("reply-2", runtimeContext.getSessionId(), "test-agent"),
+                    new RequireExternalExecutionEvent("reply-2", List.of(new ToolUseBlock(
+                            "ready-1", "request_plan_confirmation", readyInput))));
+        });
+        factory.enqueue((messages, runtimeContext) -> Flux.concat(
+                Flux.just(new AgentStartEvent("reply-3", runtimeContext.getSessionId(), "test-agent")),
+                Flux.defer(() -> {
+                    job.complete(Path.of("var/ppt-master/exports/auto-images.pptx"));
+                    return Flux.just(new AgentResultEvent(new AssistantMessage("completed")));
+                })));
+
+        PptWorkflowEvents events = new PptWorkflowEvents(new PptJobEventPublisher());
+        AgentScopePptAgentRunner runner = new AgentScopePptAgentRunner(
+                pptMasterProperties(), agentScopeProperties(), factory, events,
+                new PptAutoConfirmationApplier(
+                        new PptTemplateFillPlanStore(pptMasterProperties(), new TemplateFillPlanValidator()),
+                        new NoOpTemplateFillAsyncRunner(),
+                        events),
+                PptAutoProperties.defaults());
+
+        runner.start(job);
+
+        assertThat(job.status()).isEqualTo(PptJobStatus.COMPLETED);
+        assertThat(job.nodeExecution(PptJobNode.IMAGE_MANIFEST_CONFIRMED).status().name()).isEqualTo("COMPLETED");
+        assertThat(job.nodeExecution(PptJobNode.IMAGE_CONTINUE_CONFIRMED).status().name()).isEqualTo("COMPLETED");
+        assertThat(job.events()).filteredOn(event -> event.type() == PptJobEventType.CONFIRMATION_REQUIRED).isEmpty();
+        assertThat(job.events()).filteredOn(event -> event.type() == PptJobEventType.CONFIRMATION_RECEIVED)
+                .allSatisfy(event -> assertThat(event.data())
+                        .containsEntry("actor", "system")
+                        .containsEntry("confirmationMode", "AUTO"));
+    }
+
+    @Test
+    void autoModeRetriesFailedImagesUntilExhausted() {
+        PptJob job = autoImageEnhancedJob();
+        prepareImageWorkflow(job, "Failed");
+        job.confirmNode(PptJobNode.IMAGE_MANIFEST_CONFIRMED);
+        RecordingAgentFactory factory = new RecordingAgentFactory();
+        Map<String, Object> retryInput = Map.of(
+                "stage", "image_retry_decision",
+                "contextData", Map.of(
+                        "type", "ppt_image_manifest",
+                        "outlineVersion", 1,
+                        "items", List.of()));
+        for (int index = 1; index <= 3; index++) {
+            int callIndex = index;
+            factory.enqueue((messages, runtimeContext) -> Flux.just(
+                    new AgentStartEvent("reply-" + callIndex, runtimeContext.getSessionId(), "test-agent"),
+                    new RequireExternalExecutionEvent("reply-" + callIndex, List.of(new ToolUseBlock(
+                            "retry-" + callIndex, "request_plan_confirmation", retryInput)))));
+        }
+
+        PptWorkflowEvents events = new PptWorkflowEvents(new PptJobEventPublisher());
+        AgentScopePptAgentRunner runner = new AgentScopePptAgentRunner(
+                pptMasterProperties(), agentScopeProperties(), factory, events,
+                new PptAutoConfirmationApplier(
+                        new PptTemplateFillPlanStore(pptMasterProperties(), new TemplateFillPlanValidator()),
+                        new NoOpTemplateFillAsyncRunner(),
+                        events),
+                new PptAutoProperties(2));
+
+        assertThatThrownBy(() -> runner.start(job))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("exhausted");
+        assertThat(job.autoImageRetryRounds()).isEqualTo(2);
+        assertThat(job.events()).filteredOn(event ->
+                        "confirmation_auto_image_retry".equals(event.data().get("kind")))
+                .hasSize(2)
+                .allSatisfy(event -> assertThat(event.data())
+                        .containsEntry("actor", "system")
+                        .containsEntry("confirmationMode", "AUTO"));
+        assertThat(job.events()).filteredOn(event -> event.type() == PptJobEventType.CONFIRMATION_REQUIRED).isEmpty();
+    }
+
+    @Test
+    void autoModeHandsOffTemplateFillPlanWithoutWaiting() throws Exception {
+        Path workspace = tempDir.resolve("auto-template-fill");
+        Files.createDirectories(workspace.resolve("analysis"));
+        Files.copy(
+                getClass().getResourceAsStream("/template-fill/template.slide_library.json"),
+                workspace.resolve("analysis/template.slide_library.json"));
+        String draft = Files.readString(Path.of(
+                getClass().getResource("/template-fill/fill-plan-draft-valid.json").toURI()));
+        PptJob job = new PptJob(
+                UUID.randomUUID(),
+                "demo",
+                "ppt169",
+                "fill",
+                PptWorkflowMode.TEMPLATE_FILL,
+                PptConfirmationMode.AUTO,
+                workspace);
+        job.prepareProject(workspace);
+        job.completeNode(PptJobNode.FILL_PLAN_DRAFTED, Map.of());
+        PptTemplateFillPlanStore planStore = new PptTemplateFillPlanStore(
+                pptMasterProperties(), new TemplateFillPlanValidator());
+        var metadata = planStore.storeDraftPlan(
+                job, draft, workspace.resolve("analysis/template.slide_library.json"));
+        RecordingTemplateFillAsyncRunner templateRunner = new RecordingTemplateFillAsyncRunner();
+        RecordingAgentFactory factory = new RecordingAgentFactory();
+        Map<String, Object> input = Map.of(
+                "stage", "template_fill_plan",
+                "contextData", Map.of(
+                        "type", "template_fill_plan",
+                        "version", metadata.version(),
+                        "digest", metadata.digest()));
+        factory.enqueue((messages, runtimeContext) -> Flux.just(
+                new AgentStartEvent("reply-1", runtimeContext.getSessionId(), "test-agent"),
+                new RequireExternalExecutionEvent("reply-1", List.of(new ToolUseBlock(
+                        "fill-1", "request_plan_confirmation", input)))));
+
+        PptWorkflowEvents events = new PptWorkflowEvents(new PptJobEventPublisher());
+        AgentScopePptAgentRunner runner = new AgentScopePptAgentRunner(
+                pptMasterProperties(), agentScopeProperties(), factory, events,
+                new PptAutoConfirmationApplier(planStore, templateRunner, events),
+                PptAutoProperties.defaults());
+
+        runner.start(job);
+
+        assertThat(job.currentConfirmationId()).isEmpty();
+        assertThat(job.templateFillExecutionStarted()).isTrue();
+        assertThat(job.nodeExecution(PptJobNode.FILL_PLAN_CONFIRMED).status().name()).isEqualTo("COMPLETED");
+        assertThat(templateRunner.startedJobs).containsExactly(job.id());
+        assertThat(job.events()).filteredOn(event -> event.type() == PptJobEventType.CONFIRMATION_REQUIRED).isEmpty();
+        assertThat(job.events()).filteredOn(event -> event.type() == PptJobEventType.CONFIRMATION_RECEIVED)
+                .singleElement()
+                .satisfies(event -> assertThat(event.data())
+                        .containsEntry("actor", "system")
+                        .containsEntry("confirmationMode", "AUTO"));
+        assertThat(factory.messages()).hasSize(1);
+    }
+
+    @Test
+    void autoModeRejectsInvalidTemplateFillDraftInsteadOfWaiting() {
+        PptJob job = new PptJob(
+                UUID.randomUUID(),
+                "demo",
+                "ppt169",
+                "fill",
+                PptWorkflowMode.TEMPLATE_FILL,
+                PptConfirmationMode.AUTO,
+                tempDir.resolve("auto-template-fill-invalid"));
+        job.prepareProject(job.workspacePath());
+        RecordingAgentFactory factory = new RecordingAgentFactory();
+        Map<String, Object> input = Map.of(
+                "stage", "template_fill_plan",
+                "contextData", Map.of(
+                        "type", "template_fill_plan",
+                        "version", 1,
+                        "digest", "missing"));
+        factory.enqueue((messages, runtimeContext) -> Flux.just(
+                new AgentStartEvent("reply-1", runtimeContext.getSessionId(), "test-agent"),
+                new RequireExternalExecutionEvent("reply-1", List.of(new ToolUseBlock(
+                        "fill-bad", "request_plan_confirmation", input)))));
+
+        PptWorkflowEvents events = new PptWorkflowEvents(new PptJobEventPublisher());
+        AgentScopePptAgentRunner runner = new AgentScopePptAgentRunner(
+                pptMasterProperties(), agentScopeProperties(), factory, events,
+                new PptAutoConfirmationApplier(
+                        new PptTemplateFillPlanStore(pptMasterProperties(), new TemplateFillPlanValidator()),
+                        new NoOpTemplateFillAsyncRunner(),
+                        events),
+                PptAutoProperties.defaults());
+
+        assertThatThrownBy(() -> runner.start(job))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("draft artifacts are missing");
+        assertThat(job.status()).isNotEqualTo(PptJobStatus.WAITING_CONFIRMATION);
+        assertThat(job.events()).filteredOn(event -> event.type() == PptJobEventType.CONFIRMATION_REQUIRED).isEmpty();
+    }
+
     private static PptJob sampleJob() {
         PptJob job = new PptJob(
                 UUID.randomUUID(),
@@ -1353,6 +1600,19 @@ class AgentScopePptAgentRunnerTests {
                 "ppt169",
                 "make a deck",
                 PptWorkflowMode.BASIC,
+                Path.of("var/ppt-master/jobs/demo"));
+        job.addSource(new PptSourceFile("source.md", "text/markdown", 12L, Path.of("var/ppt-master/jobs/demo/uploads/source.md")));
+        return job;
+    }
+
+    private static PptJob autoSampleJob() {
+        PptJob job = new PptJob(
+                UUID.randomUUID(),
+                "demo",
+                "ppt169",
+                "make a deck",
+                PptWorkflowMode.BASIC,
+                PptConfirmationMode.AUTO,
                 Path.of("var/ppt-master/jobs/demo"));
         job.addSource(new PptSourceFile("source.md", "text/markdown", 12L, Path.of("var/ppt-master/jobs/demo/uploads/source.md")));
         return job;
@@ -1368,6 +1628,42 @@ class AgentScopePptAgentRunnerTests {
                 Path.of("var/ppt-master/jobs/demo"));
         job.addSource(new PptSourceFile("source.md", "text/markdown", 12L, Path.of("var/ppt-master/jobs/demo/uploads/source.md")));
         return job;
+    }
+
+    private static PptJob autoImageEnhancedJob() {
+        PptJob job = new PptJob(
+                UUID.randomUUID(),
+                "demo",
+                "ppt169",
+                "make a deck with ai images",
+                PptWorkflowMode.IMAGE_ENHANCED,
+                PptConfirmationMode.AUTO,
+                Path.of("var/ppt-master/jobs/demo"));
+        job.addSource(new PptSourceFile("source.md", "text/markdown", 12L, Path.of("var/ppt-master/jobs/demo/uploads/source.md")));
+        return job;
+    }
+
+    private static final class NoOpTemplateFillAsyncRunner extends PptTemplateFillAsyncRunner {
+        NoOpTemplateFillAsyncRunner() {
+            super(null, null, null, null);
+        }
+
+        @Override
+        public void start(UUID jobId, Path planPath) {
+        }
+    }
+
+    private static final class RecordingTemplateFillAsyncRunner extends PptTemplateFillAsyncRunner {
+        private final List<UUID> startedJobs = new java.util.ArrayList<>();
+
+        RecordingTemplateFillAsyncRunner() {
+            super(null, null, null, null);
+        }
+
+        @Override
+        public void start(UUID jobId, Path planPath) {
+            startedJobs.add(jobId);
+        }
     }
 
     private void prepareImageWorkflow(PptJob job, String imageStatus) {

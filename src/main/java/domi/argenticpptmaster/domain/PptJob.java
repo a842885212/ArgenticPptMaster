@@ -30,8 +30,10 @@ public class PptJob {
     private final String format;
     private final String instruction;
     private final PptWorkflowMode workflowMode;
+    private final PptConfirmationMode confirmationMode;
     private final Path workspacePath;
     private final Instant createdAt;
+    private int autoImageRetryRounds;
     private final List<PptSourceFile> sourceFiles = new ArrayList<>();
     private final List<PptJobEvent> events = new ArrayList<>();
     private PptTemplateFile template;
@@ -78,7 +80,7 @@ public class PptJob {
     private Instant terminalAt;
 
     /**
-     * 创建一个新的 PPT 任务实例。
+     * 创建一个新的 PPT 任务实例（默认 {@link PptConfirmationMode#INTERACTIVE}）。
      *
      * @param id            任务唯一标识
      * @param projectName   项目名称
@@ -88,11 +90,34 @@ public class PptJob {
      * @param workspacePath 任务工作区路径
      */
     public PptJob(UUID id, String projectName, String format, String instruction, PptWorkflowMode workflowMode, Path workspacePath) {
+        this(id, projectName, format, instruction, workflowMode, PptConfirmationMode.INTERACTIVE, workspacePath);
+    }
+
+    /**
+     * 创建一个带显式确认模式的 PPT 任务实例。
+     *
+     * @param id               任务唯一标识
+     * @param projectName      项目名称
+     * @param format           画布格式（如 ppt169、wechat 等）
+     * @param instruction      用户提供的生成指令
+     * @param workflowMode     工作流模式
+     * @param confirmationMode 确认推进模式（空值视为 INTERACTIVE）
+     * @param workspacePath    任务工作区路径
+     */
+    public PptJob(
+            UUID id,
+            String projectName,
+            String format,
+            String instruction,
+            PptWorkflowMode workflowMode,
+            PptConfirmationMode confirmationMode,
+            Path workspacePath) {
         this.id = id;
         this.projectName = projectName;
         this.format = format;
         this.instruction = instruction;
         this.workflowMode = workflowMode == null ? PptWorkflowMode.BASIC : workflowMode;
+        this.confirmationMode = confirmationMode == null ? PptConfirmationMode.INTERACTIVE : confirmationMode;
         this.workspacePath = workspacePath;
         this.createdAt = Instant.now();
         this.updatedAt = createdAt;
@@ -131,6 +156,21 @@ public class PptJob {
 
     public synchronized PptWorkflowMode workflowMode() {
         return workflowMode;
+    }
+
+    public synchronized PptConfirmationMode confirmationMode() {
+        return confirmationMode;
+    }
+
+    public synchronized int autoImageRetryRounds() {
+        return autoImageRetryRounds;
+    }
+
+    /** 记录一次 AUTO 图片工作流重试（仅递增计数）。 */
+    public synchronized int recordAutoImageRetry() {
+        this.autoImageRetryRounds++;
+        touch();
+        return this.autoImageRetryRounds;
     }
 
     public synchronized Path workspacePath() {
@@ -538,6 +578,10 @@ public class PptJob {
         currentNode = PptJobNode.BEAUTIFY_PLAN_DRAFTED;
         touch();
         return true;
+    }
+
+    public synchronized boolean templateFillExecutionStarted() {
+        return templateFillExecutionClaimed;
     }
 
     /** 人工批准 confirmed plan 后领取原生执行。 */

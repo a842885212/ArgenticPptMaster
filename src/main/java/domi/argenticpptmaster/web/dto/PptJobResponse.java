@@ -26,6 +26,7 @@ import java.util.UUID;
  * @param format                PPT 输出格式
  * @param status                任务当前状态
  * @param workflowMode          工作流模式
+ * @param confirmationMode      确认推进模式（INTERACTIVE / AUTO）
  * @param currentNode           当前正在执行或等待确认的节点
  * @param lastCompletedNode     最近成功完成的节点
  * @param lastFailureNode       最近失败的节点
@@ -52,6 +53,7 @@ public record PptJobResponse(
         String format,
         PptJobStatus status,
         String workflowMode,
+        String confirmationMode,
         PptJobNode currentNode,
         PptJobNode lastCompletedNode,
         PptJobNode lastFailureNode,
@@ -99,6 +101,7 @@ public record PptJobResponse(
                 job.format(),
                 job.status(),
                 job.workflowMode().name(),
+                job.confirmationMode().name(),
                 job.currentNode().orElse(null),
                 job.lastCompletedNode().orElse(null),
                 job.lastFailureNode().orElse(null),

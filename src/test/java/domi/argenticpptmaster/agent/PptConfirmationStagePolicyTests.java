@@ -330,6 +330,90 @@ class PptConfirmationStagePolicyTests {
     }
 
     @Test
+    void autoModeRemapsFirstOutlineGateToAutoApprove() {
+        PptJob job = autoJob(PptWorkflowMode.BASIC);
+        writeOutline(job, false);
+
+        PptConfirmationStagePolicy.Decision decision =
+                policy.evaluate(job, "outline_confirmation", Map.of("version", 1));
+
+        assertThat(decision.disposition()).isEqualTo(PptConfirmationStagePolicy.Disposition.AUTO_APPROVE);
+        assertThat(decision.confirmedNode()).isEqualTo(PptJobNode.OUTLINE_CONFIRMED);
+    }
+
+    @Test
+    void autoModeKeepsRejectForInvalidOutlineGate() {
+        PptJob job = autoJob(PptWorkflowMode.BASIC);
+        writeOutline(job, false);
+
+        assertThat(policy.evaluate(job, "outline_confirmation", Map.of("version", 9)).disposition())
+                .isEqualTo(PptConfirmationStagePolicy.Disposition.REJECT);
+    }
+
+    @Test
+    void autoModeRemapsImageManifestAndReadyToAutoApprove() {
+        PptJob job = autoJob(PptWorkflowMode.IMAGE_ENHANCED);
+        writeOutline(job, true);
+        new PptImageManifestStore().writeFromLockedOutline(job.projectPath().orElseThrow());
+        job.confirmNode(PptJobNode.OUTLINE_CONFIRMED);
+        job.completeNode(PptJobNode.IMAGES_MANIFEST_WRITTEN, Map.of());
+
+        assertThat(policy.evaluate(job, "image_manifest_confirmation", Map.of(
+                "type", "ppt_image_manifest", "outlineVersion", 1, "items", List.of())).disposition())
+                .isEqualTo(PptConfirmationStagePolicy.Disposition.AUTO_APPROVE);
+
+        try {
+            updateFirstManifestItemStatus(new PptImageManifestStore(), job.projectPath().orElseThrow(), "Generated");
+        } catch (Exception ex) {
+            throw new IllegalStateException(ex);
+        }
+        job.confirmNode(PptJobNode.IMAGE_MANIFEST_CONFIRMED);
+        job.completeNode(PptJobNode.IMAGES_GENERATED, Map.of());
+
+        assertThat(policy.evaluate(job, "image_ready_continue_confirmation", Map.of(
+                "type", "ppt_image_manifest", "outlineVersion", 1, "items", List.of())).disposition())
+                .isEqualTo(PptConfirmationStagePolicy.Disposition.AUTO_APPROVE);
+    }
+
+    @Test
+    void autoModeRemapsImageRetryDecisionToAutoImageRetry() throws Exception {
+        PptJob job = autoJob(PptWorkflowMode.IMAGE_ENHANCED);
+        writeOutline(job, true);
+        PptImageManifestStore store = new PptImageManifestStore();
+        store.writeFromLockedOutline(job.projectPath().orElseThrow());
+        markFirstManifestItemFailed(store, job.projectPath().orElseThrow());
+        job.confirmNode(PptJobNode.OUTLINE_CONFIRMED);
+        job.confirmNode(PptJobNode.IMAGE_MANIFEST_CONFIRMED);
+
+        assertThat(policy.evaluate(job, "image_retry_decision", Map.of(
+                "type", "ppt_image_manifest", "outlineVersion", 1, "items", List.of())).disposition())
+                .isEqualTo(PptConfirmationStagePolicy.Disposition.AUTO_IMAGE_RETRY);
+    }
+
+    @Test
+    void autoModeRemapsValidTemplateFillPlanToAutoApprove() {
+        PptJob job = autoJob(PptWorkflowMode.TEMPLATE_FILL);
+        job.completeNode(PptJobNode.FILL_PLAN_DRAFTED, Map.of());
+
+        assertThat(policy.evaluate(job, "template_fill_plan", Map.of(
+                "type", "template_fill_plan",
+                "version", 1,
+                "digest", "abc123")).disposition())
+                .isEqualTo(PptConfirmationStagePolicy.Disposition.AUTO_APPROVE);
+    }
+
+    @Test
+    void autoModeStillRejectsInvalidTemplateFillPlan() {
+        PptJob job = autoJob(PptWorkflowMode.TEMPLATE_FILL);
+
+        assertThat(policy.evaluate(job, "template_fill_plan", Map.of(
+                "type", "template_fill_plan",
+                "version", 1,
+                "digest", "abc123")).disposition())
+                .isEqualTo(PptConfirmationStagePolicy.Disposition.REJECT);
+    }
+
+    @Test
     void rejectsTemplateFillPlanForWrongModeMissingDraftOrInvalidPayload() {
         PptJob basic = job(PptWorkflowMode.BASIC);
         assertThat(policy.evaluate(basic, "template_fill_plan", Map.of(
@@ -349,6 +433,19 @@ class PptConfirmationStagePolicyTests {
     private PptJob job(PptWorkflowMode mode) {
         PptJob job = new PptJob(
                 UUID.randomUUID(), "demo", "ppt169", "make a deck", mode, tempDir.resolve(UUID.randomUUID().toString()));
+        job.prepareProject(job.workspacePath());
+        return job;
+    }
+
+    private PptJob autoJob(PptWorkflowMode mode) {
+        PptJob job = new PptJob(
+                UUID.randomUUID(),
+                "demo",
+                "ppt169",
+                "make a deck",
+                mode,
+                domi.argenticpptmaster.domain.PptConfirmationMode.AUTO,
+                tempDir.resolve(UUID.randomUUID().toString()));
         job.prepareProject(job.workspacePath());
         return job;
     }

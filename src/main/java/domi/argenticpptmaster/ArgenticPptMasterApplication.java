@@ -1,6 +1,7 @@
 package domi.argenticpptmaster;
 
 import domi.argenticpptmaster.config.AgentScopeProperties;
+import domi.argenticpptmaster.config.PptAutoProperties;
 import domi.argenticpptmaster.config.PptMasterProperties;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
@@ -18,7 +19,7 @@ import org.springframework.scheduling.annotation.EnableAsync;
 @EnableAsync
 @EnableScheduling
 @SpringBootApplication
-@EnableConfigurationProperties({PptMasterProperties.class, AgentScopeProperties.class})
+@EnableConfigurationProperties({PptMasterProperties.class, AgentScopeProperties.class, PptAutoProperties.class})
 public class ArgenticPptMasterApplication {
 
     /**

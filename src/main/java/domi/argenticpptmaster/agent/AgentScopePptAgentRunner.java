@@ -1,9 +1,11 @@
 package domi.argenticpptmaster.agent;
 
 import domi.argenticpptmaster.config.AgentScopeProperties;
+import domi.argenticpptmaster.config.PptAutoProperties;
 import domi.argenticpptmaster.config.PptMasterProperties;
 import domi.argenticpptmaster.domain.PptConfirmation;
 import domi.argenticpptmaster.domain.PptConfirmationAction;
+import domi.argenticpptmaster.domain.PptConfirmationMode;
 import domi.argenticpptmaster.domain.PptJob;
 import domi.argenticpptmaster.domain.PptJobEvent;
 import domi.argenticpptmaster.domain.PptJobEventType;
@@ -12,6 +14,7 @@ import domi.argenticpptmaster.domain.PptJobNodeStatus;
 import domi.argenticpptmaster.domain.PptNodeExecution;
 import domi.argenticpptmaster.domain.PptOutline;
 import domi.argenticpptmaster.domain.PptWorkflowMode;
+import domi.argenticpptmaster.service.PptAutoConfirmationApplier;
 import domi.argenticpptmaster.service.PptWorkflowEvents;
 import domi.argenticpptmaster.service.BeautifyConfirmationSummary;
 import domi.argenticpptmaster.service.NativeEnhanceConfirmationSummary;
@@ -49,6 +52,8 @@ import java.util.Set;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Component;
 
 /**
@@ -81,6 +86,8 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
     private final AgentScopeProperties agentScopeProperties;
     private final AgentScopeWorkflowAgentFactory workflowAgentFactory;
     private final PptWorkflowEvents events;
+    private final PptAutoConfirmationApplier autoConfirmationApplier;
+    private final PptAutoProperties autoProperties;
     private final PptConfirmationStagePolicy confirmationStagePolicy = new PptConfirmationStagePolicy();
 
     public AgentScopePptAgentRunner(
@@ -88,10 +95,23 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
             AgentScopeProperties agentScopeProperties,
             AgentScopeWorkflowAgentFactory workflowAgentFactory,
             PptWorkflowEvents events) {
+        this(properties, agentScopeProperties, workflowAgentFactory, events, null, null);
+    }
+
+    @Autowired
+    public AgentScopePptAgentRunner(
+            PptMasterProperties properties,
+            AgentScopeProperties agentScopeProperties,
+            AgentScopeWorkflowAgentFactory workflowAgentFactory,
+            PptWorkflowEvents events,
+            @Lazy PptAutoConfirmationApplier autoConfirmationApplier,
+            PptAutoProperties autoProperties) {
         this.properties = properties;
         this.agentScopeProperties = agentScopeProperties;
         this.workflowAgentFactory = workflowAgentFactory;
         this.events = events;
+        this.autoConfirmationApplier = autoConfirmationApplier;
+        this.autoProperties = autoProperties == null ? PptAutoProperties.defaults() : autoProperties;
     }
 
     /**
@@ -285,6 +305,10 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
             if (runState.waitingForExternalExecution) {
                 log.info("ppt_agent_runner_waiting_confirmation: jobId={}, confirmationId={}",
                         job.id(), job.currentConfirmationId().orElse("none"));
+                return;
+            }
+            if (runState.handedOffToTemplateFillExecution || job.templateFillExecutionStarted()) {
+                log.info("ppt_agent_runner_template_fill_execution_started: jobId={}", job.id());
                 return;
             }
             if (!runState.autoAcknowledgedResults.isEmpty()) {
@@ -739,6 +763,12 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
             }
             return false;
         }
+        if (decision.disposition() == PptConfirmationStagePolicy.Disposition.AUTO_APPROVE) {
+            return handleAutoApprove(job, runState, newToolCalls, stage, context, decision);
+        }
+        if (decision.disposition() == PptConfirmationStagePolicy.Disposition.AUTO_IMAGE_RETRY) {
+            return handleAutoImageRetry(job, runState, newToolCalls, stage);
+        }
         if ("outline_confirmation".equals(stage)) {
             job.waitNodeConfirmation(PptJobNode.OUTLINE_DRAFTED);
         }
@@ -756,6 +786,89 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
                         "replyId", replyId,
                         "toolCallCount", newToolCalls.size())));
         return true;
+    }
+
+    private boolean handleAutoApprove(
+            PptJob job,
+            AgentRunState runState,
+            List<ToolUseBlock> newToolCalls,
+            String stage,
+            Map<String, Object> context,
+            PptConfirmationStagePolicy.Decision decision) {
+        if (autoConfirmationApplier == null) {
+            throw new IllegalStateException("AUTO confirmation applier is not configured");
+        }
+        boolean handedOff = autoConfirmationApplier.applyOneShotApproval(job, stage, context);
+        if (handedOff) {
+            runState.handedOffToTemplateFillExecution = true;
+            return false;
+        }
+        for (ToolUseBlock toolCall : newToolCalls) {
+            runState.autoAcknowledgedResults.putIfAbsent(
+                    toolCall.getId(), buildAutoApprovedToolResult(toolCall, stage));
+            runState.autoAcknowledgedStages.putIfAbsent(
+                    toolCall.getId(), new AutoAcknowledgedStage(
+                            stage,
+                            toolCall.getId(),
+                            decision.confirmedNode() == null ? "none" : decision.confirmedNode().name()));
+        }
+        return false;
+    }
+
+    private boolean handleAutoImageRetry(
+            PptJob job, AgentRunState runState, List<ToolUseBlock> newToolCalls, String stage) {
+        int used = job.autoImageRetryRounds();
+        int allowed = autoProperties.resolvedImageRetryRounds();
+        if (used >= allowed) {
+            throw new IllegalStateException(
+                    "auto image retry exhausted after " + allowed + " additional rounds");
+        }
+        int round = job.recordAutoImageRetry();
+        events.record(job, PptJobEvent.of(
+                PptJobEventType.AGENT_MESSAGE,
+                "auto image retry scheduled: round " + round + "/" + allowed,
+                Map.of(
+                        "kind", "confirmation_auto_image_retry",
+                        "stage", stage,
+                        "round", round,
+                        "maxRounds", allowed,
+                        "actor", "system",
+                        "confirmationMode", PptConfirmationMode.AUTO.name())));
+        for (ToolUseBlock toolCall : newToolCalls) {
+            String output = "confirmation_status=AUTO_RETRY\n"
+                    + "confirmation_stage=" + stage + "\n"
+                    + "retry_round=" + round + "\n"
+                    + "max_rounds=" + allowed + "\n"
+                    + "Retry only Failed/Pending image manifest items, then continue.\n"
+                    + "original_input=" + toolCall.getInput();
+            runState.autoAcknowledgedResults.putIfAbsent(
+                    toolCall.getId(),
+                    ToolResultBlock.builder()
+                            .id(toolCall.getId())
+                            .name(toolCall.getName())
+                            .output(List.of(TextBlock.builder().text(output).build()))
+                            .state(ToolResultState.SUCCESS)
+                            .build());
+            runState.autoAcknowledgedStages.putIfAbsent(
+                    toolCall.getId(),
+                    new AutoAcknowledgedStage(stage, toolCall.getId(), "image_retry"));
+        }
+        return false;
+    }
+
+    private ToolResultBlock buildAutoApprovedToolResult(ToolUseBlock toolCall, String stage) {
+        String output = "confirmation_status=AUTO_APPROVED\n"
+                + "confirmation_stage=" + stage + "\n"
+                + "actor=system\n"
+                + "confirmationMode=AUTO\n"
+                + "The confirmation stage was auto-approved with default content. Continue downstream.\n"
+                + "original_input=" + toolCall.getInput();
+        return ToolResultBlock.builder()
+                .id(toolCall.getId())
+                .name(toolCall.getName())
+                .output(List.of(TextBlock.builder().text(output).build()))
+                .state(ToolResultState.SUCCESS)
+                .build();
     }
 
     private ConfirmationStageRequest confirmationStageRequest(ToolUseBlock toolCall) {
@@ -1293,6 +1406,7 @@ public class AgentScopePptAgentRunner implements PptAgentRunner {
      */
     private static final class AgentRunState {
         private boolean waitingForExternalExecution;
+        private boolean handedOffToTemplateFillExecution;
         private String finalResultText;
         private final Set<String> processedToolCallIds = new java.util.LinkedHashSet<>();
         private final Map<String, ToolResultBlock> autoAcknowledgedResults = new LinkedHashMap<>();

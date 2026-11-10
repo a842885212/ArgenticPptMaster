@@ -7,6 +7,7 @@ import domi.argenticpptmaster.service.PptJobCreateCommand;
 import domi.argenticpptmaster.service.PptTemplateFillService;
 import domi.argenticpptmaster.service.PptWorkflowService;
 import domi.argenticpptmaster.service.TemplateFillDiagnosticService;
+import domi.argenticpptmaster.domain.PptConfirmationMode;
 import domi.argenticpptmaster.domain.PptJob;
 import domi.argenticpptmaster.domain.PptRevisionImpactPreview;
 import domi.argenticpptmaster.web.dto.ConfirmationRequest;
@@ -94,7 +95,39 @@ public class PptJobController {
             @RequestParam(required = false) String templateConstraints) {
         return ResponseEntity.status(HttpStatus.ACCEPTED)
                 .body(PptJobResponse.from(workflowService.createJob(new PptJobCreateCommand(
-                        files, templateFile, projectName, format, instruction, workflowMode, templateConstraints))));
+                        files,
+                        templateFile,
+                        projectName,
+                        format,
+                        instruction,
+                        workflowMode,
+                        templateConstraints,
+                        PptConfirmationMode.INTERACTIVE))));
+    }
+
+    /**
+     * 创建无人值守 PPT 生成任务。
+     * <p>上传与元数据字段与交互式创建接口兼容，服务端强制 {@code confirmationMode=AUTO}。</p>
+     */
+    @PostMapping(path = "/auto", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<PptJobResponse> createAuto(
+            @RequestPart("files") List<MultipartFile> files,
+            @RequestPart(value = "templateFile", required = false) MultipartFile templateFile,
+            @RequestParam(required = false) String projectName,
+            @RequestParam(defaultValue = "ppt169") String format,
+            @RequestParam(required = false) String instruction,
+            @RequestParam(defaultValue = "basic") String workflowMode,
+            @RequestParam(required = false) String templateConstraints) {
+        return ResponseEntity.status(HttpStatus.ACCEPTED)
+                .body(PptJobResponse.from(workflowService.createJob(new PptJobCreateCommand(
+                        files,
+                        templateFile,
+                        projectName,
+                        format,
+                        instruction,
+                        workflowMode,
+                        templateConstraints,
+                        PptConfirmationMode.AUTO))));
     }
 
     /**

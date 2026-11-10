@@ -118,7 +118,16 @@ public class PptTemplateFillCommandExecutor {
 
     /** 从指定 checkpoint 恢复模板填充执行。 */
     public void resumeFromCheckpoint(UUID jobId, PptJobNode checkpoint, Path planPath) {
-        executeInternal(jobId, planPath, mapCheckpointToMode(checkpoint));
+        ExecutionMode mode;
+        try {
+            mode = mapCheckpointToMode(checkpoint);
+        } catch (PptTemplateFillExecutionException ex) {
+            PptJob job = repository.findById(jobId)
+                    .orElseThrow(() -> new PptTemplateFillExecutionException("LOAD", "template-fill job not found"));
+            fail(job, ex);
+            throw ex;
+        }
+        executeInternal(jobId, planPath, mode);
     }
 
     private enum ExecutionMode {
@@ -126,14 +135,17 @@ public class PptTemplateFillCommandExecutor {
         PREPARE_ONLY,
         RESUME_FROM_PROJECT_READY,
         RESUME_FROM_TEMPLATE_ANALYZED,
-        RESUME_FROM_FILL_PLAN_VALIDATED
+        RESUME_FROM_FILL_PLAN_VALIDATED,
+        /** 导出已完成：跳过 apply，仅重跑 validate + readback。 */
+        RESUME_FROM_PPT_EXPORTED
     }
 
     private static ExecutionMode mapCheckpointToMode(PptJobNode checkpoint) {
         return switch (checkpoint) {
             case PROJECT_READY -> ExecutionMode.RESUME_FROM_PROJECT_READY;
-            case TEMPLATE_ANALYZED -> ExecutionMode.RESUME_FROM_TEMPLATE_ANALYZED;
+            case TEMPLATE_ANALYZED, FILL_PLAN_CONFIRMED -> ExecutionMode.RESUME_FROM_TEMPLATE_ANALYZED;
             case FILL_PLAN_VALIDATED -> ExecutionMode.RESUME_FROM_FILL_PLAN_VALIDATED;
+            case PPT_EXPORTED -> ExecutionMode.RESUME_FROM_PPT_EXPORTED;
             default -> throw new PptTemplateFillExecutionException(
                     "RESUME", "unsupported template-fill checkpoint: " + checkpoint);
         };
@@ -253,6 +265,7 @@ public class PptTemplateFillCommandExecutor {
                 }
                 recordStageTelemetry("READBACK", TemplateFillTelemetry.Outcome.SUCCESS, Duration.ZERO);
                 Path deliveryDir = requireInside(workspace, workspace.resolve("exports"), "delivery exports");
+                Files.createDirectories(deliveryDir);
                 Path deliveryExport = deliveryDir.resolve(generatedExport.getFileName()).normalize();
                 requireInside(workspace, deliveryExport, "delivery export");
                 Files.copy(generatedExport, deliveryExport, StandardCopyOption.REPLACE_EXISTING);
@@ -298,7 +311,8 @@ public class PptTemplateFillCommandExecutor {
     private static boolean isResumeMode(ExecutionMode mode) {
         return mode == ExecutionMode.RESUME_FROM_PROJECT_READY
                 || mode == ExecutionMode.RESUME_FROM_TEMPLATE_ANALYZED
-                || mode == ExecutionMode.RESUME_FROM_FILL_PLAN_VALIDATED;
+                || mode == ExecutionMode.RESUME_FROM_FILL_PLAN_VALIDATED
+                || mode == ExecutionMode.RESUME_FROM_PPT_EXPORTED;
     }
 
     private void importSources(PptJob job, Path workspace, Path project, Path templatePath) {
@@ -371,7 +385,9 @@ public class PptTemplateFillCommandExecutor {
     }
 
     private static boolean shouldRunValidateOutput(ExecutionMode mode) {
-        return mode == ExecutionMode.FULL_WITH_PLAN || mode == ExecutionMode.RESUME_FROM_FILL_PLAN_VALIDATED;
+        return mode == ExecutionMode.FULL_WITH_PLAN
+                || mode == ExecutionMode.RESUME_FROM_FILL_PLAN_VALIDATED
+                || mode == ExecutionMode.RESUME_FROM_PPT_EXPORTED;
     }
 
     private CommandResult runStage(

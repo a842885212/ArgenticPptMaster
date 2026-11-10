@@ -309,6 +309,101 @@ class PptTemplateFillCommandExecutorTests {
     }
 
     @Test
+    void resumeFromPptExportedSkipsApplyAndRevalidatesExistingExport() throws Exception {
+        UUID jobId = UUID.randomUUID();
+        Path workspace = tempDir.resolve("job-resume-export");
+        Path templatePath = workspace.resolve("uploads/template/0-brand.pptx");
+        Path sourcePath = workspace.resolve("uploads/content/0-source.md");
+        Files.createDirectories(templatePath.getParent());
+        Files.createDirectories(sourcePath.getParent());
+        JavaTemplateFillEngineTests.writeTemplate(templatePath);
+        Files.writeString(sourcePath, "# source");
+        Path slideLibrary = workspace.resolve("analysis/template.slide_library.json");
+        Files.createDirectories(slideLibrary.getParent());
+        Files.copy(getClass().getResourceAsStream("/template-fill/template.slide_library.json"), slideLibrary);
+        String draft = """
+                {
+                  "schema": "template_fill_pptx_plan.v1",
+                  "status": "draft",
+                  "accepted_warnings": [],
+                  "slides": [
+                    {
+                      "source_slide": 1,
+                      "purpose": "cover",
+                      "replacements": [
+                        {"slot_id": "s01_sh1", "text": "模板填充集成方案"}
+                      ],
+                      "table_edits": [],
+                      "chart_edits": [],
+                      "transition": "fade"
+                    }
+                  ]
+                }
+                """;
+        PptJob job = new PptJob(jobId, "demo", "ppt169", "fill", PptWorkflowMode.TEMPLATE_FILL, workspace);
+        job.setTemplate(new PptTemplateFile("brand.pptx", "application/octet-stream", 8L, templatePath));
+        job.addSource(new PptSourceFile("source.md", "text/markdown", 8L, sourcePath));
+        PptTemplateFillPlanStore planStore = new PptTemplateFillPlanStore(
+                PptMasterProperties.forTest(tempDir, tempDir), new TemplateFillPlanValidator());
+        var metadata = planStore.storeDraftPlan(job, draft, slideLibrary);
+        planStore.confirmCurrentDraft(job, "confirm-1", metadata.version(), metadata.digest());
+        when(repository.findById(jobId)).thenReturn(Optional.of(job));
+
+        Path project = workspace.resolve("projects/demo_ppt169_20260720");
+        Files.createDirectories(project.resolve("analysis"));
+        Files.createDirectories(project.resolve("exports"));
+        Files.createDirectories(project.resolve("validation"));
+        Files.copy(slideLibrary, project.resolve("analysis/template.slide_library.json"));
+        Path projectPlan = project.resolve("analysis/fill_plan.json");
+        Files.copy(workspace.resolve("analysis/fill_plan.json"), projectPlan);
+        var applyResult = new JavaTemplateFillEngine().apply(
+                templatePath, projectPlan, project.resolve("exports/template-fill.pptx"), Duration.ofMinutes(1));
+        assertThat(applyResult.successful()).isTrue();
+        try (var stream = Files.list(project.resolve("exports"))) {
+            assertThat(stream.filter(p -> p.getFileName().toString().endsWith(".pptx")).count()).isEqualTo(1);
+        }
+
+        job.prepareProject(project);
+        job.completeNode(PptJobNode.PROJECT_READY, java.util.Map.of());
+        job.completeNode(PptJobNode.TEMPLATE_ANALYZED, java.util.Map.of());
+        job.completeNode(PptJobNode.FILL_PLAN_CONFIRMED, java.util.Map.of());
+        job.completeNode(PptJobNode.FILL_PLAN_VALIDATED, java.util.Map.of());
+        job.completeNode(PptJobNode.PPT_EXPORTED, java.util.Map.of("exported", true));
+        job.fail("template-fill validate failed");
+        assertThat(job.tryStartResumeAttempt(3)).isNull();
+
+        executor.resumeFromCheckpoint(jobId, PptJobNode.PPT_EXPORTED, null);
+
+        assertThat(job.status()).isEqualTo(domi.argenticpptmaster.domain.PptJobStatus.COMPLETED);
+        assertThat(job.lastCompletedNode()).contains(PptJobNode.OUTPUT_VALIDATED);
+        try (var stream = Files.list(project.resolve("exports"))) {
+            assertThat(stream.filter(p -> p.getFileName().toString().endsWith(".pptx")).count()).isEqualTo(1);
+        }
+        verify(commands, never()).runPythonScript(org.mockito.ArgumentMatchers.anyString(), anyList(), any(Duration.class));
+    }
+
+    @Test
+    void unsupportedResumeCheckpointMarksJobFailed() {
+        UUID jobId = UUID.randomUUID();
+        Path workspace = tempDir.resolve("job-bad-checkpoint");
+        PptJob job = new PptJob(jobId, "demo", "ppt169", "fill", PptWorkflowMode.TEMPLATE_FILL, workspace);
+        job.completeNode(PptJobNode.PROJECT_READY, java.util.Map.of());
+        job.fail("previous failure");
+        assertThat(job.tryStartResumeAttempt(3)).isNull();
+        when(repository.findById(jobId)).thenReturn(Optional.of(job));
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(
+                        () -> executor.resumeFromCheckpoint(jobId, PptJobNode.OUTLINE_CONFIRMED, null))
+                .isInstanceOf(PptTemplateFillExecutionException.class)
+                .hasMessageContaining("unsupported template-fill checkpoint");
+        assertThat(job.status()).isEqualTo(domi.argenticpptmaster.domain.PptJobStatus.FAILED);
+        ArgumentCaptor<PptJobEvent> eventsCaptor = ArgumentCaptor.forClass(PptJobEvent.class);
+        verify(events, atLeast(1)).record(eq(job), eventsCaptor.capture());
+        assertThat(eventsCaptor.getAllValues()).extracting(PptJobEvent::type)
+                .contains(domi.argenticpptmaster.domain.PptJobEventType.JOB_FAILED);
+    }
+
+    @Test
     void rejectsTemplatePathOutsideJobWorkspaceBeforeStartingProcess() throws Exception {
         UUID jobId = UUID.randomUUID();
         Path workspace = tempDir.resolve("job");

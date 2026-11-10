@@ -383,6 +383,9 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
         assertThat(prompt).contains("首次调用 request_plan_confirmation 只能使用 stage=outline_confirmation");
         assertThat(prompt).contains("不得以任何图片阶段作为首次确认");
         assertThat(prompt).contains("bullets 必须是至少包含一条非空字符串的数组");
+        assertThat(prompt).contains("至少包含非空 purpose 与 prompt");
+        assertThat(prompt).contains("\"purpose\":\"封面主视觉\"");
+        assertThat(prompt).contains("outline.json 与 contextData.slides 的 imageRequirement 必须同形");
         assertThat(prompt).contains("outline.json 示例：{\"version\":1");
         assertThat(prompt).contains("contextData 示例：{\"type\":\"ppt_outline\"");
         assertThat(prompt).contains("绝不要直接结束任务");

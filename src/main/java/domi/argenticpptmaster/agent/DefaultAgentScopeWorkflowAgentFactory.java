@@ -661,7 +661,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                 执行顺序：
                 1. 调用 describe_job 了解任务，再调用 init_ppt_project，然后调用 import_job_sources。
                 2. 导入完成后，调用 collect_source_markdown、inspect_project_info、list_project_files、read_project_text_file 了解 sources/ 与 analysis/ 的真实内容。
-                3. 完成资料分析后，先生成按 slideNo 升序排列的逐页大纲并写入 outline.json（version 从 1 开始、locked=false）；每页必须包含 slideNo、title、keyMessage、bullets、visualSuggestion 和可选 imageRequirement，并通过 request_plan_confirmation（stage="outline_confirmation"）在 contextData 中以 {type:"ppt_outline", version, parentVersion, diff, locked:false, slides:[...]} 返回；确认载荷中需说明将启用文生图。
+                3. 完成资料分析后，先生成按 slideNo 升序排列的逐页大纲并写入 outline.json（version 从 1 开始、locked=false）；每页必须包含 slideNo、title、keyMessage、bullets、visualSuggestion 和可选 imageRequirement（null 或含非空 purpose/prompt 的字符串对象），并通过 request_plan_confirmation（stage="outline_confirmation"）在 contextData 中以 {type:"ppt_outline", version, parentVersion, diff, locked:false, slides:[...]} 返回；确认载荷中需说明将启用文生图。outline.json 与 contextData.slides 的 imageRequirement 必须同形，禁止只改文件却在确认载荷里留空对象或缺字段。
                 4. 如果用户要求修改（REQUEST_REVISION），必须将整体意见和 slideEdits 逐项落实，重新生成完整逐页大纲并再次调用同一确认；锁定版本再次修改前必须先取得 revisionImpactToken；在 APPROVE 前不得写 design_spec.md、spec_lock.md 或任何图片/下游产物。
                 5. 用户批准逐页大纲后，先产出 design_spec.md（须含字面 `## IX. Content Outline` + 每页 `#### Slide NN` 与 `- Audience move:`）与 spec_lock.md（必须含小写权威块：## canvas / ## colors / ## typography / ## pptx_structure；typography 须登记所有 recurring 字号槽位）。
                 6. 必须调用 derive_image_manifest_from_locked_outline 从已锁定 outline.json 中各页的 imageRequirement 派生 images/image_prompts.json；不得由 design_spec 新增或改变图片需求。每个 item 必须包含 outlineVersion、slideNo、purpose、filename、prompt、aspect_ratio、status（初始为 Pending）。
@@ -727,6 +727,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                 - 人工确认统一通过 request_plan_confirmation；只有该工具能暂停工作流等待用户回复。
                 - 首次调用 request_plan_confirmation 只能使用 stage=outline_confirmation，且 contextData 必须是完整的 {type:"ppt_outline", version, locked:false, slides:[...]}；不得以任何图片阶段作为首次确认。
                 - 逐页大纲的每页必须使用英文键名 slideNo、title、keyMessage、bullets、visualSuggestion；bullets 必须是至少包含一条非空字符串的数组。调用确认工具前逐页自检，禁止使用“核心信息”“要点”等中文键名替代。
+                - imageRequirement 可选：不需要配图时必须为 null；需要配图时必须是仅含字符串字段的对象，且至少包含非空 purpose 与 prompt；可选 aspectRatio（默认 16:9）、altText、style。禁止空对象 {}、只写 purpose、中文键名、嵌套对象或非字符串值。非空示例：{"purpose":"封面主视觉","prompt":"现代商务封面插画，蓝调简洁，16:9","aspectRatio":"16:9"}。
                 - outline.json 与 contextData 必须表达同一份完整结构化大纲，但 outline.json 不包含 type。outline.json 示例：{"version":1,"locked":false,"slides":[{"slideNo":1,"title":"封面标题","keyMessage":"本页核心信息","bullets":["一条非空要点"],"visualSuggestion":"视觉方案","imageRequirement":null}]}；contextData 示例：{"type":"ppt_outline","version":1,"locked":false,"slides":[{"slideNo":1,"title":"封面标题","keyMessage":"本页核心信息","bullets":["一条非空要点"],"visualSuggestion":"视觉方案","imageRequirement":null}]}。
                 - 只有 outline_confirmation 获 APPROVE 且大纲已锁定后，才可请求图片清单确认。
                 - 不要假设本地文件内容；所有文件状态通过 list_project_files / read_project_text_file / inspect_image_manifest_status / inspect_checkpoint_status 确认。

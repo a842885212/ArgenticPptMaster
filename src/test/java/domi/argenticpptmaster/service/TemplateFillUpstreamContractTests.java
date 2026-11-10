@@ -56,7 +56,7 @@ class TemplateFillUpstreamContractTests {
             }
         }
         assertThat(slotIds).isNotEmpty();
-        assertThat(tableIds).contains("s02_tbl1");
+        assertThat(tableIds).contains("s02_tbl10");
         assertThat(chartIds).contains("s03_ch1");
     }
 

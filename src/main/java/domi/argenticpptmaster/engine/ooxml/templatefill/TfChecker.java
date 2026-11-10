@@ -13,12 +13,15 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /** Check planned text/table/chart edits against slide-library capacity. */
 public final class TfChecker {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final int REUSE_WARN_THRESHOLD = 3;
+    private static final Pattern SLOT_ID_SHAPE = Pattern.compile("^s(\\d+)_sh(.+)$");
 
     private TfChecker() {}
 
@@ -51,7 +54,7 @@ public final class TfChecker {
                         "replacements must be a list");
             } else if (replacements.isArray()) {
                 for (JsonNode replacement : replacements) {
-                    checkReplacement(lookup, results, summary, slideIndex, sourceSlide, replacement);
+                    checkReplacement(lookup, tableLookup, results, summary, slideIndex, sourceSlide, replacement);
                 }
             }
             JsonNode tableEdits = slide.path("table_edits");
@@ -168,12 +171,27 @@ public final class TfChecker {
 
     private static void checkReplacement(
             Map<String, JsonNode> lookup,
+            Map<String, JsonNode> tableLookup,
             ArrayNode results,
             ObjectNode summary,
             int slideIndex,
             int sourceSlide,
             JsonNode replacement) {
         List<String> selectors = TfSelectors.replacementSelectors(replacement);
+        String conflictingTableId = conflictingTableId(tableLookup, sourceSlide, selectors);
+        if (conflictingTableId != null) {
+            ObjectNode item = MAPPER.createObjectNode();
+            item.put("status", "ERROR");
+            item.put("code", "replacement_targets_table");
+            item.put("plan_slide", slideIndex);
+            item.put("source_slide", sourceSlide);
+            item.put("selector", selectors.isEmpty() ? "" : selectors.get(0));
+            item.put("table_id", conflictingTableId);
+            item.put("message", "replacement target is a table object; use table_edits instead");
+            results.add(item);
+            summary.put("error", summary.get("error").asInt() + 1);
+            return;
+        }
         JsonNode slot = null;
         for (String selector : selectors) {
             slot = lookup.get(sourceSlide + "|" + selector);
@@ -500,6 +518,42 @@ public final class TfChecker {
         } else {
             item.put(field, Math.round(value * 10.0) / 10.0);
         }
+    }
+
+    private static String conflictingTableId(
+            Map<String, JsonNode> tableLookup, int sourceSlide, List<String> selectors) {
+        for (String selector : selectors) {
+            if (selector.startsWith("slot_id:")) {
+                Matcher matcher = SLOT_ID_SHAPE.matcher(selector.substring("slot_id:".length()));
+                if (matcher.matches()) {
+                    String tableId = "s%02d_tbl%s".formatted(Integer.parseInt(matcher.group(1)), matcher.group(2));
+                    if (tableLookup.containsKey(sourceSlide + "|table_id:" + tableId)) {
+                        return tableId;
+                    }
+                    // Prefer the source slide's expected table id even when slot_id slide prefix differs.
+                    String localTableId = "s%02d_tbl%s".formatted(sourceSlide, matcher.group(2));
+                    if (tableLookup.containsKey(sourceSlide + "|table_id:" + localTableId)) {
+                        return localTableId;
+                    }
+                }
+            } else if (selector.startsWith("shape_id:")) {
+                String shapeId = selector.substring("shape_id:".length());
+                if (tableLookup.containsKey(sourceSlide + "|shape_id:" + shapeId)) {
+                    JsonNode table = tableLookup.get(sourceSlide + "|shape_id:" + shapeId);
+                    return table.path("table_id").asText("s%02d_tbl%s".formatted(sourceSlide, shapeId));
+                }
+                String tableId = "s%02d_tbl%s".formatted(sourceSlide, shapeId);
+                if (tableLookup.containsKey(sourceSlide + "|table_id:" + tableId)) {
+                    return tableId;
+                }
+            } else if (selector.startsWith("shape_name:")) {
+                JsonNode table = tableLookup.get(sourceSlide + "|" + selector);
+                if (table != null) {
+                    return table.path("table_id").asText("");
+                }
+            }
+        }
+        return null;
     }
 
     private static Map<String, JsonNode> slotLookup(JsonNode library) {

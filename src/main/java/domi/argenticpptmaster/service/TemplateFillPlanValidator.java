@@ -13,6 +13,8 @@ import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.Locale;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import org.springframework.stereotype.Component;
 
 /** 校验 fill plan 草案结构与 slide library / 能力索引引用（上游 template_fill_pptx_plan.v1）。 */
@@ -27,6 +29,8 @@ public class TemplateFillPlanValidator {
             "fade", "push", "wipe", "split", "strips", "cover", "random", "none", "keep");
     static final Set<String> CAPACITY_STRATEGIES = Set.of(
             "rewrite", "split-or-larger-layout", "font-adjust");
+    private static final Pattern SLOT_ID_SHAPE = Pattern.compile("^s(\\d+)_sh(.+)$");
+    private static final Pattern TABLE_ID_SHAPE = Pattern.compile("^s(\\d+)_tbl(.+)$");
 
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final TemplateFillCapabilityIndexLoader capabilityIndexLoader;
@@ -225,6 +229,8 @@ public class TemplateFillPlanValidator {
         if (!replacements.isArray()) {
             throw new PptJobStateException("replacements must be an array");
         }
+        int sourceSlide = slideCapability.slideIndex();
+        Set<String> tableShapeIds = tableShapeIds(slideCapability);
         for (JsonNode replacement : replacements) {
             if (replacement.has("font_size_px") || replacement.has("fontSizePx") || replacement.has("font_adjust")) {
                 throw new PptJobStateException(
@@ -234,9 +240,56 @@ public class TemplateFillPlanValidator {
             if (slotId == null || !slideCapability.textSlots().containsKey(slotId)) {
                 throw new PptJobStateException("fill plan references unknown slot: " + slotId);
             }
+            rejectReplacementTargetingTable(sourceSlide, slotId, textOrNull(replacement.get("shape_id")), tableShapeIds);
             boundString(replacement.get("text"), "replacement.text", MAX_LIST_ITEM_CHARS * 4);
             boundString(replacement.get("old_text"), "replacement.old_text", MAX_LIST_ITEM_CHARS * 4);
         }
+    }
+
+    private static Set<String> tableShapeIds(TemplateFillCapabilityIndex.SlideCapability slideCapability) {
+        Set<String> shapeIds = new HashSet<>();
+        for (String tableId : slideCapability.tables().keySet()) {
+            Matcher matcher = TABLE_ID_SHAPE.matcher(tableId);
+            if (matcher.matches()) {
+                shapeIds.add(matcher.group(2));
+            }
+        }
+        return shapeIds;
+    }
+
+    private static void rejectReplacementTargetingTable(
+            int sourceSlide, String slotId, String shapeId, Set<String> tableShapeIds) {
+        String fromSlot = shapeIdFromSlotId(slotId);
+        if (fromSlot != null && tableShapeIds.contains(fromSlot)) {
+            throw new PptJobStateException(
+                    "fill plan replacement targets table object on slide "
+                            + sourceSlide
+                            + ": slot_id="
+                            + slotId
+                            + " conflicts with table_id=s"
+                            + String.format(Locale.ROOT, "%02d", sourceSlide)
+                            + "_tbl"
+                            + fromSlot);
+        }
+        if (shapeId != null && !shapeId.isBlank() && tableShapeIds.contains(shapeId)) {
+            throw new PptJobStateException(
+                    "fill plan replacement targets table object on slide "
+                            + sourceSlide
+                            + ": shape_id="
+                            + shapeId
+                            + " conflicts with table_id=s"
+                            + String.format(Locale.ROOT, "%02d", sourceSlide)
+                            + "_tbl"
+                            + shapeId);
+        }
+    }
+
+    private static String shapeIdFromSlotId(String slotId) {
+        if (slotId == null) {
+            return null;
+        }
+        Matcher matcher = SLOT_ID_SHAPE.matcher(slotId);
+        return matcher.matches() ? matcher.group(2) : null;
     }
 
     private void validateTableEdits(

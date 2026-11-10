@@ -48,7 +48,7 @@
       ],
       "tables": [
         {
-          "table_id": "s02_tbl1",
+          "table_id": "s02_tbl10",
           "row_count": 2,
           "column_count": 2,
           "rows": [

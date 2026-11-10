@@ -46,7 +46,7 @@
       ],
       "table_edits": [
         {
-          "table_id": "s02_tbl1",
+          "table_id": "s02_tbl10",
           "cells": [
             { "row": 0, "col": 0, "old_text": "A", "text": "指标" },
             { "row": 0, "col": 1, "old_text": "B", "text": "数值" },

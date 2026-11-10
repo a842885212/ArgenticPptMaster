@@ -29,7 +29,7 @@ class PptConfirmationStageResolverTemplateFillTests {
                                 "capacityRisks", List.of("容量风险"),
                                 "splitSuggestions", List.of("拆页"),
                                 "tableChartHandling", List.of(Map.of(
-                                        "targetId", "s02_tbl1",
+                                        "targetId", "s02_tbl10",
                                         "strategy", "摘要")),
                                 "acceptedWarnings", List.of("warn")))));
 

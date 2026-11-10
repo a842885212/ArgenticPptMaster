@@ -39,6 +39,19 @@ public class JavaTemplateFillEngineTests {
     }
 
     @Test
+    void analyzeDoesNotExposeTableGraphicFrameAsTextSlot() throws Exception {
+        Path template = writeTemplateWithTable(tempDir.resolve("template-table.pptx"));
+        Path library = tempDir.resolve("lib-table.json");
+
+        EngineResult result = new JavaTemplateFillEngine().analyze(template, library, Duration.ofSeconds(30));
+
+        assertThat(result.successful()).isTrue();
+        JsonNode slide = MAPPER.readTree(library.toFile()).path("slides").get(0);
+        assertThat(slide.path("tables").get(0).path("table_id").asText()).isEqualTo("s01_tbl3");
+        assertThat(slide.path("slots").findValuesAsText("slot_id")).containsExactly("s01_sh1").doesNotContain("s01_sh3");
+    }
+
+    @Test
     void checkPlanReportsOkForMatchingReplacement() throws Exception {
         Path template = writeTemplate(tempDir.resolve("template.pptx"));
         Path library = tempDir.resolve("lib.json");
@@ -59,6 +72,90 @@ public class JavaTemplateFillEngineTests {
                 """,
                 StandardCharsets.UTF_8);
         Path report = tempDir.resolve("check.json");
+
+        EngineResult result =
+                new JavaTemplateFillEngine().checkPlan(library, plan, report, Duration.ofSeconds(30));
+
+        assertThat(result.successful()).isTrue();
+        assertThat(MAPPER.readTree(report.toFile()).path("summary").path("error").asInt()).isZero();
+    }
+
+    @Test
+    void checkPlanErrorsWhenReplacementTargetsTable() throws Exception {
+        Path template = writeTemplateWithTable(tempDir.resolve("template-table.pptx"));
+        Path library = tempDir.resolve("lib-table.json");
+        new JavaTemplateFillEngine().analyze(template, library, Duration.ofSeconds(30));
+        // Simulate a stale library that still lists the table shape as a text slot.
+        JsonNode root = MAPPER.readTree(library.toFile());
+        var slide = (com.fasterxml.jackson.databind.node.ObjectNode) root.path("slides").get(0);
+        var slots = (com.fasterxml.jackson.databind.node.ArrayNode) slide.path("slots");
+        var fakeSlot = MAPPER.createObjectNode();
+        fakeSlot.put("slot_id", "s01_sh3");
+        fakeSlot.put("role", "body_candidate");
+        fakeSlot.put("text", "A\nB");
+        fakeSlot.put("paragraph_count", 2);
+        slots.add(fakeSlot);
+        Files.writeString(library, MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(root));
+
+        Path plan = tempDir.resolve("conflict-plan.json");
+        Files.writeString(
+                plan,
+                """
+                {
+                  "status": "confirmed",
+                  "slides": [
+                    {
+                      "source_slide": 1,
+                      "replacements": [{"slot_id": "s01_sh3", "text": "结论不应写进表格"}],
+                      "table_edits": [
+                        {
+                          "table_id": "s01_tbl3",
+                          "cells": [{"row": 0, "col": 0, "text": "CellA"}]
+                        }
+                      ]
+                    }
+                  ]
+                }
+                """,
+                StandardCharsets.UTF_8);
+        Path report = tempDir.resolve("conflict-check.json");
+
+        EngineResult result =
+                new JavaTemplateFillEngine().checkPlan(library, plan, report, Duration.ofSeconds(30));
+
+        assertThat(result.successful()).isFalse();
+        JsonNode reportJson = MAPPER.readTree(report.toFile());
+        assertThat(reportJson.path("summary").path("error").asInt()).isPositive();
+        assertThat(reportJson.path("results").toString()).contains("replacement_targets_table");
+    }
+
+    @Test
+    void checkPlanAllowsTableEditsWithoutTableReplacement() throws Exception {
+        Path template = writeTemplateWithTable(tempDir.resolve("template-table.pptx"));
+        Path library = tempDir.resolve("lib-table.json");
+        new JavaTemplateFillEngine().analyze(template, library, Duration.ofSeconds(30));
+        Path plan = tempDir.resolve("table-only-plan.json");
+        Files.writeString(
+                plan,
+                """
+                {
+                  "status": "confirmed",
+                  "slides": [
+                    {
+                      "source_slide": 1,
+                      "replacements": [{"slot_id": "s01_sh1", "text": "Filled"}],
+                      "table_edits": [
+                        {
+                          "table_id": "s01_tbl3",
+                          "cells": [{"row": 0, "col": 0, "text": "CellA"}]
+                        }
+                      ]
+                    }
+                  ]
+                }
+                """,
+                StandardCharsets.UTF_8);
+        Path report = tempDir.resolve("table-only-check.json");
 
         EngineResult result =
                 new JavaTemplateFillEngine().checkPlan(library, plan, report, Duration.ofSeconds(30));

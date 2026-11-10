@@ -14,6 +14,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -44,8 +45,15 @@ public final class TfAnalyzer {
                 Document slideDoc = TfXml.parse(entries.get(slideRef.partName()));
                 Element slideRoot = slideDoc.getDocumentElement();
                 ArrayNode slots = MAPPER.createArrayNode();
+                IdentityHashMap<Element, Boolean> tableFrameSet = new IdentityHashMap<>();
+                for (Element tableFrame : TfShapes.tableContainers(slideRoot)) {
+                    tableFrameSet.put(tableFrame, Boolean.TRUE);
+                }
                 int order = 0;
                 for (Element container : TfShapes.textContainers(slideRoot)) {
+                    if (tableFrameSet.containsKey(container)) {
+                        continue;
+                    }
                     order++;
                     TfShapes.ShapeIdentity identity = TfShapes.shapeIdentity(container, order);
                     List<String> paragraphs = TfShapes.paragraphTexts(container);
@@ -168,6 +176,10 @@ public final class TfAnalyzer {
             }
             ObjectNode tableNode = MAPPER.createObjectNode();
             tableNode.put("table_id", "s%02d_tbl%s".formatted(sourceSlide, identity.id()));
+            tableNode.put("shape_id", identity.id());
+            if (identity.name() != null && !identity.name().isBlank()) {
+                tableNode.put("shape_name", identity.name());
+            }
             tableNode.put("row_count", rows.size());
             tableNode.put("column_count", maxColumns);
             tableNode.set("rows", rows);

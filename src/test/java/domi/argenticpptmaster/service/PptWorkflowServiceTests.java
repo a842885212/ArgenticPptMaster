@@ -423,6 +423,40 @@ class PptWorkflowServiceTests {
                 .hasMessageContaining("export path");
     }
 
+    @Test
+    void allowsCompletedExportUnderProjectExportsDirectory() throws IOException {
+        Path workspace = tempDir.resolve("jobs/image-export-guard");
+        Path project = tempDir.resolve("projects/demo_image_ppt169_20261110");
+        Path export = project.resolve("exports/demo.pptx");
+        Files.createDirectories(export.getParent());
+        Files.writeString(export, "pptx");
+
+        PptJob job = new PptJob(
+                java.util.UUID.randomUUID(), "demo", "ppt169", null, PptWorkflowMode.IMAGE_ENHANCED,
+                workspace);
+        job.prepareProject(project);
+        job.complete(export);
+        repository.save(job);
+
+        assertThat(workflowService.exportPath(job.id())).isEqualTo(export.toAbsolutePath().normalize());
+    }
+
+    @Test
+    void allowsCompletedExportUnderWorkspaceExportsDirectory() throws IOException {
+        Path workspace = tempDir.resolve("jobs/workspace-export-guard");
+        Path export = workspace.resolve("exports/demo.pptx");
+        Files.createDirectories(export.getParent());
+        Files.writeString(export, "pptx");
+
+        PptJob job = new PptJob(
+                java.util.UUID.randomUUID(), "demo", "ppt169", null, PptWorkflowMode.BASIC,
+                workspace);
+        job.complete(export);
+        repository.save(job);
+
+        assertThat(workflowService.exportPath(job.id())).isEqualTo(export.toAbsolutePath().normalize());
+    }
+
     /**
      * 验证失败任务在存在已完成节点时可以恢复，且恢复后 resumeCount 增加。
      */

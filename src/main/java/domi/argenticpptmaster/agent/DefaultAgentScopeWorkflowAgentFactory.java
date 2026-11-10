@@ -49,6 +49,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -1537,7 +1538,8 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                     throw new IllegalStateException("BEAUTIFY_READBACK_FAILED: beautify output validation failed");
                 }
             }
-            runtime.job().complete(artifact);
+            Path delivery = stageDeliveryExport(runtime.job().workspacePath(), artifact);
+            runtime.job().complete(delivery);
             if (runtime.job().workflowMode() == PptWorkflowMode.BEAUTIFY_PPTX
                     && beautifyLifecycleStore != null) {
                 try {
@@ -1550,8 +1552,8 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
             runtime.events().record(runtime.job(), PptJobEvent.of(
                     PptJobEventType.EXPORT_READY,
                     "ppt artifact exported",
-                    Map.of("fileName", artifact.getFileName().toString())));
-            return result.output().isBlank() ? "ppt exported: " + artifact.getFileName() : result.output();
+                    Map.of("fileName", delivery.getFileName().toString())));
+            return result.output().isBlank() ? "ppt exported: " + delivery.getFileName() : result.output();
         }
 
         /**
@@ -1975,6 +1977,25 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                         .orElseThrow(() -> new IllegalStateException("no pptx artifact found in exports"));
             } catch (IOException ex) {
                 throw new IllegalStateException("failed to detect exported pptx", ex);
+            }
+        }
+
+        /**
+         * 将项目 {@code exports/} 产物投递拷贝到 job workspace 的 {@code exports/}，
+         * 与 template-fill / native-enhance 下载边界一致。
+         */
+        private Path stageDeliveryExport(Path workspace, Path artifact) {
+            try {
+                Path deliveryDir = workspace.toAbsolutePath().normalize().resolve("exports").normalize();
+                Files.createDirectories(deliveryDir);
+                Path delivery = deliveryDir.resolve(artifact.getFileName().toString()).normalize();
+                if (!delivery.startsWith(deliveryDir)) {
+                    throw new IllegalStateException("delivery export path escapes job exports directory");
+                }
+                Files.copy(artifact, delivery, StandardCopyOption.REPLACE_EXISTING);
+                return delivery;
+            } catch (IOException ex) {
+                throw new IllegalStateException("failed to stage delivery export", ex);
             }
         }
     }

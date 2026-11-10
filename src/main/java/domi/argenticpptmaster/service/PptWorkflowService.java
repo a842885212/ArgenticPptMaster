@@ -1243,8 +1243,7 @@ public class PptWorkflowService {
         Path exportPath = job.exportPath()
                 .orElseThrow(() -> new PptJobStateException("job has no export artifact"))
                 .toAbsolutePath().normalize();
-        Path exportsDir = job.workspacePath().toAbsolutePath().normalize().resolve("exports").normalize();
-        if (!exportPath.startsWith(exportsDir)) {
+        if (!isAllowedExportPath(job, exportPath)) {
             throw new PptJobStateException("export path is outside job exports directory");
         }
         if (job.workflowMode() == PptWorkflowMode.TEMPLATE_FILL) {
@@ -1258,6 +1257,22 @@ public class PptWorkflowService {
             auditNativeEnhanceDownload(job, accessContextResolver.resolve().orElse(null), "SUCCESS", "OK");
         }
         return exportPath;
+    }
+
+    /**
+     * Agent 导出写在 {@code projectPath/exports}（常位于全局 {@code projects/}），
+     * template-fill / native-enhance 投递拷贝写在 {@code workspacePath/exports}。
+     * 下载只允许这两处合法产物目录。
+     */
+    private static boolean isAllowedExportPath(PptJob job, Path exportPath) {
+        Path workspaceExports = job.workspacePath().toAbsolutePath().normalize().resolve("exports").normalize();
+        if (exportPath.startsWith(workspaceExports)) {
+            return true;
+        }
+        return job.projectPath()
+                .map(project -> project.toAbsolutePath().normalize().resolve("exports").normalize())
+                .map(exportPath::startsWith)
+                .orElse(false);
     }
 
     private void auditTemplateFillDownload(

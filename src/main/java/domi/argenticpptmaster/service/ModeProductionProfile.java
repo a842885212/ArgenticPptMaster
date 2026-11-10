@@ -1,0 +1,31 @@
+package domi.argenticpptmaster.service;
+
+import java.util.Collection;
+
+/**
+ * 生产化模式配置与异常工厂的最小横切面。
+ * <p>
+ * 灰度门禁先使用本接口；后续 Lifecycle / Cleanup / Audit / Telemetry
+ * 可在各自共享实现中扩展同模式的 profile，而不必把全部能力塞进一个上帝接口。
+ * </p>
+ */
+public interface ModeProductionProfile {
+
+    boolean enabled();
+
+    String adminRole();
+
+    Collection<String> allowedTenants();
+
+    boolean executionStopEnabled();
+
+    String authenticatedCallerRequiredMessage();
+
+    String callerNotPermittedMessage();
+
+    RuntimeException unavailableException();
+
+    RuntimeException accessDeniedException(String message);
+
+    void recordCreationRejected();
+}

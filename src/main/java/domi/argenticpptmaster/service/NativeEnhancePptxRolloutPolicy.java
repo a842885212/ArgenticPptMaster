@@ -5,6 +5,7 @@ import domi.argenticpptmaster.config.PptMasterProperties;
 import domi.argenticpptmaster.exception.PptNativeEnhanceAccessException;
 import domi.argenticpptmaster.exception.PptNativeEnhanceUnavailableException;
 import domi.argenticpptmaster.security.PptAccessContext;
+import java.util.Collection;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
@@ -14,8 +15,7 @@ import org.springframework.stereotype.Component;
 @Component
 public class NativeEnhancePptxRolloutPolicy {
 
-    private final PptMasterProperties properties;
-    private final NativeEnhancePptxTelemetry telemetry;
+    private final ModeRolloutGate gate;
 
     public NativeEnhancePptxRolloutPolicy(PptMasterProperties properties) {
         this(properties, null);
@@ -23,8 +23,7 @@ public class NativeEnhancePptxRolloutPolicy {
 
     @Autowired
     public NativeEnhancePptxRolloutPolicy(PptMasterProperties properties, NativeEnhancePptxTelemetry telemetry) {
-        this.properties = properties;
-        this.telemetry = telemetry;
+        this.gate = new ModeRolloutGate(new NativeEnhanceRolloutProfile(properties, telemetry));
     }
 
     /**
@@ -33,32 +32,72 @@ public class NativeEnhancePptxRolloutPolicy {
      * @param access 可信访问上下文；null 或缺身份时 fail closed
      */
     public void assertCreationAllowed(PptAccessContext access) {
-        NativeEnhancePptxProductionProperties production = properties.nativeEnhancePptx().production();
-        if (!production.enabled()) {
-            recordRejected();
-            throw new PptNativeEnhanceUnavailableException();
-        }
-        if (access == null || access.isInternalService()) {
-            recordRejected();
-            throw new PptNativeEnhanceAccessException("native-enhance-pptx creation requires authenticated caller");
-        }
-        if (access.hasRole(production.adminRole())) {
-            return;
-        }
-        if (production.allowedTenants().contains(access.tenantId())) {
-            return;
-        }
-        recordRejected();
-        throw new PptNativeEnhanceAccessException("native-enhance-pptx creation is not permitted for this caller");
-    }
-
-    private void recordRejected() {
-        if (telemetry != null) {
-            telemetry.recordCreation(NativeEnhancePptxTelemetry.CreationOutcome.REJECTED);
-        }
+        gate.assertCreationAllowed(access);
     }
 
     public boolean isExecutionStopped() {
-        return properties.nativeEnhancePptx().production().executionStopEnabled();
+        return gate.isExecutionStopped();
+    }
+
+    private static final class NativeEnhanceRolloutProfile implements ModeProductionProfile {
+
+        private final PptMasterProperties properties;
+        private final NativeEnhancePptxTelemetry telemetry;
+
+        private NativeEnhanceRolloutProfile(PptMasterProperties properties, NativeEnhancePptxTelemetry telemetry) {
+            this.properties = properties;
+            this.telemetry = telemetry;
+        }
+
+        private NativeEnhancePptxProductionProperties production() {
+            return properties.nativeEnhancePptx().production();
+        }
+
+        @Override
+        public boolean enabled() {
+            return production().enabled();
+        }
+
+        @Override
+        public String adminRole() {
+            return production().adminRole();
+        }
+
+        @Override
+        public Collection<String> allowedTenants() {
+            return production().allowedTenants();
+        }
+
+        @Override
+        public boolean executionStopEnabled() {
+            return production().executionStopEnabled();
+        }
+
+        @Override
+        public String authenticatedCallerRequiredMessage() {
+            return "native-enhance-pptx creation requires authenticated caller";
+        }
+
+        @Override
+        public String callerNotPermittedMessage() {
+            return "native-enhance-pptx creation is not permitted for this caller";
+        }
+
+        @Override
+        public RuntimeException unavailableException() {
+            return new PptNativeEnhanceUnavailableException();
+        }
+
+        @Override
+        public RuntimeException accessDeniedException(String message) {
+            return new PptNativeEnhanceAccessException(message);
+        }
+
+        @Override
+        public void recordCreationRejected() {
+            if (telemetry != null) {
+                telemetry.recordCreation(NativeEnhancePptxTelemetry.CreationOutcome.REJECTED);
+            }
+        }
     }
 }

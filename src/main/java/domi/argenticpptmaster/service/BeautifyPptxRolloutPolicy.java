@@ -5,6 +5,7 @@ import domi.argenticpptmaster.config.PptMasterProperties;
 import domi.argenticpptmaster.exception.PptBeautifyAccessException;
 import domi.argenticpptmaster.exception.PptBeautifyUnavailableException;
 import domi.argenticpptmaster.security.PptAccessContext;
+import java.util.Collection;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
@@ -14,8 +15,7 @@ import org.springframework.stereotype.Component;
 @Component
 public class BeautifyPptxRolloutPolicy {
 
-    private final PptMasterProperties properties;
-    private final BeautifyPptxTelemetry telemetry;
+    private final ModeRolloutGate gate;
 
     public BeautifyPptxRolloutPolicy(PptMasterProperties properties) {
         this(properties, null);
@@ -23,8 +23,7 @@ public class BeautifyPptxRolloutPolicy {
 
     @Autowired
     public BeautifyPptxRolloutPolicy(PptMasterProperties properties, BeautifyPptxTelemetry telemetry) {
-        this.properties = properties;
-        this.telemetry = telemetry;
+        this.gate = new ModeRolloutGate(new BeautifyRolloutProfile(properties, telemetry));
     }
 
     /**
@@ -33,32 +32,72 @@ public class BeautifyPptxRolloutPolicy {
      * @param access 可信访问上下文；null 或缺身份时 fail closed
      */
     public void assertCreationAllowed(PptAccessContext access) {
-        BeautifyPptxProductionProperties production = properties.beautifyPptx().production();
-        if (!production.enabled()) {
-            recordRejected();
-            throw new PptBeautifyUnavailableException();
-        }
-        if (access == null || access.isInternalService()) {
-            recordRejected();
-            throw new PptBeautifyAccessException("beautify-pptx creation requires authenticated caller");
-        }
-        if (access.hasRole(production.adminRole())) {
-            return;
-        }
-        if (production.allowedTenants().contains(access.tenantId())) {
-            return;
-        }
-        recordRejected();
-        throw new PptBeautifyAccessException("beautify-pptx creation is not permitted for this caller");
-    }
-
-    private void recordRejected() {
-        if (telemetry != null) {
-            telemetry.recordCreation(BeautifyPptxTelemetry.CreationOutcome.REJECTED);
-        }
+        gate.assertCreationAllowed(access);
     }
 
     public boolean isExecutionStopped() {
-        return properties.beautifyPptx().production().executionStopEnabled();
+        return gate.isExecutionStopped();
+    }
+
+    private static final class BeautifyRolloutProfile implements ModeProductionProfile {
+
+        private final PptMasterProperties properties;
+        private final BeautifyPptxTelemetry telemetry;
+
+        private BeautifyRolloutProfile(PptMasterProperties properties, BeautifyPptxTelemetry telemetry) {
+            this.properties = properties;
+            this.telemetry = telemetry;
+        }
+
+        private BeautifyPptxProductionProperties production() {
+            return properties.beautifyPptx().production();
+        }
+
+        @Override
+        public boolean enabled() {
+            return production().enabled();
+        }
+
+        @Override
+        public String adminRole() {
+            return production().adminRole();
+        }
+
+        @Override
+        public Collection<String> allowedTenants() {
+            return production().allowedTenants();
+        }
+
+        @Override
+        public boolean executionStopEnabled() {
+            return production().executionStopEnabled();
+        }
+
+        @Override
+        public String authenticatedCallerRequiredMessage() {
+            return "beautify-pptx creation requires authenticated caller";
+        }
+
+        @Override
+        public String callerNotPermittedMessage() {
+            return "beautify-pptx creation is not permitted for this caller";
+        }
+
+        @Override
+        public RuntimeException unavailableException() {
+            return new PptBeautifyUnavailableException();
+        }
+
+        @Override
+        public RuntimeException accessDeniedException(String message) {
+            return new PptBeautifyAccessException(message);
+        }
+
+        @Override
+        public void recordCreationRejected() {
+            if (telemetry != null) {
+                telemetry.recordCreation(BeautifyPptxTelemetry.CreationOutcome.REJECTED);
+            }
+        }
     }
 }

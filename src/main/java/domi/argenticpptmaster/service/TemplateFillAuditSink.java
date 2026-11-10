@@ -1,10 +1,6 @@
 package domi.argenticpptmaster.service;
 
-import java.util.LinkedHashMap;
-import java.util.Map;
 import java.util.UUID;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 /**
@@ -16,7 +12,7 @@ import org.springframework.stereotype.Component;
 @Component
 public class TemplateFillAuditSink {
 
-    private static final Logger AUDIT = LoggerFactory.getLogger("template-fill-audit");
+    private final ModeAuditSink sink = new ModeAuditSink("template-fill-audit", "template_fill_audit");
 
     public void record(
             String action,
@@ -25,21 +21,6 @@ public class TemplateFillAuditSink {
             String tenantDigest,
             String outcome,
             String reasonCode) {
-        Map<String, Object> payload = new LinkedHashMap<>();
-        payload.put("action", sanitize(action));
-        payload.put("jobId", jobId == null ? null : jobId.toString());
-        payload.put("subjectDigest", sanitize(subjectDigest));
-        payload.put("tenantDigest", sanitize(tenantDigest));
-        payload.put("outcome", sanitize(outcome));
-        payload.put("reasonCode", sanitize(reasonCode));
-        AUDIT.info("template_fill_audit {}", payload);
-    }
-
-    private static String sanitize(String value) {
-        if (value == null) {
-            return null;
-        }
-        String trimmed = value.trim();
-        return trimmed.isEmpty() ? null : trimmed;
+        sink.record(action, jobId, subjectDigest, tenantDigest, outcome, reasonCode);
     }
 }

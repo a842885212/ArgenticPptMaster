@@ -5,6 +5,7 @@ import domi.argenticpptmaster.config.TemplateFillProductionProperties;
 import domi.argenticpptmaster.exception.PptTemplateFillAccessException;
 import domi.argenticpptmaster.exception.PptTemplateFillUnavailableException;
 import domi.argenticpptmaster.security.PptAccessContext;
+import java.util.Collection;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
@@ -14,8 +15,7 @@ import org.springframework.stereotype.Component;
 @Component
 public class TemplateFillRolloutPolicy {
 
-    private final PptMasterProperties properties;
-    private final TemplateFillTelemetry telemetry;
+    private final ModeRolloutGate gate;
 
     public TemplateFillRolloutPolicy(PptMasterProperties properties) {
         this(properties, null);
@@ -23,8 +23,7 @@ public class TemplateFillRolloutPolicy {
 
     @Autowired
     public TemplateFillRolloutPolicy(PptMasterProperties properties, TemplateFillTelemetry telemetry) {
-        this.properties = properties;
-        this.telemetry = telemetry;
+        this.gate = new ModeRolloutGate(new TemplateFillRolloutProfile(properties, telemetry));
     }
 
     /**
@@ -33,32 +32,72 @@ public class TemplateFillRolloutPolicy {
      * @param access 可信访问上下文；null 或缺身份时 fail closed
      */
     public void assertCreationAllowed(PptAccessContext access) {
-        TemplateFillProductionProperties production = properties.templateFillProduction();
-        if (!production.enabled()) {
-            recordRejected();
-            throw new PptTemplateFillUnavailableException();
-        }
-        if (access == null || access.isInternalService()) {
-            recordRejected();
-            throw new PptTemplateFillAccessException("template-fill creation requires authenticated caller");
-        }
-        if (access.hasRole(production.adminRole())) {
-            return;
-        }
-        if (production.allowedTenants().contains(access.tenantId())) {
-            return;
-        }
-        recordRejected();
-        throw new PptTemplateFillAccessException("template-fill creation is not permitted for this caller");
-    }
-
-    private void recordRejected() {
-        if (telemetry != null) {
-            telemetry.recordCreation(TemplateFillTelemetry.CreationOutcome.REJECTED);
-        }
+        gate.assertCreationAllowed(access);
     }
 
     public boolean isExecutionStopped() {
-        return properties.templateFillProduction().executionStopEnabled();
+        return gate.isExecutionStopped();
+    }
+
+    private static final class TemplateFillRolloutProfile implements ModeProductionProfile {
+
+        private final PptMasterProperties properties;
+        private final TemplateFillTelemetry telemetry;
+
+        private TemplateFillRolloutProfile(PptMasterProperties properties, TemplateFillTelemetry telemetry) {
+            this.properties = properties;
+            this.telemetry = telemetry;
+        }
+
+        private TemplateFillProductionProperties production() {
+            return properties.templateFillProduction();
+        }
+
+        @Override
+        public boolean enabled() {
+            return production().enabled();
+        }
+
+        @Override
+        public String adminRole() {
+            return production().adminRole();
+        }
+
+        @Override
+        public Collection<String> allowedTenants() {
+            return production().allowedTenants();
+        }
+
+        @Override
+        public boolean executionStopEnabled() {
+            return production().executionStopEnabled();
+        }
+
+        @Override
+        public String authenticatedCallerRequiredMessage() {
+            return "template-fill creation requires authenticated caller";
+        }
+
+        @Override
+        public String callerNotPermittedMessage() {
+            return "template-fill creation is not permitted for this caller";
+        }
+
+        @Override
+        public RuntimeException unavailableException() {
+            return new PptTemplateFillUnavailableException();
+        }
+
+        @Override
+        public RuntimeException accessDeniedException(String message) {
+            return new PptTemplateFillAccessException(message);
+        }
+
+        @Override
+        public void recordCreationRejected() {
+            if (telemetry != null) {
+                telemetry.recordCreation(TemplateFillTelemetry.CreationOutcome.REJECTED);
+            }
+        }
     }
 }

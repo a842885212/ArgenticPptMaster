@@ -1,28 +1,16 @@
 package domi.argenticpptmaster.service;
 
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ObjectNode;
 import domi.argenticpptmaster.config.PptMasterProperties;
 import domi.argenticpptmaster.domain.NativeEnhancePptxLifecycleManifest;
 import domi.argenticpptmaster.domain.NativeEnhancePptxLifecycleManifest.CleanupState;
 import domi.argenticpptmaster.domain.PptJob;
 import domi.argenticpptmaster.domain.PptJobStatus;
-import domi.argenticpptmaster.exception.PptJobStateException;
-import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.AtomicMoveNotSupportedException;
-import java.nio.file.Files;
 import java.nio.file.Path;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
-import java.time.Instant;
-import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
-import java.util.UUID;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
@@ -32,11 +20,10 @@ import org.springframework.stereotype.Component;
 @Component
 public class NativeEnhancePptxLifecycleStore {
 
-    static final String MANIFEST_FILE = "manifest.json";
-    static final String LIFECYCLE_DIR = "lifecycle";
+    static final String MANIFEST_FILE = ModeLifecycleStore.MANIFEST_FILE;
+    static final String LIFECYCLE_DIR = ModeLifecycleStore.LIFECYCLE_DIR;
 
-    private final PptMasterProperties properties;
-    private final ObjectMapper objectMapper;
+    private final ModeLifecycleStore store;
 
     @Autowired
     public NativeEnhancePptxLifecycleStore(PptMasterProperties properties) {
@@ -44,82 +31,27 @@ public class NativeEnhancePptxLifecycleStore {
     }
 
     NativeEnhancePptxLifecycleStore(PptMasterProperties properties, ObjectMapper objectMapper) {
-        this.properties = properties;
-        this.objectMapper = objectMapper;
+        this.store = new ModeLifecycleStore(new NativeEnhanceLifecycleSupport(properties), objectMapper);
     }
 
     /** 工作区创建后写入初始清单。 */
     public void initialize(PptJob job) {
-        String ownershipDigest = digestOwnership(
-                job.ownerSubjectId().orElseThrow(() -> new PptJobStateException("native-enhance ownership is missing")),
-                job.ownerTenantId().orElseThrow(() -> new PptJobStateException("native-enhance ownership is missing")));
-        NativeEnhancePptxLifecycleManifest manifest = new NativeEnhancePptxLifecycleManifest(
-                job.id(),
-                ownershipDigest,
-                job.createdAt(),
-                null,
-                null,
-                null,
-                CleanupState.ACTIVE,
-                countArtifacts(job),
-                NativeEnhancePptxLifecycleManifest.SCHEMA_VERSION);
-        writeManifest(job.workspacePath(), manifest);
+        store.initialize(job);
     }
 
     /** 任务进入终态时写入保留截止时间。 */
     public void markTerminal(PptJob job, Duration retention) {
-        if (retention == null || retention.isNegative() || retention.isZero()) {
-            throw new IllegalArgumentException("retention must be positive");
-        }
-        NativeEnhancePptxLifecycleManifest current = read(job)
-                .orElseThrow(() -> new PptJobStateException("lifecycle manifest is missing"));
-        Instant terminalAt = job.terminalAt().orElse(Instant.now());
-        Instant deadline = terminalAt.plus(retention);
-        NativeEnhancePptxLifecycleManifest updated = new NativeEnhancePptxLifecycleManifest(
-                current.jobId(),
-                current.ownershipDigest(),
-                current.createdAt(),
-                terminalAt,
-                deadline,
-                current.lastDownloadedAt(),
-                current.cleanupState(),
-                countArtifacts(job),
-                current.schemaVersion());
-        writeManifest(job.workspacePath(), updated);
+        store.markTerminal(job, retention);
     }
 
     /** 诊断包生成成功后刷新 artifact 计数，不延长保留期。 */
     public void recordDiagnostic(PptJob job) {
-        NativeEnhancePptxLifecycleManifest current = read(job)
-                .orElseThrow(() -> new PptJobStateException("lifecycle manifest is missing"));
-        NativeEnhancePptxLifecycleManifest updated = new NativeEnhancePptxLifecycleManifest(
-                current.jobId(),
-                current.ownershipDigest(),
-                current.createdAt(),
-                current.terminalAt(),
-                current.retentionDeadline(),
-                current.lastDownloadedAt(),
-                current.cleanupState(),
-                countArtifacts(job),
-                current.schemaVersion());
-        writeManifest(job.workspacePath(), updated);
+        store.recordDiagnostic(job);
     }
 
     /** 授权下载成功后更新最近下载时间，不延长保留期。 */
     public void recordDownload(PptJob job) {
-        NativeEnhancePptxLifecycleManifest current = read(job)
-                .orElseThrow(() -> new PptJobStateException("lifecycle manifest is missing"));
-        NativeEnhancePptxLifecycleManifest updated = new NativeEnhancePptxLifecycleManifest(
-                current.jobId(),
-                current.ownershipDigest(),
-                current.createdAt(),
-                current.terminalAt(),
-                current.retentionDeadline(),
-                Instant.now(),
-                current.cleanupState(),
-                current.artifactCounts(),
-                current.schemaVersion());
-        writeManifest(job.workspacePath(), updated);
+        store.recordDownload(job);
     }
 
     public void markTombstoned(PptJob job) {
@@ -127,7 +59,7 @@ public class NativeEnhancePptxLifecycleStore {
     }
 
     public void markTombstoned(Path workspace) {
-        updateCleanupState(workspace, CleanupState.TOMBSTONED);
+        store.markTombstoned(workspace);
     }
 
     public void markIsolated(PptJob job) {
@@ -135,7 +67,7 @@ public class NativeEnhancePptxLifecycleStore {
     }
 
     public void markIsolated(Path workspace) {
-        updateCleanupState(workspace, CleanupState.ISOLATED);
+        store.markIsolated(workspace);
     }
 
     public Optional<NativeEnhancePptxLifecycleManifest> read(PptJob job) {
@@ -143,233 +75,106 @@ public class NativeEnhancePptxLifecycleStore {
     }
 
     public Optional<NativeEnhancePptxLifecycleManifest> read(Path workspace) {
-        Path manifestPath = manifestPath(workspace);
-        if (!Files.exists(manifestPath)) {
-            return Optional.empty();
-        }
-        rejectSymlink(manifestPath, "lifecycle manifest");
-        if (!Files.isRegularFile(manifestPath)) {
-            return Optional.empty();
-        }
-        try {
-            JsonNode root = objectMapper.readTree(Files.readString(manifestPath, StandardCharsets.UTF_8));
-            return Optional.of(parseManifest(root));
-        } catch (IOException | RuntimeException ex) {
-            throw new PptJobStateException("failed to read lifecycle manifest");
-        }
+        return store.read(workspace).map(NativeEnhancePptxLifecycleStore::toTyped);
     }
 
     public Duration retentionForTerminalStatus(PptJobStatus status) {
-        var production = properties.nativeEnhancePptx().production();
-        return status == PptJobStatus.COMPLETED
-                ? production.retentionCompleted()
-                : production.retentionFailed();
+        return store.retentionForTerminalStatus(status);
     }
 
     public static String digestOwnership(String subjectId, String tenantId) {
-        return sha256Hex(subjectId.trim() + "|" + tenantId.trim());
+        return ModeLifecycleStore.digestOwnership(subjectId, tenantId);
     }
 
     public static String digestSubject(String subjectId) {
-        return sha256Hex(subjectId == null ? "" : subjectId.trim());
+        return ModeLifecycleStore.digestSubject(subjectId);
     }
 
     public static String digestTenant(String tenantId) {
-        return sha256Hex(tenantId == null ? "" : tenantId.trim());
+        return ModeLifecycleStore.digestTenant(tenantId);
     }
 
     static Path manifestPath(Path workspace) {
-        return workspace.toAbsolutePath().normalize().resolve(LIFECYCLE_DIR).resolve(MANIFEST_FILE).normalize();
+        return ModeLifecycleStore.manifestPath(workspace);
     }
 
-    private void updateCleanupState(Path workspace, CleanupState state) {
-        NativeEnhancePptxLifecycleManifest current = read(workspace)
-                .orElseThrow(() -> new PptJobStateException("lifecycle manifest is missing"));
-        NativeEnhancePptxLifecycleManifest updated = new NativeEnhancePptxLifecycleManifest(
-                current.jobId(),
-                current.ownershipDigest(),
-                current.createdAt(),
-                current.terminalAt(),
-                current.retentionDeadline(),
-                current.lastDownloadedAt(),
-                state,
-                current.artifactCounts(),
-                current.schemaVersion());
-        writeManifest(workspace, updated);
+    ModeLifecycleStore core() {
+        return store;
     }
 
-    private NativeEnhancePptxLifecycleManifest parseManifest(JsonNode root) {
-        if (root == null || !root.isObject()) {
-            throw new PptJobStateException("lifecycle manifest is malformed");
-        }
-        String schemaVersion = textOrNull(root, "schemaVersion");
-        if (!NativeEnhancePptxLifecycleManifest.SCHEMA_VERSION.equals(schemaVersion)) {
-            throw new PptJobStateException("lifecycle manifest schema is unsupported");
-        }
-        UUID jobId = UUID.fromString(requiredText(root, "jobId"));
-        String ownershipDigest = requiredText(root, "ownershipDigest");
-        Instant createdAt = Instant.parse(requiredText(root, "createdAt"));
-        Instant terminalAt = instantOrNull(root, "terminalAt");
-        Instant retentionDeadline = instantOrNull(root, "retentionDeadline");
-        Instant lastDownloadedAt = instantOrNull(root, "lastDownloadedAt");
-        CleanupState cleanupState = CleanupState.valueOf(requiredText(root, "cleanupState"));
-        Map<String, Integer> artifactCounts = parseArtifactCounts(root.get("artifactCounts"));
+    private static NativeEnhancePptxLifecycleManifest toTyped(ModeLifecycleManifest manifest) {
         return new NativeEnhancePptxLifecycleManifest(
-                jobId, ownershipDigest, createdAt, terminalAt, retentionDeadline,
-                lastDownloadedAt, cleanupState, artifactCounts, schemaVersion);
+                manifest.jobId(),
+                manifest.ownershipDigest(),
+                manifest.createdAt(),
+                manifest.terminalAt(),
+                manifest.retentionDeadline(),
+                manifest.lastDownloadedAt(),
+                CleanupState.valueOf(manifest.cleanupState().name()),
+                manifest.artifactCounts(),
+                manifest.schemaVersion());
     }
 
-    private static Map<String, Integer> parseArtifactCounts(JsonNode node) {
-        Map<String, Integer> counts = new LinkedHashMap<>(NativeEnhancePptxLifecycleManifest.defaultArtifactCounts());
-        if (node != null && node.isObject()) {
-            node.fields().forEachRemaining(entry -> {
-                if (entry.getValue().canConvertToInt()) {
-                    counts.put(entry.getKey(), entry.getValue().intValue());
-                }
-            });
-        }
-        return counts;
-    }
+    private static final class NativeEnhanceLifecycleSupport implements ModeLifecycleSupport {
 
-    private Map<String, Integer> countArtifacts(PptJob job) {
-        Path workspace = job.workspacePath().toAbsolutePath().normalize();
-        Path project = job.projectPath().map(Path::toAbsolutePath).map(Path::normalize).orElse(null);
-        Map<String, Integer> counts = new LinkedHashMap<>();
-        int sourceCount = countRegularFiles(workspace.resolve("uploads"));
-        int notesCount = 0;
-        int audioCount = 0;
-        int planCount = 0;
-        int validationCount = countRegularFiles(workspace.resolve("validation"));
-        int exportCount = countRegularFiles(workspace.resolve("exports"));
-        if (project != null) {
-            sourceCount += countRegularFiles(project.resolve("sources"));
-            notesCount = countRegularFiles(project.resolve("notes"));
-            audioCount = countRegularFiles(project.resolve("audio"))
-                    + countRegularFiles(project.resolve("media"));
-            planCount = countNamed(project.resolve("analysis"), "enhancement_plan.json")
-                    + countNamed(project.resolve("analysis"), "enhancement_plan.draft.json");
-            validationCount += countRegularFiles(project.resolve("validation"));
-            exportCount += countRegularFiles(project.resolve("exports"));
-        }
-        counts.put("source", sourceCount);
-        counts.put("notes", notesCount);
-        counts.put("audio", audioCount);
-        counts.put("plan", planCount);
-        counts.put("validation", validationCount);
-        counts.put("diagnostic", countRegularFiles(workspace.resolve("diagnostics")));
-        counts.put("export", exportCount);
-        return counts;
-    }
+        private final PptMasterProperties properties;
 
-    private static int countNamed(Path directory, String fileName) {
-        Path file = directory.resolve(fileName);
-        return Files.isRegularFile(file) ? 1 : 0;
-    }
+        private NativeEnhanceLifecycleSupport(PptMasterProperties properties) {
+            this.properties = properties;
+        }
 
-    private static int countRegularFiles(Path directory) {
-        if (!Files.isDirectory(directory)) {
-            return 0;
+        @Override
+        public String schemaVersion() {
+            return NativeEnhancePptxLifecycleManifest.SCHEMA_VERSION;
         }
-        try (var stream = Files.list(directory)) {
-            return (int) stream.filter(Files::isRegularFile).count();
-        } catch (IOException ex) {
-            return 0;
-        }
-    }
 
-    private void writeManifest(Path workspace, NativeEnhancePptxLifecycleManifest manifest) {
-        Path manifestPath = manifestPath(workspace);
-        rejectSymlink(manifestPath.getParent(), "lifecycle directory");
-        rejectSymlink(manifestPath, "lifecycle manifest");
-        ensureInsideWorkspace(workspace, manifestPath);
-        ObjectNode root = objectMapper.createObjectNode();
-        root.put("schemaVersion", manifest.schemaVersion());
-        root.put("jobId", manifest.jobId().toString());
-        root.put("ownershipDigest", manifest.ownershipDigest());
-        root.put("createdAt", manifest.createdAt().toString());
-        if (manifest.terminalAt() != null) {
-            root.put("terminalAt", manifest.terminalAt().toString());
+        @Override
+        public String ownershipMissingMessage() {
+            return "native-enhance ownership is missing";
         }
-        if (manifest.retentionDeadline() != null) {
-            root.put("retentionDeadline", manifest.retentionDeadline().toString());
-        }
-        if (manifest.lastDownloadedAt() != null) {
-            root.put("lastDownloadedAt", manifest.lastDownloadedAt().toString());
-        }
-        root.put("cleanupState", manifest.cleanupState().name());
-        ObjectNode counts = root.putObject("artifactCounts");
-        manifest.artifactCounts().forEach(counts::put);
-        byte[] bytes;
-        try {
-            bytes = (objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(root)
-                    + System.lineSeparator()).getBytes(StandardCharsets.UTF_8);
-        } catch (IOException ex) {
-            throw new PptJobStateException("failed to serialize lifecycle manifest");
-        }
-        atomicWrite(manifestPath, bytes);
-    }
 
-    private static void ensureInsideWorkspace(Path workspace, Path target) {
-        Path normalizedWorkspace = workspace.toAbsolutePath().normalize();
-        Path normalizedTarget = target.toAbsolutePath().normalize();
-        if (!normalizedTarget.startsWith(normalizedWorkspace)) {
-            throw new PptJobStateException("lifecycle manifest path escapes job workspace");
+        @Override
+        public Map<String, Integer> defaultArtifactCounts() {
+            return NativeEnhancePptxLifecycleManifest.defaultArtifactCounts();
         }
-    }
 
-    private static void rejectSymlink(Path path, String label) {
-        if (Files.exists(path) && Files.isSymbolicLink(path)) {
-            throw new PptJobStateException(label + " must not be a symbolic link");
-        }
-    }
-
-    private void atomicWrite(Path target, byte[] bytes) {
-        Path parent = target.getParent();
-        Path temporaryPath = parent.resolve(target.getFileName() + ".tmp").normalize();
-        try {
-            Files.createDirectories(parent);
-            Files.write(temporaryPath, bytes);
-            try {
-                Files.move(temporaryPath, target, java.nio.file.StandardCopyOption.ATOMIC_MOVE,
-                        java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-            } catch (AtomicMoveNotSupportedException ex) {
-                Files.move(temporaryPath, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        @Override
+        public Map<String, Integer> countArtifacts(PptJob job) {
+            Path workspace = job.workspacePath().toAbsolutePath().normalize();
+            Path project = job.projectPath().map(Path::toAbsolutePath).map(Path::normalize).orElse(null);
+            Map<String, Integer> counts = new LinkedHashMap<>();
+            int sourceCount = ModeLifecycleStore.countRegularFiles(workspace.resolve("uploads"));
+            int notesCount = 0;
+            int audioCount = 0;
+            int planCount = 0;
+            int validationCount = ModeLifecycleStore.countRegularFiles(workspace.resolve("validation"));
+            int exportCount = ModeLifecycleStore.countRegularFiles(workspace.resolve("exports"));
+            if (project != null) {
+                sourceCount += ModeLifecycleStore.countRegularFiles(project.resolve("sources"));
+                notesCount = ModeLifecycleStore.countRegularFiles(project.resolve("notes"));
+                audioCount = ModeLifecycleStore.countRegularFiles(project.resolve("audio"))
+                        + ModeLifecycleStore.countRegularFiles(project.resolve("media"));
+                planCount = ModeLifecycleStore.countNamed(project.resolve("analysis"), "enhancement_plan.json")
+                        + ModeLifecycleStore.countNamed(project.resolve("analysis"), "enhancement_plan.draft.json");
+                validationCount += ModeLifecycleStore.countRegularFiles(project.resolve("validation"));
+                exportCount += ModeLifecycleStore.countRegularFiles(project.resolve("exports"));
             }
-        } catch (IOException ex) {
-            try {
-                Files.deleteIfExists(temporaryPath);
-            } catch (IOException ignored) {
-                // preserve original failure
-            }
-            throw new PptJobStateException("failed to store lifecycle manifest");
+            counts.put("source", sourceCount);
+            counts.put("notes", notesCount);
+            counts.put("audio", audioCount);
+            counts.put("plan", planCount);
+            counts.put("validation", validationCount);
+            counts.put("diagnostic", ModeLifecycleStore.countRegularFiles(workspace.resolve("diagnostics")));
+            counts.put("export", exportCount);
+            return counts;
         }
-    }
 
-    private static String requiredText(JsonNode root, String field) {
-        JsonNode node = root.get(field);
-        if (node == null || node.asText().isBlank()) {
-            throw new PptJobStateException("lifecycle manifest field is missing: " + field);
-        }
-        return node.asText();
-    }
-
-    private static String textOrNull(JsonNode root, String field) {
-        JsonNode node = root.get(field);
-        return node == null || node.isNull() ? null : node.asText();
-    }
-
-    private static Instant instantOrNull(JsonNode root, String field) {
-        String value = textOrNull(root, field);
-        return value == null || value.isBlank() ? null : Instant.parse(value);
-    }
-
-    private static String sha256Hex(String value) {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] hash = digest.digest(value.getBytes(StandardCharsets.UTF_8));
-            return HexFormat.of().formatHex(hash);
-        } catch (NoSuchAlgorithmException ex) {
-            throw new IllegalStateException("SHA-256 is unavailable", ex);
+        @Override
+        public Duration retentionForTerminalStatus(PptJobStatus status) {
+            var production = properties.nativeEnhancePptx().production();
+            return status == PptJobStatus.COMPLETED
+                    ? production.retentionCompleted()
+                    : production.retentionFailed();
         }
     }
 }

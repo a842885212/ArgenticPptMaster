@@ -21,8 +21,10 @@ import domi.argenticpptmaster.service.PptOutlineStore;
 import domi.argenticpptmaster.service.PptTemplateFillAnalysisReader;
 import domi.argenticpptmaster.service.PptTemplateFillPlanStore;
 import domi.argenticpptmaster.service.TemplateFillPlanValidator;
+import domi.argenticpptmaster.service.PptTokenUsageTelemetry;
 import domi.argenticpptmaster.service.PptWorkflowEvents;
 import io.agentscope.core.model.Model;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -542,9 +544,37 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
     @Test
     void createsSingleModelWithoutFallback() throws Exception {
         TestContext context = createContext();
-        Model model = context.factory.buildModel();
+        Model model = context.factory.buildModel(context.job);
+        assertThat(model).isInstanceOf(UsageTrackingModel.class);
         assertThat(model).isNotInstanceOf(FallbackModel.class);
         assertThat(model.getModelName()).isEqualTo("dummy-model");
+        assertThat(((UsageTrackingModel) model).boundJob()).isSameAs(context.job);
+    }
+
+    @Test
+    void wrapsUsageTrackingWithInjectedTelemetry() throws Exception {
+        TestContext base = createContext();
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        PptTokenUsageTelemetry telemetry = new PptTokenUsageTelemetry(registry, base.agentProperties);
+        DefaultAgentScopeWorkflowAgentFactory factory = new DefaultAgentScopeWorkflowAgentFactory(
+                base.agentProperties,
+                base.properties,
+                base.engines,
+                base.events,
+                templateFillAgentTools(base.properties),
+                new NativeEnhanceAgentTools(),
+                null,
+                null,
+                telemetry);
+
+        Model model = factory.buildModel(base.job);
+        assertThat(model).isInstanceOf(UsageTrackingModel.class);
+
+        // Smoke: telemetry series for configured model are pre-registered via factory wiring path.
+        assertThat(registry.find(PptTokenUsageTelemetry.METRIC_CALLS)
+                        .tag("model", "dummy-model")
+                        .counters())
+                .isNotEmpty();
     }
 
     /**
@@ -553,7 +583,7 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
     @Test
     void createsFallbackModelWithFallbackGroups() throws Exception {
         TestContext context = createContextWithFallbacks();
-        Model model = context.factory.buildModel();
+        Model model = context.factory.buildModel(context.job);
         assertThat(model).isInstanceOf(FallbackModel.class);
         assertThat(model.getModelName()).contains("dummy-model").contains("gpt-4o-mini");
     }
@@ -589,7 +619,9 @@ class DefaultAgentScopeWorkflowAgentFactoryTests {
                 new PptWorkflowEvents(new PptJobEventPublisher()),
                 templateFillAgentTools(pptProperties));
 
-        assertThatThrownBy(factory::buildModel)
+        PptJob job = new PptJob(
+                UUID.randomUUID(), "demo", "ppt169", "x", PptWorkflowMode.BASIC, tempDir.resolve("job"));
+        assertThatThrownBy(() -> factory.buildModel(job))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("primary model group must be configured");
     }

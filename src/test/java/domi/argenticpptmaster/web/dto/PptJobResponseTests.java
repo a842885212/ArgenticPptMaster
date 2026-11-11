@@ -5,6 +5,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import domi.argenticpptmaster.domain.PptJob;
 import domi.argenticpptmaster.domain.PptJobNode;
 import domi.argenticpptmaster.domain.PptJobNodeStatus;
+import domi.argenticpptmaster.domain.PptModelTokenUsage;
+import domi.argenticpptmaster.domain.PptTokenUsage;
 import domi.argenticpptmaster.domain.PptWorkflowMode;
 import domi.argenticpptmaster.domain.PptSourceFile;
 import domi.argenticpptmaster.domain.PptTemplateFile;
@@ -388,5 +390,24 @@ class PptJobResponseTests {
         assertThat(response.templateAnalysisReady()).isFalse();
         assertThat(response.fillPlanStatus()).isNull();
         assertThat(response.templateFillProgress()).isNull();
+    }
+
+    @Test
+    void alwaysExposesTokenUsageIncludingZeroAndByModel() {
+        PptJob job = new PptJob(
+                UUID.randomUUID(), "demo", "ppt169", "make a deck", PptWorkflowMode.BASIC,
+                Path.of("var/ppt-master/jobs/demo"));
+
+        PptJobResponse empty = PptJobResponse.from(job);
+        assertThat(empty.tokenUsage()).isEqualTo(PptTokenUsage.empty());
+        assertThat(empty.tokenUsage().byModel()).isEmpty();
+
+        job.recordTokenUsage("kimi-for-coding", 20, 8);
+        PptJobResponse withUsage = PptJobResponse.from(job);
+        assertThat(withUsage.tokenUsage().inputTokens()).isEqualTo(20L);
+        assertThat(withUsage.tokenUsage().outputTokens()).isEqualTo(8L);
+        assertThat(withUsage.tokenUsage().totalTokens()).isEqualTo(28L);
+        assertThat(withUsage.tokenUsage().byModel())
+                .containsEntry("kimi-for-coding", new PptModelTokenUsage(20L, 8L, 28L, 1L));
     }
 }

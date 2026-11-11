@@ -37,6 +37,8 @@ Native-enhance must always preserve:
 
 ## Metrics and alerts
 
+Cross-mode chat token counters: [`ppt-token-usage-runbook.md`](ppt-token-usage-runbook.md).
+
 Scrape `/actuator/prometheus`. Core counters/timers (`NativeEnhancePptxTelemetry`):
 
 - `native.enhance.pptx.creation.total{outcome}`

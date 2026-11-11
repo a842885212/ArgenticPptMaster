@@ -27,6 +27,8 @@ import domi.argenticpptmaster.service.BeautifyPptxPlanStore;
 import domi.argenticpptmaster.service.BeautifyPptxLifecycleStore;
 import domi.argenticpptmaster.service.BeautifyPptxOutputVerifier;
 import domi.argenticpptmaster.service.BeautifyPptxSvgContractValidator;
+import domi.argenticpptmaster.service.PptTokenUsageLedgerStore;
+import domi.argenticpptmaster.service.PptTokenUsageTelemetry;
 import io.agentscope.core.ReActAgent;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
@@ -108,6 +110,8 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
     private final TemplateFillAgentTools templateFillAgentTools;
     private final NativeEnhanceAgentTools nativeEnhanceAgentTools;
     private final BeautifyPptxLifecycleStore beautifyLifecycleStore;
+    private final PptTokenUsageLedgerStore tokenUsageLedgerStore;
+    private final PptTokenUsageTelemetry tokenUsageTelemetry;
     private final PptArtifactRegistry artifactRegistry = new PptArtifactRegistry();
 
     public DefaultAgentScopeWorkflowAgentFactory(
@@ -117,7 +121,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
             PptWorkflowEvents events,
             TemplateFillAgentTools templateFillAgentTools) {
         this(agentScopeProperties, pptMasterProperties, engines, events, templateFillAgentTools,
-                new NativeEnhanceAgentTools(), null);
+                new NativeEnhanceAgentTools(), null, null, null);
     }
 
     public DefaultAgentScopeWorkflowAgentFactory(
@@ -128,7 +132,32 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
             TemplateFillAgentTools templateFillAgentTools,
             NativeEnhanceAgentTools nativeEnhanceAgentTools) {
         this(agentScopeProperties, pptMasterProperties, engines, events, templateFillAgentTools,
-                nativeEnhanceAgentTools, null);
+                nativeEnhanceAgentTools, null, null, null);
+    }
+
+    public DefaultAgentScopeWorkflowAgentFactory(
+            AgentScopeProperties agentScopeProperties,
+            PptMasterProperties pptMasterProperties,
+            PptEngineBundle engines,
+            PptWorkflowEvents events,
+            TemplateFillAgentTools templateFillAgentTools,
+            NativeEnhanceAgentTools nativeEnhanceAgentTools,
+            BeautifyPptxLifecycleStore beautifyLifecycleStore) {
+        this(agentScopeProperties, pptMasterProperties, engines, events, templateFillAgentTools,
+                nativeEnhanceAgentTools, beautifyLifecycleStore, null, null);
+    }
+
+    public DefaultAgentScopeWorkflowAgentFactory(
+            AgentScopeProperties agentScopeProperties,
+            PptMasterProperties pptMasterProperties,
+            PptEngineBundle engines,
+            PptWorkflowEvents events,
+            TemplateFillAgentTools templateFillAgentTools,
+            NativeEnhanceAgentTools nativeEnhanceAgentTools,
+            BeautifyPptxLifecycleStore beautifyLifecycleStore,
+            PptTokenUsageLedgerStore tokenUsageLedgerStore) {
+        this(agentScopeProperties, pptMasterProperties, engines, events, templateFillAgentTools,
+                nativeEnhanceAgentTools, beautifyLifecycleStore, tokenUsageLedgerStore, null);
     }
 
     @org.springframework.beans.factory.annotation.Autowired
@@ -139,7 +168,9 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
             PptWorkflowEvents events,
             TemplateFillAgentTools templateFillAgentTools,
             NativeEnhanceAgentTools nativeEnhanceAgentTools,
-            BeautifyPptxLifecycleStore beautifyLifecycleStore) {
+            BeautifyPptxLifecycleStore beautifyLifecycleStore,
+            PptTokenUsageLedgerStore tokenUsageLedgerStore,
+            PptTokenUsageTelemetry tokenUsageTelemetry) {
         this.agentScopeProperties = agentScopeProperties;
         this.pptMasterProperties = pptMasterProperties;
         this.engines = engines;
@@ -148,6 +179,9 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
         this.nativeEnhanceAgentTools = nativeEnhanceAgentTools == null
                 ? new NativeEnhanceAgentTools() : nativeEnhanceAgentTools;
         this.beautifyLifecycleStore = beautifyLifecycleStore;
+        this.tokenUsageLedgerStore = tokenUsageLedgerStore == null
+                ? new PptTokenUsageLedgerStore() : tokenUsageLedgerStore;
+        this.tokenUsageTelemetry = tokenUsageTelemetry;
     }
 
     /**
@@ -180,7 +214,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                 .name("ppt_master_orchestrator")
                 .description("Orchestrates the ppt-master workflow: markdown-first route with optional image-enhanced generation.")
                 .sysPrompt(buildSystemPrompt(job.workflowMode()))
-                .model(buildModel())
+                .model(buildModel(job))
                 .toolkit(toolkit)
                 .stateStore(new JsonFileAgentStateStore(agentScopeProperties.sessionStorePath()))
                 .defaultSessionId(job.id().toString())
@@ -205,7 +239,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                 .name("native_enhance_planner")
                 .description("Drafts and revises native PPTX enhancement plans and notes without SVG or template-fill tools.")
                 .sysPrompt(buildSystemPrompt(PptWorkflowMode.NATIVE_ENHANCE_PPTX))
-                .model(buildModel())
+                .model(buildModel(job))
                 .toolkit(toolkit)
                 .stateStore(new JsonFileAgentStateStore(agentScopeProperties.sessionStorePath()))
                 .defaultSessionId(job.id().toString())
@@ -230,7 +264,7 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
                 .name("template_fill_planner")
                 .description("Drafts native PPTX template fill plans from analyzed slide libraries and uploaded content.")
                 .sysPrompt(buildSystemPrompt(PptWorkflowMode.TEMPLATE_FILL))
-                .model(buildModel())
+                .model(buildModel(job))
                 .toolkit(toolkit)
                 .stateStore(new JsonFileAgentStateStore(agentScopeProperties.sessionStorePath()))
                 .defaultSessionId(job.id().toString())
@@ -313,14 +347,14 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
      *
      * @return 配置完成的 AgentScope 模型实例
      */
-    Model buildModel() {
+    Model buildModel(PptJob job) {
         ModelGroup primaryGroup = agentScopeProperties.effectivePrimary();
         if (!primaryGroup.isValid()) {
             throw new IllegalStateException("agentscope primary model group must be configured");
         }
-        Model primary = buildModelGroup(primaryGroup);
+        Model primary = wrapUsageTracking(buildModelGroup(primaryGroup), primaryGroup, job);
         List<Model> fallbackModels = agentScopeProperties.effectiveFallbacks().stream()
-                .map(this::buildModelGroup)
+                .map(group -> wrapUsageTracking(buildModelGroup(group), group, job))
                 .toList();
         if (fallbackModels.isEmpty()) {
             return primary;
@@ -329,6 +363,16 @@ public class DefaultAgentScopeWorkflowAgentFactory implements AgentScopeWorkflow
         candidates.add(primary);
         candidates.addAll(fallbackModels);
         return new FallbackModel(candidates);
+    }
+
+    private Model wrapUsageTracking(Model delegate, ModelGroup group, PptJob job) {
+        return new UsageTrackingModel(
+                delegate,
+                group.modelName(),
+                group.normalizedProvider(),
+                job,
+                tokenUsageLedgerStore,
+                tokenUsageTelemetry);
     }
 
     /**

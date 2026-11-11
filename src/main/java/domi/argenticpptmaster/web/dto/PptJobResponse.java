@@ -6,6 +6,7 @@ import domi.argenticpptmaster.domain.PptJobNode;
 import domi.argenticpptmaster.domain.PptJobNodeStatus;
 import domi.argenticpptmaster.domain.PptJobStatus;
 import domi.argenticpptmaster.domain.PptNodeExecution;
+import domi.argenticpptmaster.domain.PptTokenUsage;
 import domi.argenticpptmaster.domain.PptWorkflowMode;
 import java.time.Instant;
 import java.util.LinkedHashMap;
@@ -42,6 +43,7 @@ import java.util.UUID;
  * @param downloadUrl           下载链接（就绪时非空）
  * @param currentConfirmationId 当前待确认项的 ID
  * @param confirmationPayload   确认相关的结构化负载数据
+ * @param tokenUsage            任务累计 chat token usage（totals + byModel；无调用时为零值）
  * @param errorMessage          错误信息（任务失败时非空）
  * @param events                任务相关的事件列表
  * @author zhangtianhao
@@ -79,6 +81,7 @@ public record PptJobResponse(
         TemplateFillProgressResponse templateFillProgress,
         BeautifyAnalysisResponse beautifyAnalysis,
         NativeEnhanceAnalysisResponse nativeEnhanceAnalysis,
+        PptTokenUsage tokenUsage,
         String errorMessage,
         List<PptJobEvent> events) {
 
@@ -127,6 +130,7 @@ public record PptJobResponse(
                 templateProgress,
                 buildBeautifyAnalysis(job),
                 buildNativeEnhanceAnalysis(job),
+                job.tokenUsage(),
                 job.errorMessage().orElse(null),
                 job.events());
     }

@@ -4,6 +4,7 @@ import java.nio.file.Path;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.EnumMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -78,6 +79,9 @@ public class PptJob {
     private String ownerSubjectId;
     private String ownerTenantId;
     private Instant terminalAt;
+
+    /** 任务内 chat token 按 model 累计；对外快照见 {@link #tokenUsage()}。 */
+    private final Map<String, PptModelTokenUsage> tokenUsageByModel = new LinkedHashMap<>();
 
     /**
      * 创建一个新的 PPT 任务实例（默认 {@link PptConfirmationMode#INTERACTIVE}）。
@@ -389,6 +393,36 @@ public class PptJob {
 
     public synchronized boolean hasOwnership() {
         return ownerSubjectId != null && ownerTenantId != null;
+    }
+
+    /**
+     * 将一次成功的 chat 调用 usage 计入任务汇总。
+     * <p>
+     * 调用方在 provider 未返回 usage 时 MUST NOT 调用本方法（不得伪造 0）。
+     * model 名为空时忽略本次计入。
+     * </p>
+     *
+     * @param modelName    实际完成调用的模型名
+     * @param inputTokens  本次 input tokens（非负）
+     * @param outputTokens 本次 output tokens（非负）
+     * @return true 表示已计入；false 表示因 model 无效被跳过
+     */
+    public synchronized boolean recordTokenUsage(String modelName, int inputTokens, int outputTokens) {
+        if (modelName == null || modelName.isBlank()) {
+            return false;
+        }
+        String model = modelName.trim();
+        long input = Math.max(0, inputTokens);
+        long output = Math.max(0, outputTokens);
+        PptModelTokenUsage current = tokenUsageByModel.getOrDefault(model, PptModelTokenUsage.zero());
+        tokenUsageByModel.put(model, current.plus(input, output));
+        touch();
+        return true;
+    }
+
+    /** 返回任务级 token usage 快照（totals + byModel）；尚无计入时为零值与空分项。 */
+    public synchronized PptTokenUsage tokenUsage() {
+        return PptTokenUsage.fromByModel(tokenUsageByModel);
     }
 
     public synchronized int notesMappingCount() {

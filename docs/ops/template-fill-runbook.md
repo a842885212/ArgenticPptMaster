@@ -59,6 +59,8 @@ Scrape `/actuator/prometheus`. Core counters/timers (`TemplateFillTelemetry`):
 
 See [`template-fill-rollout-thresholds.md`](template-fill-rollout-thresholds.md) and [`template-fill-alerts.example.yml`](template-fill-alerts.example.yml).
 
+Cross-mode chat token counters: [`ppt-token-usage-runbook.md`](ppt-token-usage-runbook.md).
+
 ## Diagnostics
 
 Redacted diagnostic export (Group 5) is optional and off by default (`ppt-master.template-fill-production.diagnostics-enabled=false`). When enabled:

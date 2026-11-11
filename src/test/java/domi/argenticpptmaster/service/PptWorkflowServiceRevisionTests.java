@@ -18,6 +18,9 @@ import domi.argenticpptmaster.domain.SlideOutline;
 import domi.argenticpptmaster.exception.PptJobResumeException;
 import domi.argenticpptmaster.exception.PptJobStateException;
 import domi.argenticpptmaster.repository.InMemoryPptJobRepository;
+import domi.argenticpptmaster.security.FixedPptAccessContextResolver;
+import domi.argenticpptmaster.security.PptAccessContext;
+import java.util.Set;
 import domi.argenticpptmaster.web.dto.PptOutlineEditRequest;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -142,12 +145,18 @@ class PptWorkflowServiceRevisionTests {
         InMemoryPptJobRepository repository = new InMemoryPptJobRepository();
         PptWorkflowAsyncRunner asyncRunner = mock(PptWorkflowAsyncRunner.class);
         PptTemplateFillAsyncRunner templateFillAsyncRunner = mock(PptTemplateFillAsyncRunner.class);
+        PptMasterProperties properties = PptMasterProperties.forTest(tempDir, tempDir);
+        FixedPptAccessContextResolver access = new FixedPptAccessContextResolver(
+                PptAccessContext.user("test-tenant", "test-tenant", Set.of()));
         PptWorkflowService service = new PptWorkflowService(
-                PptMasterProperties.forTest(tempDir, tempDir), repository,
+                properties, repository,
                 mock(PptWorkflowEvents.class), asyncRunner, templateFillAsyncRunner,
                 mock(PptTemplateFillPlanningOrchestrator.class), mock(PptTemplateFillPlanStore.class),
-                new TemplateFillConstraintsParser());
+                new TemplateFillConstraintsParser(),
+                new TemplateFillRolloutPolicy(properties),
+                access);
         PptJob job = new PptJob(UUID.randomUUID(), "demo", "ppt169", "make a deck", mode, projectPath);
+        job.assignOwnership("test-tenant", "test-tenant");
         job.prepareProject(projectPath);
         job.waitNodeConfirmation(PptJobNode.OUTLINE_DRAFTED);
         job.requireConfirmation("outline-1", outlinePayload());

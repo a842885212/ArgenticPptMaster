@@ -64,7 +64,7 @@ public class BeautifyPptxRolloutPolicy {
         }
 
         @Override
-        public Collection<String> allowedTenants() {
+        public Collection<String> allowedClientIds() {
             return production().allowedTenants();
         }
 

@@ -2,33 +2,30 @@ package domi.argenticpptmaster.security;
 
 import domi.argenticpptmaster.config.PptMasterProperties;
 import domi.argenticpptmaster.domain.PptJob;
-import domi.argenticpptmaster.domain.PptWorkflowMode;
 import domi.argenticpptmaster.exception.PptBeautifyAccessException;
+import domi.argenticpptmaster.exception.PptCallerAccessException;
 import domi.argenticpptmaster.exception.PptNativeEnhanceAccessException;
 import domi.argenticpptmaster.exception.PptTemplateFillAccessException;
 import org.springframework.stereotype.Component;
 
 /**
- * 敏感模式任务外部访问的统一授权。
+ * 任务外部访问的统一授权：按服务调用方 {@code clientId} 隔离。
  * <p>
- * TEMPLATE_FILL / BEAUTIFY_PPTX / NATIVE_ENHANCE_PPTX 分别读取各自 admin role；仅同 tenant 的 owner 或管理员可访问。
- * 内部服务身份仅供异步 runner。
+ * 归属字段 owner/tenant 均绑定创建时的 clientId；仅同 client 或内部服务可访问。
  * </p>
  */
 @Component
 public class PptJobAccessAuthorizer {
 
-    private final PptMasterProperties properties;
     private final PptAccessContextResolver accessContextResolver;
 
     public PptJobAccessAuthorizer(
             PptMasterProperties properties,
             PptAccessContextResolver accessContextResolver) {
-        this.properties = properties;
         this.accessContextResolver = accessContextResolver;
     }
 
-    /** 对敏感模式任务强制授权；其他模式直接放行。 */
+    /** 对任务强制按 client 授权。 */
     public void assertCanAccess(PptJob job) {
         assertCanAccess(job, accessContextResolver.resolve().orElse(null));
     }
@@ -37,82 +34,29 @@ public class PptJobAccessAuthorizer {
         if (job == null) {
             return;
         }
-        if (job.workflowMode() == PptWorkflowMode.TEMPLATE_FILL) {
-            assertTemplateFillAccess(job, access);
-            return;
-        }
-        if (job.workflowMode() == PptWorkflowMode.BEAUTIFY_PPTX) {
-            assertBeautifyAccess(job, access);
-            return;
-        }
-        if (job.workflowMode() == PptWorkflowMode.NATIVE_ENHANCE_PPTX) {
-            assertNativeEnhanceAccess(job, access);
-        }
-    }
-
-    private void assertTemplateFillAccess(PptJob job, PptAccessContext access) {
         if (access == null) {
-            throw new PptTemplateFillAccessException("template-fill job access requires authentication");
+            throw accessDenied(job, "job access requires authenticated caller");
         }
         if (access.isInternalService()) {
             return;
         }
-        String adminRole = properties.templateFillProduction().adminRole();
-        if (access.hasRole(adminRole)) {
-            return;
-        }
         if (!job.hasOwnership()) {
-            throw new PptTemplateFillAccessException("template-fill job ownership is missing");
+            throw accessDenied(job, "job ownership is missing");
         }
         String owner = job.ownerSubjectId().orElse("");
         String tenant = job.ownerTenantId().orElse("");
         if (owner.equals(access.subjectId()) && tenant.equals(access.tenantId())) {
             return;
         }
-        throw new PptTemplateFillAccessException("template-fill job access is denied");
+        throw accessDenied(job, "job access is denied for this caller");
     }
 
-    private void assertBeautifyAccess(PptJob job, PptAccessContext access) {
-        if (access == null) {
-            throw new PptBeautifyAccessException("beautify-pptx job access requires authentication");
-        }
-        if (access.isInternalService()) {
-            return;
-        }
-        String adminRole = properties.beautifyPptx().production().adminRole();
-        if (access.hasRole(adminRole)) {
-            return;
-        }
-        if (!job.hasOwnership()) {
-            throw new PptBeautifyAccessException("beautify-pptx job ownership is missing");
-        }
-        String owner = job.ownerSubjectId().orElse("");
-        String tenant = job.ownerTenantId().orElse("");
-        if (owner.equals(access.subjectId()) && tenant.equals(access.tenantId())) {
-            return;
-        }
-        throw new PptBeautifyAccessException("beautify-pptx job access is denied");
-    }
-
-    private void assertNativeEnhanceAccess(PptJob job, PptAccessContext access) {
-        if (access == null) {
-            throw new PptNativeEnhanceAccessException("native-enhance-pptx job access requires authentication");
-        }
-        if (access.isInternalService()) {
-            return;
-        }
-        String adminRole = properties.nativeEnhancePptx().production().adminRole();
-        if (access.hasRole(adminRole)) {
-            return;
-        }
-        if (!job.hasOwnership()) {
-            throw new PptNativeEnhanceAccessException("native-enhance-pptx job ownership is missing");
-        }
-        String owner = job.ownerSubjectId().orElse("");
-        String tenant = job.ownerTenantId().orElse("");
-        if (owner.equals(access.subjectId()) && tenant.equals(access.tenantId())) {
-            return;
-        }
-        throw new PptNativeEnhanceAccessException("native-enhance-pptx job access is denied");
+    private static RuntimeException accessDenied(PptJob job, String message) {
+        return switch (job.workflowMode()) {
+            case TEMPLATE_FILL -> new PptTemplateFillAccessException(message);
+            case BEAUTIFY_PPTX -> new PptBeautifyAccessException(message);
+            case NATIVE_ENHANCE_PPTX -> new PptNativeEnhanceAccessException(message);
+            default -> new PptCallerAccessException(message);
+        };
     }
 }

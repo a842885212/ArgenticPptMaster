@@ -116,7 +116,7 @@ class TemplateFillProductionSecurityTests {
                 0, 0, 0, 0, null, false, List.of("test-tenant"), null,
                 TemplateFillProductionProperties.defaults());
         FixedPptAccessContextResolver access = new FixedPptAccessContextResolver(
-                PptAccessContext.user("user-1", "test-tenant", Set.of()));
+                PptAccessContext.user("test-tenant", "test-tenant", Set.of()));
         InMemoryPptJobRepository repository = new InMemoryPptJobRepository();
         PptWorkflowService service = new PptWorkflowService(
                 disabled,
@@ -138,7 +138,8 @@ class TemplateFillProductionSecurityTests {
         PptJob basic = service.createJob(new PptJobCreateCommand(
                 List.of(md("basic.md")), null, "demo", "ppt169", null, "basic"));
         assertThat(basic.workflowMode()).isEqualTo(PptWorkflowMode.BASIC);
-        assertThat(basic.hasOwnership()).isFalse();
+        assertThat(basic.hasOwnership()).isTrue();
+        assertThat(basic.ownerSubjectId()).contains("test-tenant");
     }
 
     @Test

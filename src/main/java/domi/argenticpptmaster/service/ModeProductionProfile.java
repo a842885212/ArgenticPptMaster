@@ -13,9 +13,14 @@ public interface ModeProductionProfile {
 
     boolean enabled();
 
+    /** @deprecated 外部调用方不再使用管理员角色旁路；保留供配置兼容。 */
     String adminRole();
 
-    Collection<String> allowedTenants();
+    /**
+     * 允许创建该模式的 clientId 集合。
+     * <p>实现可继续读取历史 {@code allowedTenants} 配置字段。</p>
+     */
+    Collection<String> allowedClientIds();
 
     boolean executionStopEnabled();
 

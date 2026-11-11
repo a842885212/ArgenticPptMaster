@@ -368,17 +368,17 @@ public class PptWorkflowService {
         validateNativeEnhanceContract(mode, files, command.templateFile(), command.templateConstraintsJson());
         validateBeautifyUploadSize(mode, files);
         validateNativeEnhanceUploadSize(mode, files);
-        PptAccessContext access = null;
+        PptAccessContext access = accessContextResolver.resolve().orElse(null);
         if (mode == PptWorkflowMode.TEMPLATE_FILL) {
-            access = accessContextResolver.resolve().orElse(null);
             templateFillRolloutPolicy.assertCreationAllowed(access);
             validateTemplateFillUploadSizes(command.templateFile(), files);
         } else if (mode == PptWorkflowMode.BEAUTIFY_PPTX) {
-            access = accessContextResolver.resolve().orElse(null);
             beautifyRolloutPolicy.assertCreationAllowed(access);
         } else if (mode == PptWorkflowMode.NATIVE_ENHANCE_PPTX) {
-            access = accessContextResolver.resolve().orElse(null);
             nativeEnhanceRolloutPolicy.assertCreationAllowed(access);
+        }
+        if (access == null || access.isInternalService()) {
+            throw new PptJobStateException("job creation requires authenticated caller");
         }
         validateTemplateContract(mode, command.templateFile());
         if (mode != PptWorkflowMode.TEMPLATE_FILL
@@ -407,13 +407,10 @@ public class PptWorkflowService {
                 mode,
                 confirmationMode,
                 jobWorkspace);
+        String clientId = access.subjectId();
+        job.assignOwnership(clientId, clientId);
         if (mode == PptWorkflowMode.TEMPLATE_FILL) {
             job.assignTemplateConstraints(templateConstraints);
-            job.assignOwnership(access.subjectId(), access.tenantId());
-        } else if (mode == PptWorkflowMode.BEAUTIFY_PPTX) {
-            job.assignOwnership(access.subjectId(), access.tenantId());
-        } else if (mode == PptWorkflowMode.NATIVE_ENHANCE_PPTX) {
-            job.assignOwnership(access.subjectId(), access.tenantId());
         }
         log.info("ppt_job_create_started: jobId={}, projectName={}, format={}, workflowMode={}, fileCount={}",
                 jobId, normalizedProjectName, normalizedFormat, mode, files.size());
@@ -661,7 +658,7 @@ public class PptWorkflowService {
 
     /** 为锁定大纲生成不改变任务状态的影响预览。 */
     public PptRevisionImpactPreview previewOutlineRevision(UUID jobId, Integer outlineVersion) {
-        PptJob job = getJob(jobId);
+        PptJob job = getAccessibleJob(jobId);
         if (!isOutlineConfirmation(job) || outlineVersion == null) {
             throw new PptJobStateException("outline revision preview is not available");
         }
@@ -1236,7 +1233,7 @@ public class PptWorkflowService {
      * @throws PptJobStateException 如果任务未完成或无导出产物
      */
     public Path exportPath(UUID jobId) {
-        PptJob job = getJob(jobId);
+        PptJob job = getAccessibleJob(jobId);
         if (job.workflowMode() == PptWorkflowMode.TEMPLATE_FILL) {
             PptAccessContext access = accessContextResolver.resolve().orElse(null);
             try {

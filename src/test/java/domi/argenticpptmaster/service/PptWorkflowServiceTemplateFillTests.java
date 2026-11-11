@@ -77,7 +77,7 @@ class PptWorkflowServiceTemplateFillTests {
         PptTemplateFillAsyncRunner templateFillRunner = mock(PptTemplateFillAsyncRunner.class);
         PptMasterProperties properties = PptMasterProperties.forTemplateFillTest(tempDir, tempDir, "test-tenant");
         FixedPptAccessContextResolver access = new FixedPptAccessContextResolver(
-                PptAccessContext.user("user-1", "test-tenant", Set.of()));
+                PptAccessContext.user("test-tenant", "test-tenant", Set.of()));
         PptWorkflowService service = new PptWorkflowService(
                 properties,
                 repository, mock(PptWorkflowEvents.class), agentRunner, templateFillRunner,
@@ -92,7 +92,7 @@ class PptWorkflowServiceTemplateFillTests {
                 project.resolve("analysis/template.slide_library.json"));
         PptJob job = new PptJob(UUID.randomUUID(), "demo", "ppt169", "fill",
                 PptWorkflowMode.TEMPLATE_FILL, workspace);
-        job.assignOwnership("user-1", "test-tenant");
+        job.assignOwnership("test-tenant", "test-tenant");
         job.prepareProject(project);
         job.completeNode(PptJobNode.TEMPLATE_ANALYZED, Map.of());
         job.failNode(PptJobNode.FILL_PLAN_VALIDATED, "check failed");
@@ -288,7 +288,7 @@ class PptWorkflowServiceTemplateFillTests {
         PptTemplateFillAsyncRunner templateFillRunner = mock(PptTemplateFillAsyncRunner.class);
         PptMasterProperties properties = PptMasterProperties.forTemplateFillTest(tempDir, tempDir, "test-tenant");
         FixedPptAccessContextResolver access = new FixedPptAccessContextResolver(
-                PptAccessContext.user("user-1", "test-tenant", Set.of()));
+                PptAccessContext.user("test-tenant", "test-tenant", Set.of()));
         PptWorkflowService service = new PptWorkflowService(
                 properties,
                 repository, mock(PptWorkflowEvents.class), mock(PptWorkflowAsyncRunner.class),
@@ -302,7 +302,7 @@ class PptWorkflowServiceTemplateFillTests {
         Files.createDirectories(project.resolve("analysis"));
         PptJob job = new PptJob(UUID.randomUUID(), "demo", "ppt169", "fill",
                 PptWorkflowMode.TEMPLATE_FILL, workspace);
-        job.assignOwnership("user-1", "test-tenant");
+        job.assignOwnership("test-tenant", "test-tenant");
         job.prepareProject(project);
         job.completeNode(PptJobNode.PROJECT_READY, Map.of());
         job.completeNode(PptJobNode.TEMPLATE_ANALYZED, Map.of());
@@ -319,7 +319,7 @@ class PptWorkflowServiceTemplateFillTests {
         InMemoryPptJobRepository repository = new InMemoryPptJobRepository();
         PptMasterProperties properties = PptMasterProperties.forTemplateFillTest(tempDir, tempDir, "test-tenant");
         FixedPptAccessContextResolver access = new FixedPptAccessContextResolver(
-                PptAccessContext.user("user-1", "test-tenant", Set.of()));
+                PptAccessContext.user("test-tenant", "test-tenant", Set.of()));
         PptWorkflowService service = new PptWorkflowService(
                 properties,
                 repository, mock(PptWorkflowEvents.class), mock(PptWorkflowAsyncRunner.class),
@@ -330,7 +330,7 @@ class PptWorkflowServiceTemplateFillTests {
                 access);
         PptJob job = new PptJob(UUID.randomUUID(), "demo", "ppt169", "fill",
                 PptWorkflowMode.TEMPLATE_FILL, tempDir.resolve("missing"));
-        job.assignOwnership("user-1", "test-tenant");
+        job.assignOwnership("test-tenant", "test-tenant");
         job.completeNode(PptJobNode.TEMPLATE_ANALYZED, Map.of());
         job.failNode(PptJobNode.FILL_PLAN_VALIDATED, "later failure");
         repository.save(job);
@@ -354,7 +354,7 @@ class PptWorkflowServiceTemplateFillTests {
         PptTemplateFillPlanningOrchestrator planningOrchestrator = mock(PptTemplateFillPlanningOrchestrator.class);
         PptMasterProperties properties = PptMasterProperties.forTemplateFillTest(tempDir, tempDir, "test-tenant");
         FixedPptAccessContextResolver access = new FixedPptAccessContextResolver(
-                PptAccessContext.user("user-1", "test-tenant", Set.of()));
+                PptAccessContext.user("test-tenant", "test-tenant", Set.of()));
         PptTemplateFillPlanStore planStore = new PptTemplateFillPlanStore(
                 properties, new TemplateFillPlanValidator());
         PptWorkflowService service = new PptWorkflowService(
@@ -366,7 +366,7 @@ class PptWorkflowServiceTemplateFillTests {
                 access);
         PptJob job = new PptJob(UUID.randomUUID(), "demo", "ppt169", "fill",
                 PptWorkflowMode.TEMPLATE_FILL, workspace);
-        job.assignOwnership("user-1", "test-tenant");
+        job.assignOwnership("test-tenant", "test-tenant");
         job.prepareProject(project);
         job.setTemplate(new PptTemplateFile("brand.pptx", "application/octet-stream", 8L,
                 workspace.resolve("uploads/template/0-brand.pptx")));
@@ -399,7 +399,7 @@ class PptWorkflowServiceTemplateFillTests {
                 Path.of("repo"), Path.of("workspace"), "python3", java.time.Duration.ofMinutes(1), null, 1024,
                 templateMax, contentMax, totalMax, 2, null, true, List.of("test-tenant"), null, null);
         FixedPptAccessContextResolver access = new FixedPptAccessContextResolver(
-                PptAccessContext.user("user-1", "test-tenant", Set.of()));
+                PptAccessContext.user("test-tenant", "test-tenant", Set.of()));
         return new PptWorkflowService(
                 properties,
                 new InMemoryPptJobRepository(),

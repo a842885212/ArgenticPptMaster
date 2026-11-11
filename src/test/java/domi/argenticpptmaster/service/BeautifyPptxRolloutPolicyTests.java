@@ -23,23 +23,24 @@ class BeautifyPptxRolloutPolicyTests {
                 PptMasterProperties.forTest(tempDir, tempDir));
 
         assertThatThrownBy(() -> policy.assertCreationAllowed(
-                PptAccessContext.user("admin", "t1", Set.of("ADMIN"))))
+                PptAccessContext.user("admin", "admin", Set.of("ADMIN"))))
                 .isInstanceOf(PptBeautifyUnavailableException.class);
     }
 
     @Test
-    void allowsAllowedTenantAndAdmin() {
+    void allowsAllowlistedClientAndRejectsAdminBypass() {
         BeautifyPptxRolloutPolicy policy = new BeautifyPptxRolloutPolicy(
                 PptMasterProperties.forBeautifyTest(tempDir, tempDir, "tenant-a"));
 
         assertThatCode(() -> policy.assertCreationAllowed(
-                PptAccessContext.user("u1", "tenant-a", Set.of()))).doesNotThrowAnyException();
-        assertThatCode(() -> policy.assertCreationAllowed(
-                PptAccessContext.user("admin", "other", Set.of("ADMIN")))).doesNotThrowAnyException();
+                PptAccessContext.user("tenant-a", "tenant-a", Set.of()))).doesNotThrowAnyException();
+        assertThatThrownBy(() -> policy.assertCreationAllowed(
+                PptAccessContext.user("admin", "other", Set.of("ADMIN"))))
+                .isInstanceOf(PptBeautifyAccessException.class);
     }
 
     @Test
-    void rejectsMissingContextInternalAndIneligibleTenant() {
+    void rejectsMissingContextInternalAndIneligibleClient() {
         BeautifyPptxRolloutPolicy policy = new BeautifyPptxRolloutPolicy(
                 PptMasterProperties.forBeautifyTest(tempDir, tempDir, "tenant-a"));
 
@@ -48,7 +49,7 @@ class BeautifyPptxRolloutPolicyTests {
         assertThatThrownBy(() -> policy.assertCreationAllowed(PptAccessContext.forInternalService()))
                 .isInstanceOf(PptBeautifyAccessException.class);
         assertThatThrownBy(() -> policy.assertCreationAllowed(
-                PptAccessContext.user("u2", "tenant-b", Set.of())))
+                PptAccessContext.user("tenant-b", "tenant-b", Set.of())))
                 .isInstanceOf(PptBeautifyAccessException.class);
     }
 }

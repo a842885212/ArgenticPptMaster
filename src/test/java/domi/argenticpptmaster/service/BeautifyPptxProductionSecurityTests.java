@@ -53,10 +53,10 @@ class BeautifyPptxProductionSecurityTests {
     }
 
     @Test
-    void allowsAllowlistedTenantAndRecordsOwnership() throws Exception {
+    void allowsAllowlistedClientAndRecordsOwnership() throws Exception {
         PptMasterProperties properties = PptMasterProperties.forBeautifyTest(tempDir, tempDir, "tenant-a");
         FixedPptAccessContextResolver access = new FixedPptAccessContextResolver(
-                PptAccessContext.user("owner", "tenant-a", Set.of()));
+                PptAccessContext.user("tenant-a", "tenant-a", Set.of()));
         PptWorkflowAsyncRunner asyncRunner = mock(PptWorkflowAsyncRunner.class);
         PptWorkflowService service = workflow(properties, access, asyncRunner);
 
@@ -65,7 +65,7 @@ class BeautifyPptxProductionSecurityTests {
 
         assertThat(job.workflowMode()).isEqualTo(PptWorkflowMode.BEAUTIFY_PPTX);
         assertThat(job.hasOwnership()).isTrue();
-        assertThat(job.ownerSubjectId()).contains("owner");
+        assertThat(job.ownerSubjectId()).contains("tenant-a");
         assertThat(job.ownerTenantId()).contains("tenant-a");
         assertThat(Files.isRegularFile(job.workspacePath().resolve("lifecycle/manifest.json"))).isTrue();
     }
@@ -121,11 +121,15 @@ class BeautifyPptxProductionSecurityTests {
     void preservesBasicModeWhenBeautifyDisabled() {
         PptMasterProperties properties = PptMasterProperties.forTest(tempDir, tempDir);
         assertThat(properties.isBeautifyPptxEnabled()).isFalse();
-        PptWorkflowService service = workflow(properties, new FailClosedPptAccessContextResolver());
+        FixedPptAccessContextResolver access = new FixedPptAccessContextResolver(
+                PptAccessContext.user("studio", "studio", Set.of()));
+        PptWorkflowService service = workflow(properties, access);
 
         PptJob job = service.createJob(new PptJobCreateCommand(
                 List.of(md("source.md")), null, "demo", "ppt169", null, "basic"));
         assertThat(job.workflowMode()).isEqualTo(PptWorkflowMode.BASIC);
+        assertThat(job.ownerSubjectId()).contains("studio");
+        assertThat(job.ownerTenantId()).contains("studio");
     }
 
     private static PptWorkflowService workflow(PptMasterProperties properties,

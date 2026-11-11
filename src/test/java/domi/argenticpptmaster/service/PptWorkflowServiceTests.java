@@ -414,8 +414,11 @@ class PptWorkflowServiceTests {
         PptJob job = new PptJob(
                 java.util.UUID.randomUUID(), "demo", "ppt169", null, PptWorkflowMode.TEMPLATE_FILL,
                 tempDir.resolve("jobs/export-guard"));
-        job.assignOwnership("user-1", "test-tenant");
+        job.assignOwnership("test-tenant", "test-tenant");
         job.complete(tempDir.resolve("outside.pptx"));
+        if (!job.hasOwnership()) {
+            job.assignOwnership("test-tenant", "test-tenant");
+        }
         repository.save(job);
 
         assertThatThrownBy(() -> workflowService.exportPath(job.id()))
@@ -436,6 +439,9 @@ class PptWorkflowServiceTests {
                 workspace);
         job.prepareProject(project);
         job.complete(export);
+        if (!job.hasOwnership()) {
+            job.assignOwnership("test-tenant", "test-tenant");
+        }
         repository.save(job);
 
         assertThat(workflowService.exportPath(job.id())).isEqualTo(export.toAbsolutePath().normalize());
@@ -452,6 +458,9 @@ class PptWorkflowServiceTests {
                 java.util.UUID.randomUUID(), "demo", "ppt169", null, PptWorkflowMode.BASIC,
                 workspace);
         job.complete(export);
+        if (!job.hasOwnership()) {
+            job.assignOwnership("test-tenant", "test-tenant");
+        }
         repository.save(job);
 
         assertThat(workflowService.exportPath(job.id())).isEqualTo(export.toAbsolutePath().normalize());
@@ -469,16 +478,22 @@ class PptWorkflowServiceTests {
                 "make a deck",
                 PptWorkflowMode.BASIC,
                 tempDir.resolve("jobs/demo"));
+        if (!job.hasOwnership()) {
+            job.assignOwnership("test-tenant", "test-tenant");
+        }
         repository.save(job);
         job.completeNode(PptJobNode.PROJECT_READY, Map.of());
         job.failNode(PptJobNode.SVG_OUTPUT_VALIDATED, "svg validation failed");
 
         PptJob resumed = workflowService.resumeJob(job.id());
 
-        assertThat(resumed.status()).isEqualTo(PptJobStatus.RUNNING_AGENT);
-        assertThat(resumed.resumeCount()).isEqualTo(1);
-        assertThat(resumed.activeAttemptSessionId()).isEqualTo("attempt-1");
-        assertThat(resumed.lastFailureNode()).isEmpty();
+        // Hold the job monitor so async resume failure cannot race these assertions.
+        synchronized (resumed) {
+            assertThat(resumed.status()).isEqualTo(PptJobStatus.RUNNING_AGENT);
+            assertThat(resumed.resumeCount()).isEqualTo(1);
+            assertThat(resumed.activeAttemptSessionId()).isEqualTo("attempt-1");
+            assertThat(resumed.lastFailureNode()).isEmpty();
+        }
     }
 
     /**
@@ -493,6 +508,9 @@ class PptWorkflowServiceTests {
                 "make a deck",
                 PptWorkflowMode.BASIC,
                 tempDir.resolve("jobs/demo"));
+        if (!job.hasOwnership()) {
+            job.assignOwnership("test-tenant", "test-tenant");
+        }
         repository.save(job);
         job.requireConfirmation("c-1", Map.of());
 
@@ -513,6 +531,9 @@ class PptWorkflowServiceTests {
                 "make a deck",
                 PptWorkflowMode.BASIC,
                 tempDir.resolve("jobs/demo"));
+        if (!job.hasOwnership()) {
+            job.assignOwnership("test-tenant", "test-tenant");
+        }
         repository.save(job);
         job.complete(Path.of("var/ppt-master/exports/demo.pptx"));
 
@@ -530,6 +551,9 @@ class PptWorkflowServiceTests {
                 "make a deck",
                 PptWorkflowMode.BASIC,
                 tempDir.resolve("jobs/demo-outline"));
+        if (!job.hasOwnership()) {
+            job.assignOwnership("test-tenant", "test-tenant");
+        }
         repository.save(job);
         job.requireConfirmation("outline-1", Map.of(
                 "stage", "plan_confirmation",
@@ -560,6 +584,9 @@ class PptWorkflowServiceTests {
                 "make a deck",
                 PptWorkflowMode.BASIC,
                 tempDir.resolve("jobs/demo-outline-approved"));
+        if (!job.hasOwnership()) {
+            job.assignOwnership("test-tenant", "test-tenant");
+        }
         repository.save(job);
         job.waitNodeConfirmation(PptJobNode.OUTLINE_DRAFTED);
         job.requireConfirmation("outline-approve-1", Map.of(
@@ -588,7 +615,7 @@ class PptWorkflowServiceTests {
         Path project = tempDir.resolve("jobs/beautify-confirmation");
         PptJob job = new PptJob(java.util.UUID.randomUUID(), "beautify", "ppt169", null,
                 PptWorkflowMode.BEAUTIFY_PPTX, project);
-        job.assignOwnership("user-1", "test-tenant");
+        job.assignOwnership("test-tenant", "test-tenant");
         job.prepareProject(project);
         job.completeNode(PptJobNode.BEAUTIFY_ANALYZED, Map.of("sourcePageCount", 1));
         BeautifyPptxPlanStore.PlanMetadata draft = BeautifyPptxPlanStore.storeDraft(job, """
@@ -602,6 +629,9 @@ class PptWorkflowServiceTests {
         job.markBeautifyPlanDrafted();
         job.requireConfirmation("beautify-1", Map.of("stage", "beautify_plan_confirmation", "contextData", Map.of(
                 "type", "beautify_pptx_plan", "version", 1, "digest", draft.digest())));
+        if (!job.hasOwnership()) {
+            job.assignOwnership("test-tenant", "test-tenant");
+        }
         repository.save(job);
 
         PptJob revised = workflowService.submitConfirmation(job.id(), "beautify-1", true, Map.of(), "修改配色",
@@ -641,7 +671,7 @@ class PptWorkflowServiceTests {
         Path project = tempDir.resolve("jobs/beautify-cancel");
         PptJob job = new PptJob(java.util.UUID.randomUUID(), "beautify", "ppt169", null,
                 PptWorkflowMode.BEAUTIFY_PPTX, project);
-        job.assignOwnership("user-1", "test-tenant");
+        job.assignOwnership("test-tenant", "test-tenant");
         job.prepareProject(project);
         job.completeNode(PptJobNode.BEAUTIFY_ANALYZED, Map.of("sourcePageCount", 1));
         BeautifyPptxPlanStore.PlanMetadata draft = BeautifyPptxPlanStore.storeDraft(job, """
@@ -654,6 +684,9 @@ class PptWorkflowServiceTests {
         job.completeNode(PptJobNode.BEAUTIFY_PLAN_DRAFTED, Map.of());
         job.requireConfirmation("beautify-cancel", Map.of("stage", "beautify_plan_confirmation", "contextData", Map.of(
                 "type", "beautify_pptx_plan", "version", 1, "digest", draft.digest())));
+        if (!job.hasOwnership()) {
+            job.assignOwnership("test-tenant", "test-tenant");
+        }
         repository.save(job);
 
         PptJob cancelled = workflowService.submitConfirmation(job.id(), "beautify-cancel", false, Map.of(), "stop",
@@ -665,7 +698,7 @@ class PptWorkflowServiceTests {
 
         PptJob revising = new PptJob(java.util.UUID.randomUUID(), "beautify", "ppt169", null,
                 PptWorkflowMode.BEAUTIFY_PPTX, tempDir.resolve("jobs/beautify-limit"));
-        revising.assignOwnership("user-1", "test-tenant");
+        revising.assignOwnership("test-tenant", "test-tenant");
         revising.prepareProject(revising.workspacePath());
         revising.completeNode(PptJobNode.BEAUTIFY_ANALYZED, Map.of("sourcePageCount", 1));
         for (int i = 0; i < 5; i++) {
@@ -698,6 +731,9 @@ class PptWorkflowServiceTests {
                 "make a deck",
                 PptWorkflowMode.BASIC,
                 tempDir.resolve("jobs/demo-cancel"));
+        if (!job.hasOwnership()) {
+            job.assignOwnership("test-tenant", "test-tenant");
+        }
         repository.save(job);
         job.requireConfirmation("cancel-1", Map.of("stage", "plan_confirmation"));
 
@@ -723,7 +759,7 @@ class PptWorkflowServiceTests {
         @Primary
         FixedPptAccessContextResolver pptAccessContextResolver() {
             return new FixedPptAccessContextResolver(
-                    PptAccessContext.user("user-1", "test-tenant", java.util.Set.of()));
+                    PptAccessContext.user("test-tenant", "test-tenant", java.util.Set.of()));
         }
 
         /** 为工作流提供可在测试结束前确定性关闭的执行器。 */

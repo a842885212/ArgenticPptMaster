@@ -50,7 +50,7 @@ class TemplateFillProductionAcceptanceTests {
         PptMasterProperties properties = diagnosticsEnabledProperties(tempDir);
         InMemoryPptJobRepository repository = new InMemoryPptJobRepository();
         FixedPptAccessContextResolver access = new FixedPptAccessContextResolver(
-                PptAccessContext.user("user-1", "test-tenant", Set.of()));
+                PptAccessContext.user("test-tenant", "test-tenant", Set.of()));
         PptJobAccessAuthorizer authorizer = new PptJobAccessAuthorizer(properties, access);
         TemplateFillLifecycleStore lifecycleStore = new TemplateFillLifecycleStore(properties);
         TemplateFillAuditSink auditSink = new TemplateFillAuditSink();
@@ -82,7 +82,7 @@ class TemplateFillProductionAcceptanceTests {
                 "files", "source.md", "text/markdown", "# content".getBytes());
         PptJob created = workflow.createJob(new PptJobCreateCommand(
                 List.of(content), template, "demo", "ppt169", "fill", "template-fill"));
-        assertThat(created.ownerSubjectId()).contains("user-1");
+        assertThat(created.ownerSubjectId()).contains("test-tenant");
         assertThat(lifecycleStore.read(created)).isPresent();
 
         Path realTemplate = created.template().orElseThrow().storedPath();

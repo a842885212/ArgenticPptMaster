@@ -98,6 +98,7 @@ class PptTemplateFillServiceTests {
     void rejectsAlreadyStartedOrWrongWorkflowWithConflict() {
         UUID jobId = UUID.randomUUID();
         PptJob job = new PptJob(jobId, "demo", "ppt169", "fill", PptWorkflowMode.BASIC, Path.of("workspace"));
+        job.assignOwnership("user-1", "test-tenant");
         PptJobRepository repository = mock(PptJobRepository.class);
         when(repository.findById(jobId)).thenReturn(Optional.of(job));
         PptTemplateFillService service = service(

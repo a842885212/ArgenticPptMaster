@@ -14,12 +14,12 @@ import org.springframework.context.annotation.Configuration;
 /**
  * 开发期固定访问上下文：无需接入 JWT/网关鉴权。
  * <p>
- * 由 {@code ppt-master.local-access.enabled} 控制（默认 true）。
- * 接入真实鉴权前保持开启；上线鉴权后改为 {@code false} 并提供正式 {@link PptAccessContextResolver}。
+ * 由 {@code ppt-master.local-access.enabled} 控制（默认 false，生产 fail closed）。
+ * 本地开发可显式开启；上线鉴权后保持 {@code false}，由服务密钥 Filter 写入 client 上下文。
  * </p>
  */
 @Configuration
-@ConditionalOnProperty(prefix = "ppt-master.local-access", name = "enabled", havingValue = "true", matchIfMissing = true)
+@ConditionalOnProperty(prefix = "ppt-master.local-access", name = "enabled", havingValue = "true", matchIfMissing = false)
 public class LocalPptAccessContextConfiguration {
 
     @Bean

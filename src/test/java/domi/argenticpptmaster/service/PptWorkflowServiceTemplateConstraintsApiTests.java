@@ -42,7 +42,7 @@ class PptWorkflowServiceTemplateConstraintsApiTests {
         assertThat(job.templateConstraints().allowedTemplateSlides()).containsExactly(1, 2);
         assertThat(job.templateConstraints().maxSlides()).isEqualTo(3);
         assertThat(job.templateConstraints().preserveCover()).isTrue();
-        assertThat(job.ownerSubjectId()).contains("user-1");
+        assertThat(job.ownerSubjectId()).contains("test-tenant");
         assertThat(job.ownerTenantId()).contains("test-tenant");
     }
 
@@ -138,7 +138,7 @@ class PptWorkflowServiceTemplateConstraintsApiTests {
     }
 
     @Test
-    void allowsAdministratorOutsideTenantAllowlist() {
+    void rejectsAdministratorOutsideClientAllowlist() {
         PptMasterProperties properties = PptMasterProperties.forTemplateFillTest(
                 tempDir, tempDir, "allowed-tenant");
         FixedPptAccessContextResolver access = new FixedPptAccessContextResolver(
@@ -155,21 +155,23 @@ class PptWorkflowServiceTemplateConstraintsApiTests {
         MockMultipartFile content = new MockMultipartFile(
                 "files", "source.md", "text/markdown", "# ok".getBytes());
 
-        PptJob job = service.createJob(new PptJobCreateCommand(
-                List.of(content), template, "demo", "ppt169", null, "template-fill"));
-
-        assertThat(job.workflowMode()).isEqualTo(PptWorkflowMode.TEMPLATE_FILL);
-        assertThat(job.ownerTenantId()).contains("ops-tenant");
+        assertThatThrownBy(() -> service.createJob(new PptJobCreateCommand(
+                List.of(content), template, "demo", "ppt169", null, "template-fill")))
+                .isInstanceOf(PptTemplateFillAccessException.class);
     }
 
     @Test
     void basicWorkflowStillWorksWhenTemplateFillDisabled() {
+        FixedPptAccessContextResolver access = new FixedPptAccessContextResolver(
+                PptAccessContext.user("studio", "studio", Set.of()));
         PptWorkflowService service = new PptWorkflowService(
                 PptMasterProperties.forTest(tempDir, tempDir),
                 new InMemoryPptJobRepository(), mock(PptWorkflowEvents.class),
                 mock(PptWorkflowAsyncRunner.class), mock(PptTemplateFillAsyncRunner.class),
                 mock(PptTemplateFillPlanningOrchestrator.class), mock(PptTemplateFillPlanStore.class),
-                new TemplateFillConstraintsParser());
+                new TemplateFillConstraintsParser(),
+                new TemplateFillRolloutPolicy(PptMasterProperties.forTest(tempDir, tempDir)),
+                access);
         MockMultipartFile content = new MockMultipartFile(
                 "files", "source.md", "text/markdown", "# ok".getBytes());
 
@@ -177,7 +179,8 @@ class PptWorkflowServiceTemplateConstraintsApiTests {
                 List.of(content), null, "demo", "ppt169", null, "basic"));
 
         assertThat(job.workflowMode()).isEqualTo(PptWorkflowMode.BASIC);
-        assertThat(job.hasOwnership()).isFalse();
+        assertThat(job.hasOwnership()).isTrue();
+        assertThat(job.ownerSubjectId()).contains("studio");
     }
 
     private PptWorkflowService eligibleService() {
@@ -194,6 +197,6 @@ class PptWorkflowServiceTemplateConstraintsApiTests {
                 new TemplateFillConstraintsParser(),
                 new TemplateFillRolloutPolicy(properties),
                 new FixedPptAccessContextResolver(
-                        PptAccessContext.user("user-1", "test-tenant", Set.of())));
+                        PptAccessContext.user("test-tenant", "test-tenant", Set.of())));
     }
 }

@@ -1,14 +1,13 @@
 package domi.argenticpptmaster.security;
 
 import java.util.Optional;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
-import org.springframework.stereotype.Component;
 
 /**
- * 默认 fail-closed 解析器：无其他 {@link PptAccessContextResolver} bean 时不授予任何主体。
+ * Fail-closed 解析器：不授予任何主体。供测试与无请求上下文的回退构造使用。
+ * <p>
+ * 运行时默认由 {@link RequestAttributePptAccessContextResolver} 在无 local-access 时注册。
+ * </p>
  */
-@Component
-@ConditionalOnMissingBean(PptAccessContextResolver.class)
 public class FailClosedPptAccessContextResolver implements PptAccessContextResolver {
 
     @Override

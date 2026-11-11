@@ -23,23 +23,24 @@ class NativeEnhancePptxRolloutPolicyTests {
                 PptMasterProperties.forTest(tempDir, tempDir));
 
         assertThatThrownBy(() -> policy.assertCreationAllowed(
-                PptAccessContext.user("admin", "t1", Set.of("ADMIN"))))
+                PptAccessContext.user("admin", "admin", Set.of("ADMIN"))))
                 .isInstanceOf(PptNativeEnhanceUnavailableException.class);
     }
 
     @Test
-    void allowsAllowedTenantAndAdmin() {
+    void allowsAllowlistedClientAndRejectsAdminBypass() {
         NativeEnhancePptxRolloutPolicy policy = new NativeEnhancePptxRolloutPolicy(
                 PptMasterProperties.forNativeEnhanceTest(tempDir, tempDir, "tenant-a"));
 
         assertThatCode(() -> policy.assertCreationAllowed(
-                PptAccessContext.user("u1", "tenant-a", Set.of()))).doesNotThrowAnyException();
-        assertThatCode(() -> policy.assertCreationAllowed(
-                PptAccessContext.user("admin", "other", Set.of("ADMIN")))).doesNotThrowAnyException();
+                PptAccessContext.user("tenant-a", "tenant-a", Set.of()))).doesNotThrowAnyException();
+        assertThatThrownBy(() -> policy.assertCreationAllowed(
+                PptAccessContext.user("admin", "other", Set.of("ADMIN"))))
+                .isInstanceOf(PptNativeEnhanceAccessException.class);
     }
 
     @Test
-    void rejectsMissingContextInternalAndIneligibleTenant() {
+    void rejectsMissingContextInternalAndIneligibleClient() {
         NativeEnhancePptxRolloutPolicy policy = new NativeEnhancePptxRolloutPolicy(
                 PptMasterProperties.forNativeEnhanceTest(tempDir, tempDir, "tenant-a"));
 
@@ -48,7 +49,7 @@ class NativeEnhancePptxRolloutPolicyTests {
         assertThatThrownBy(() -> policy.assertCreationAllowed(PptAccessContext.forInternalService()))
                 .isInstanceOf(PptNativeEnhanceAccessException.class);
         assertThatThrownBy(() -> policy.assertCreationAllowed(
-                PptAccessContext.user("u2", "tenant-b", Set.of())))
+                PptAccessContext.user("tenant-b", "tenant-b", Set.of())))
                 .isInstanceOf(PptNativeEnhanceAccessException.class);
     }
 }

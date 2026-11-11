@@ -23,23 +23,24 @@ class TemplateFillRolloutPolicyTests {
                 PptMasterProperties.forTest(tempDir, tempDir));
 
         assertThatThrownBy(() -> policy.assertCreationAllowed(
-                PptAccessContext.user("admin", "t1", Set.of("ADMIN"))))
+                PptAccessContext.user("admin", "admin", Set.of("ADMIN"))))
                 .isInstanceOf(PptTemplateFillUnavailableException.class);
     }
 
     @Test
-    void allowsAllowedTenantAndAdmin() {
+    void allowsAllowlistedClientAndRejectsAdminBypass() {
         TemplateFillRolloutPolicy policy = new TemplateFillRolloutPolicy(
                 PptMasterProperties.forTemplateFillTest(tempDir, tempDir, "tenant-a"));
 
         assertThatCode(() -> policy.assertCreationAllowed(
-                PptAccessContext.user("u1", "tenant-a", Set.of()))).doesNotThrowAnyException();
-        assertThatCode(() -> policy.assertCreationAllowed(
-                PptAccessContext.user("admin", "other", Set.of("ADMIN")))).doesNotThrowAnyException();
+                PptAccessContext.user("tenant-a", "tenant-a", Set.of()))).doesNotThrowAnyException();
+        assertThatThrownBy(() -> policy.assertCreationAllowed(
+                PptAccessContext.user("admin", "other", Set.of("ADMIN"))))
+                .isInstanceOf(PptTemplateFillAccessException.class);
     }
 
     @Test
-    void rejectsMissingContextInternalAndIneligibleTenant() {
+    void rejectsMissingContextInternalAndIneligibleClient() {
         TemplateFillRolloutPolicy policy = new TemplateFillRolloutPolicy(
                 PptMasterProperties.forTemplateFillTest(tempDir, tempDir, "tenant-a"));
 
@@ -48,7 +49,7 @@ class TemplateFillRolloutPolicyTests {
         assertThatThrownBy(() -> policy.assertCreationAllowed(PptAccessContext.forInternalService()))
                 .isInstanceOf(PptTemplateFillAccessException.class);
         assertThatThrownBy(() -> policy.assertCreationAllowed(
-                PptAccessContext.user("u2", "tenant-b", Set.of())))
+                PptAccessContext.user("tenant-b", "tenant-b", Set.of())))
                 .isInstanceOf(PptTemplateFillAccessException.class);
     }
 }

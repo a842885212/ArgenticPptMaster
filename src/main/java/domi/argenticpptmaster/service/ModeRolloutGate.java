@@ -31,10 +31,9 @@ public final class ModeRolloutGate {
             profile.recordCreationRejected();
             throw profile.accessDeniedException(profile.authenticatedCallerRequiredMessage());
         }
-        if (access.hasRole(profile.adminRole())) {
-            return;
-        }
-        if (profile.allowedTenants().contains(access.tenantId())) {
+        // allowedTenants 配置承载允许的 clientId（subjectId == tenantId == clientId）
+        String clientId = access.subjectId();
+        if (profile.allowedClientIds().contains(clientId)) {
             return;
         }
         profile.recordCreationRejected();

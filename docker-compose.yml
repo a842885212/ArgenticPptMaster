@@ -1,0 +1,53 @@
+# 启动：docker compose up -d --build
+# API：http://localhost:${PPT_MASTER_HOST_PORT:-8097}
+# 依赖已存在的外部网络（studio / script 的 compose 网络）
+
+services:
+  ppt-master:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ppt-master
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      TZ: Asia/Shanghai
+      PPT_MASTER_WORKSPACE_PATH: /app/var/ppt-master
+      AGENTSCOPE_SESSION_STORE_PATH: /app/var/ppt-master/agent-sessions
+      LOGGING_FILE_NAME: /app/var/ppt-master/logs/application.log
+      PPT_MASTER_SERVICE_AUTH_ENABLED: ${PPT_MASTER_SERVICE_AUTH_ENABLED:-false}
+      PPT_MASTER_LOCAL_ACCESS_ENABLED: ${PPT_MASTER_LOCAL_ACCESS_ENABLED:-true}
+      PPT_MASTER_LOCAL_ACCESS_SUBJECT_ID: ${PPT_MASTER_LOCAL_ACCESS_SUBJECT_ID:-dev}
+      PPT_MASTER_LOCAL_ACCESS_TENANT_ID: ${PPT_MASTER_LOCAL_ACCESS_TENANT_ID:-dev}
+      PPT_MASTER_LOCAL_ACCESS_ROLES: ${PPT_MASTER_LOCAL_ACCESS_ROLES:-}
+      AGENTSCOPE_BASE_URL: ${AGENTSCOPE_BASE_URL:-http://host.docker.internal:4000/v1}
+      AGENTSCOPE_FALLBACKS_0_BASE_URL: ${AGENTSCOPE_FALLBACKS_0_BASE_URL:-http://host.docker.internal:4000/v1}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./var/ppt-master:/app/var/ppt-master
+    ports:
+      - "${PPT_MASTER_HOST_PORT:-8097}:8097"
+    networks:
+      - studio-network
+      - cornel-network
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8097/actuator/health/liveness"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  studio-network:
+    external: true
+    name: cornel-studio_studio-network
+  cornel-network:
+    external: true
+    name: cornel-script_cornel-network

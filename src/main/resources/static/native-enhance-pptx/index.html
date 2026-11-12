@@ -69,6 +69,14 @@
       <div id="confirmPanel" class="confirm" hidden>
         <h3 id="confirmTitle">确认增强计划</h3>
         <pre id="confirmSummary" class="confirm-summary"></pre>
+        <div id="audioVoiceFields" hidden>
+          <p class="hint">旁白使用 Fish Audio（无 rate / 无 edge）。</p>
+          <label for="audioVoice">音色</label>
+          <select id="audioVoice">
+            <option value="female_mandarin">女大学生（female_mandarin）</option>
+            <option value="male_mandarin">奶油面包8088（male_mandarin）</option>
+          </select>
+        </div>
         <label for="rejectFeedback">驳回反馈（计划确认可用，有界）</label>
         <textarea id="rejectFeedback" maxlength="2000" rows="2"></textarea>
         <div class="actions">

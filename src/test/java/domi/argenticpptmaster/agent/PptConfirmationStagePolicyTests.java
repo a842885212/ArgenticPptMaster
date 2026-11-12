@@ -112,7 +112,7 @@ class PptConfirmationStagePolicyTests {
         job.completeNode(PptJobNode.ENHANCEMENT_PLAN_CONFIRMED, Map.of());
 
         PptConfirmationStagePolicy.Decision decision = policy.evaluate(job, "audio_voice_confirmation", Map.of(
-                "type", "native_pptx_audio_voice", "provider", "edge", "voice", "zh-CN-YunjianNeural"));
+                "type", "native_pptx_audio_voice", "provider", "fish", "voice", "female_mandarin"));
         assertThat(decision.disposition()).isEqualTo(PptConfirmationStagePolicy.Disposition.WAIT_FOR_USER);
         assertThat(decision.confirmedNode()).isEqualTo(PptJobNode.AUDIO_VOICE_CONFIRMED);
     }

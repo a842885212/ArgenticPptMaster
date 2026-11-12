@@ -25,9 +25,9 @@ import domi.argenticpptmaster.engine.compare.SlideXmlComparator;
 import domi.argenticpptmaster.engine.python.PythonBeautifyAnalysisEngine;
 import domi.argenticpptmaster.engine.python.PythonImageGenerationGateway;
 import domi.argenticpptmaster.engine.python.PythonNativeEnhanceEngine;
-import domi.argenticpptmaster.engine.python.PythonNotesAudioGateway;
 import domi.argenticpptmaster.engine.python.PythonPptxMarkdownReadback;
 import domi.argenticpptmaster.engine.file.JavaBeautifyAnalysisEngine;
+import domi.argenticpptmaster.engine.file.JavaFishNotesAudioGateway;
 import domi.argenticpptmaster.engine.file.JavaImageGenerationGateway;
 import domi.argenticpptmaster.engine.file.JavaNativeEnhanceEngine;
 import domi.argenticpptmaster.engine.file.JavaPptxMarkdownReadback;
@@ -36,6 +36,7 @@ import domi.argenticpptmaster.engine.file.JavaSpeakerNotesSplitter;
 import domi.argenticpptmaster.engine.file.JavaSvgFinalizer;
 import domi.argenticpptmaster.engine.file.JavaSvgToPptxExporter;
 import domi.argenticpptmaster.engine.file.JavaTemplateFillEngine;
+import domi.argenticpptmaster.engine.file.fishaudio.FishAudioClient;
 import domi.argenticpptmaster.engine.file.imagegen.OpenAiImageClient;
 import domi.argenticpptmaster.engine.file.svgquality.JavaSvgQualityChecker;
 import domi.argenticpptmaster.engine.python.PythonProjectWorkspace;
@@ -55,7 +56,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
 
 @Configuration
-@EnableConfigurationProperties({PptEngineProperties.class, PptImageProperties.class})
+@EnableConfigurationProperties({PptEngineProperties.class, PptImageProperties.class, PptAudioFishProperties.class})
 public class PptEngineConfiguration {
 
     private static final Logger log = LoggerFactory.getLogger(PptEngineConfiguration.class);
@@ -170,9 +171,18 @@ public class PptEngineConfiguration {
         return new JavaImageGenerationGateway(imageProperties, new OpenAiImageClient(imageProperties, apiKey));
     }
 
+    /**
+     * native-enhance 旁白 TTS 权威：服务内 Java Fish Audio。
+     * <p>不再装配 {@code PythonNotesAudioGateway}；无 python-fallback。</p>
+     */
     @Bean
-    NotesAudioGateway notesAudioGateway(PptMasterCommandExecutor commands) {
-        return new PythonNotesAudioGateway(commands);
+    NotesAudioGateway notesAudioGateway(PptAudioFishProperties audioFishProperties) {
+        if (!audioFishProperties.hasApiKey()) {
+            log.warn("ppt.audio.fish.api-key is not configured; native-enhance audio will fail until it is set");
+        }
+        return new JavaFishNotesAudioGateway(
+                audioFishProperties,
+                new FishAudioClient(audioFishProperties, audioFishProperties.apiKey()));
     }
 
     @Bean

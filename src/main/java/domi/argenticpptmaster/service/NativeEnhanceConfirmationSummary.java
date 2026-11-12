@@ -2,6 +2,7 @@ package domi.argenticpptmaster.service;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import domi.argenticpptmaster.domain.PptJob;
+import domi.argenticpptmaster.engine.file.fishaudio.FishVoicePresets;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -39,20 +40,16 @@ public final class NativeEnhanceConfirmationSummary {
     public static Map<String, Object> audioVoiceContext(PptJob job, Map<String, Object> agentContext) {
         Map<String, Object> context = new LinkedHashMap<>();
         context.put("type", "native_pptx_audio_voice");
-        context.put("provider", "edge");
-        context.put("voice", "zh-CN-YunjianNeural");
-        context.put("rate", "+0%");
+        context.put("provider", FishVoicePresets.PROVIDER);
+        context.put("voice", FishVoicePresets.DEFAULT_VOICE);
+        context.put("voices", FishVoicePresets.voiceLabels());
         if (agentContext != null) {
-            if (agentContext.get("provider") instanceof String provider && !provider.isBlank()) {
-                context.put("provider", truncate(provider, MAX_NOTE_CHARS));
-            }
-            if (agentContext.get("voice") instanceof String voice && !voice.isBlank()) {
+            if (agentContext.get("voice") instanceof String voice
+                    && FishVoicePresets.isAllowed(voice)) {
                 context.put("voice", truncate(voice, MAX_NOTE_CHARS));
             }
-            if (agentContext.get("rate") instanceof String rate && !rate.isBlank()) {
-                context.put("rate", truncate(rate, MAX_NOTE_CHARS));
-            }
         }
+        // 旧 edge 草稿不得静默映射：始终以 fish 默认覆盖展示。
         return context;
     }
 

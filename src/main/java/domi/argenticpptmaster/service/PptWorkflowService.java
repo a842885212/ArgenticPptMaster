@@ -1010,8 +1010,8 @@ public class PptWorkflowService {
         NativeEnhancePlanStore.writeProjectAudio(job, merged);
         job.completeNode(PptJobNode.AUDIO_VOICE_CONFIRMED, Map.of(
                 "audioVoiceStatus", "confirmed",
-                "provider", merged.getOrDefault("provider", "edge"),
-                "voice", merged.getOrDefault("voice", "")));
+                "provider", merged.getOrDefault("provider", "fish"),
+                "voice", merged.getOrDefault("voice", "female_mandarin")));
         PptConfirmation confirmation = new PptConfirmation(
                 confirmationId, true, answers, null, Instant.now(),
                 action, null, List.of(), null, List.of());

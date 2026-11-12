@@ -16,6 +16,8 @@ const els = {
   confirmPanel: document.getElementById("confirmPanel"),
   confirmTitle: document.getElementById("confirmTitle"),
   confirmSummary: document.getElementById("confirmSummary"),
+  audioVoiceFields: document.getElementById("audioVoiceFields"),
+  audioVoice: document.getElementById("audioVoice"),
   rejectFeedback: document.getElementById("rejectFeedback"),
   approveBtn: document.getElementById("approveBtn"),
   rejectBtn: document.getElementById("rejectBtn"),
@@ -137,7 +139,8 @@ function applyJob(job, { force = false } = {}) {
   const ctx = contextData(job);
   if (job.status === "WAITING_CONFIRMATION" && (stage === "enhancement_plan_confirmation" || stage === "audio_voice_confirmation")) {
     show(els.confirmPanel);
-    els.confirmTitle.textContent = stage === "audio_voice_confirmation" ? "确认旁白语音" : "确认增强计划";
+    const isAudio = stage === "audio_voice_confirmation";
+    els.confirmTitle.textContent = isAudio ? "确认旁白语音" : "确认增强计划";
     els.confirmSummary.textContent = JSON.stringify({
       stage,
       version: ctx.version,
@@ -145,13 +148,24 @@ function applyJob(job, { force = false } = {}) {
       modules: ctx.modules || ctx.enabledModules,
       provider: ctx.provider,
       voice: ctx.voice,
+      voices: ctx.voices,
       type: ctx.type,
     }, null, 2);
     state.planVersion = ctx.version;
     state.planDigest = ctx.digest;
-    els.rejectBtn.hidden = stage === "audio_voice_confirmation";
+    state.confirmStage = stage;
+    els.rejectBtn.hidden = isAudio;
+    if (isAudio) {
+      show(els.audioVoiceFields);
+      const preferred = ctx.voice === "male_mandarin" ? "male_mandarin" : "female_mandarin";
+      els.audioVoice.value = preferred;
+    } else {
+      hide(els.audioVoiceFields);
+    }
   } else {
     hide(els.confirmPanel);
+    hide(els.audioVoiceFields);
+    state.confirmStage = null;
   }
 
   if (job.resumable) {
@@ -258,6 +272,10 @@ els.approveBtn.addEventListener("click", async () => {
   const answers = {};
   if (state.planVersion != null) answers.version = state.planVersion;
   if (state.planDigest) answers.digest = state.planDigest;
+  if (state.confirmStage === "audio_voice_confirmation") {
+    answers.provider = "fish";
+    answers.voice = els.audioVoice.value || "female_mandarin";
+  }
   try {
     const res = await fetch(`${API}/${state.jobId}/confirm`, {
       method: "POST",

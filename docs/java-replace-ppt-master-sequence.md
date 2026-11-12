@@ -54,14 +54,14 @@ Java 服务只编排任务。脚本通过 `PptMasterCommandExecutor.runPythonScr
 
 **第 3 步整体完成（当前分支）**
 
-按文档范围，OOXML 改写路径的生产权威已切到 Java；`notes_to_audio.py` 仍属「不移植」，`image_gen.py` 已在第 7 步换成 Java 直连。
+按文档范围，OOXML 改写路径的生产权威已切到 Java；旁白 TTS 已换成服务内 Java Fish Audio（无 python-fallback），`image_gen.py` 已在第 7 步换成 Java 直连。
 
 | 能力 | 生产 Bean | 状态 |
 | --- | --- | --- |
 | 共享 OOXML 包工具（ZIP / Content Types / relationships / notes XML / slide motion） | `engine.ooxml.*`（含 `nativeenhance.*`，供 NE / template-fill 复用） | 已落地 |
 | `native_enhance` init / validate / apply（notes·audio 嵌入·timings·transitions） | `RoutingNativeEnhanceEngine` → **`JavaNativeEnhanceEngine` 权威**；可选 dual-run 时 Python 仅诊断（默认关） | **已完成（Java 权威）** |
 | `native_enhance` delivery 审计 | Java lite（ZIP 打开 + slide 计数 / 隐藏页占位） | 完整 `pptx_delivery_check` 未全量移植（非阻断） |
-| `native_enhance` TTS（`notes_to_audio.py`） | `NotesAudioGateway` / Python | **不移植**（见下文）；音频文件假定已落在项目 `audio/` |
+| `native_enhance` TTS | `NotesAudioGateway` → **`JavaFishNotesAudioGateway`**（Fish HTTP；无 python-fallback / 无免费 edge） | **已完成（Java 权威）** |
 | `template_fill` analyze / check-plan / apply / validate | `RoutingTemplateFillEngine` → **`JavaTemplateFillEngine` 权威**；可选 dual-run 时 Python 仅诊断（默认关） | **已完成（Java 权威）**；slide 克隆 + text/table/chart/notes/transitions |
 | `template_fill` SmartArt 编辑 / `ppt_to_md` 读回 | 不移植；validate 用 OOXML 文本读回 | SmartArt 仅 inventory |
 
@@ -73,7 +73,7 @@ Java 服务只编排任务。脚本通过 `PptMasterCommandExecutor.runPythonScr
 
 **第 4 步整体完成（当前分支）**
 
-按文档范围，美化分析路径的生产权威已切到 Java；SVG / finalize / notes_to_audio 仍属后续或不移植（出图见第 7 步）。
+按文档范围，美化分析路径的生产权威已切到 Java；SVG / finalize 仍属后续；旁白 TTS 见第 3 步 Java Fish（出图见第 7 步）。
 
 | 能力 | 生产 Bean | 状态 |
 | --- | --- | --- |
@@ -161,7 +161,7 @@ Java 服务只编排任务。脚本通过 `PptMasterCommandExecutor.runPythonScr
 
 ## 不移植
 
-`notes_to_audio.py` 留在转换器之外，旁白继续用外部 TTS。`image_gen.py` 不整包移植：出图已由 `JavaImageGenerationGateway` 直连 OpenAI 兼容端点（见第 7 步），只在显式 `ppt.image.python-fallback=true` 时才回到该脚本。
+旁白 TTS 不移植 `notes_to_audio.py`：生产由 `JavaFishNotesAudioGateway` 直连 Fish Audio（`ppt.audio.fish.*`），无 python-fallback、无免费 edge。`image_gen.py` 不整包移植：出图已由 `JavaImageGenerationGateway` 直连 OpenAI 兼容端点（见第 7 步），只在显式 `ppt.image.python-fallback=true` 时才回到该脚本。
 
 ## 验收
 

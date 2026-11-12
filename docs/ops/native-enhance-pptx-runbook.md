@@ -18,11 +18,10 @@ Checks (redacted):
 
 | Component | Pass criteria | reasonCode on failure |
 | --- | --- | --- |
-| `python` | Configured interpreter exists and is executable | `PYTHON_MISSING`, `PYTHON_NOT_EXECUTABLE` |
-| `native_enhance_pptx` | Script present under pinned repo layout | `SCRIPT_MISSING` |
-| `notes_to_audio` | Script present under pinned repo layout | `SCRIPT_MISSING` |
-| `ppt_to_md` | Script present under pinned repo layout | `SCRIPT_MISSING` |
 | `ffprobe` | Executable available when timings module is used | `FFPROBE_MISSING` / `NATIVE_ENHANCE_FFPROBE_UNAVAILABLE` |
+| `fish` | `ppt.audio.fish.api-key` configured (required when audio enabled) | `FISH_API_KEY_MISSING` / `NATIVE_ENHANCE_FISH_UNAVAILABLE` |
+
+旁白 TTS 生产权威为 **Java Fish Audio**（`ppt.audio.fish.*`），不依赖 `notes_to_audio.py`，无 python-fallback / 无免费 edge。缺少 Fish key 时不得进入 `audio_voice_confirmation`。
 
 **Do not expand allowlist** while readiness is DOWN. `expectedVersion` must match the pinned upstream documented in [`native-enhance-pptx-upgrade-rollback.md`](native-enhance-pptx-upgrade-rollback.md).
 
@@ -84,6 +83,6 @@ Operational sequence:
 | 503 on create | Feature flag off | Confirm intended; enable only for canary tenants |
 | 403 on create | Missing identity / not allowlisted | Fix auth adapter or allowlist |
 | Validate / apply fail | Coverage or module mismatch | Inspect plan confirmation + stable error code; never `--force` |
-| Audio fail | TTS / notes_to_audio / quota | Retry from `AUDIO_VOICE_CONFIRMED`; keep notes |
+| Audio fail | Fish TTS / api-key / quota | Confirm `ppt.audio.fish.*`; retry from `AUDIO_VOICE_CONFIRMED`; keep notes |
 | Timings fail | `ffprobe` missing | Fix readiness; do not silent-skip |
 | Cross-job audio leak suspected | Authorization bug | Immediately disable creation + execution stop; audit download logs |

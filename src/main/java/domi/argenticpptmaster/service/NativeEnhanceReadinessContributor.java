@@ -1,5 +1,6 @@
 package domi.argenticpptmaster.service;
 
+import domi.argenticpptmaster.config.PptAudioFishProperties;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
@@ -9,8 +10,8 @@ import org.springframework.boot.health.contributor.HealthIndicator;
 import org.springframework.stereotype.Component;
 
 /**
- * Readiness checks for native-enhance timings dependencies (ffprobe).
- * Responses include only component/status/reasonCode — never absolute paths or command output.
+ * Readiness checks for native-enhance timings (ffprobe) and Fish Audio TTS.
+ * Responses include only component/status/reasonCode — never absolute paths, api-keys, or command output.
  */
 @Component("nativeEnhancePptxReadiness")
 public class NativeEnhanceReadinessContributor implements HealthIndicator {
@@ -19,29 +20,44 @@ public class NativeEnhanceReadinessContributor implements HealthIndicator {
     static final String REASON_OK = "OK";
     static final String REASON_FFPROBE_MISSING = "FFPROBE_MISSING";
     static final String REASON_FFPROBE_NOT_EXECUTABLE = "FFPROBE_NOT_EXECUTABLE";
+    static final String REASON_FISH_API_KEY_MISSING = "FISH_API_KEY_MISSING";
 
     private final String ffprobeCommand;
+    private final PptAudioFishProperties fishProperties;
 
-    public NativeEnhanceReadinessContributor() {
-        this("ffprobe");
+    public NativeEnhanceReadinessContributor(PptAudioFishProperties fishProperties) {
+        this("ffprobe", fishProperties);
     }
 
     NativeEnhanceReadinessContributor(String ffprobeCommand) {
+        this(ffprobeCommand, PptAudioFishProperties.defaults());
+    }
+
+    NativeEnhanceReadinessContributor(String ffprobeCommand, PptAudioFishProperties fishProperties) {
         this.ffprobeCommand = ffprobeCommand == null || ffprobeCommand.isBlank() ? "ffprobe" : ffprobeCommand.trim();
+        this.fishProperties = fishProperties == null ? PptAudioFishProperties.defaults() : fishProperties;
     }
 
     @Override
     public Health health() {
         Map<String, String> ffprobe = checkFfprobe();
+        Map<String, String> fish = checkFish();
+        // Overall mirrors ffprobe (existing); fish is reported as a detail for audio path gates.
         boolean ready = isUp(ffprobe);
         Health.Builder builder = ready ? Health.up() : Health.down();
         builder.withDetail(ffprobe.get("component"), ffprobe);
+        builder.withDetail(fish.get("component"), fish);
         return builder.build();
     }
 
     /** True when ffprobe is available for timings-dependent stages. */
     public boolean isFfprobeAvailable() {
         return isUp(checkFfprobe());
+    }
+
+    /** True when Fish Audio api-key is configured for narration TTS. */
+    public boolean isFishAudioAvailable() {
+        return isUp(checkFish());
     }
 
     Map<String, String> checkFfprobe() {
@@ -59,6 +75,13 @@ public class NativeEnhanceReadinessContributor implements HealthIndicator {
             return component("ffprobe", "UP", REASON_OK);
         }
         return component("ffprobe", "DOWN", REASON_FFPROBE_MISSING);
+    }
+
+    Map<String, String> checkFish() {
+        if (fishProperties.hasApiKey()) {
+            return component("fish", "UP", REASON_OK);
+        }
+        return component("fish", "DOWN", REASON_FISH_API_KEY_MISSING);
     }
 
     private static Map<String, String> component(String name, String status, String reasonCode) {

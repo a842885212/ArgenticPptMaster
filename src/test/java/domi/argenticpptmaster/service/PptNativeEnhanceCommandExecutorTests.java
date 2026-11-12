@@ -10,6 +10,7 @@ import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import domi.argenticpptmaster.config.PptAudioFishProperties;
 import domi.argenticpptmaster.config.PptEngineProperties;
 import domi.argenticpptmaster.config.PptMasterProperties;
 import domi.argenticpptmaster.domain.PptJob;
@@ -20,10 +21,10 @@ import domi.argenticpptmaster.domain.PptSourceFile;
 import domi.argenticpptmaster.domain.PptWorkflowMode;
 import domi.argenticpptmaster.engine.EngineResult;
 import domi.argenticpptmaster.engine.NativeEnhanceEngine;
+import domi.argenticpptmaster.engine.NotesAudioGateway;
 import domi.argenticpptmaster.engine.RoutingNativeEnhanceEngine;
 import domi.argenticpptmaster.engine.file.JavaNativeEnhanceEngine;
 import domi.argenticpptmaster.engine.file.JavaNativeEnhanceEngineTests;
-import domi.argenticpptmaster.engine.python.PythonNotesAudioGateway;
 import domi.argenticpptmaster.engine.python.PythonPptxMarkdownReadback;
 import domi.argenticpptmaster.infra.PptMasterCommandExecutor;
 import domi.argenticpptmaster.repository.InMemoryPptJobRepository;
@@ -63,14 +64,18 @@ class PptNativeEnhanceCommandExecutorTests {
         // Java authority; dual-run off so Python is never consulted for NE.
         NativeEnhanceEngine engine = new RoutingNativeEnhanceEngine(
                 new JavaNativeEnhanceEngine(), stubPythonEngine(), PptEngineProperties.defaults());
+        NotesAudioGateway notesAudio = mock(NotesAudioGateway.class);
+        when(notesAudio.synthesize(any(), anyString(), any())).thenReturn(new EngineResult(0, "ok", false));
+        PptAudioFishProperties fish = new PptAudioFishProperties(
+                null, "sk-fish-audio-key-123456", null, null, null, null);
         executor = new PptNativeEnhanceCommandExecutor(
                 properties,
                 repository,
                 events,
                 engine,
-                new PythonNotesAudioGateway(commands),
+                notesAudio,
                 new PythonPptxMarkdownReadback(commands, PythonPptxMarkdownReadback.NATIVE_ENHANCE_SCRIPT),
-                new NativeEnhanceReadinessContributor(),
+                new NativeEnhanceReadinessContributor("ffprobe", fish),
                 new NativeEnhanceOutputVerifier());
     }
 
@@ -194,21 +199,13 @@ class PptNativeEnhanceCommandExecutorTests {
     }
 
     @Test
-    void buildNotesToAudioArgumentsUsesConfirmedVoice() {
-        List<String> args = PptNativeEnhanceCommandExecutor.buildNotesToAudioArguments(
-                Path.of("/tmp/proj"),
-                Map.of("provider", "edge", "voice", "zh-CN-YunjianNeural", "rate", "+10%"));
-        assertThat(args).containsExactly(
-                "/tmp/proj", "--voice", "zh-CN-YunjianNeural", "--rate", "+10%", "--provider", "edge");
-        assertThat(args).noneMatch(a -> a.contains("--force"));
-    }
-
-    @Test
-    void rejectUnsafeCommandAllowsNotesToAudioScript() {
-        PptNativeEnhanceCommandExecutor.rejectUnsafeCommand(
+    void rejectUnsafeCommandRejectsNotesToAudioScript() {
+        assertThatThrownBy(() -> PptNativeEnhanceCommandExecutor.rejectUnsafeCommand(
                 "AUDIO",
-                PptNativeEnhanceCommandExecutor.NOTES_TO_AUDIO_SCRIPT,
-                List.of("/tmp/proj", "--voice", "x"));
+                "skills/ppt-master/scripts/notes_to_audio.py",
+                List.of("/tmp/proj", "--voice", "x")))
+                .isInstanceOf(NativeEnhanceExecutionException.class)
+                .hasMessageContaining("not allowed");
     }
 
     @Test
@@ -385,7 +382,7 @@ class PptNativeEnhanceCommandExecutorTests {
         Files.createDirectories(project.resolve("sources"));
         Files.copy(source, project.resolve("sources/source.pptx"));
         Files.writeString(project.resolve("project.json"), """
-                {"schema":"native_pptx_enhancement_project.v1","kind":"native_pptx_enhancement","slide_count":1,"source_pptx":"sources/source.pptx","notes_dir":"notes","audio_dir":"audio","exports_dir":"exports","audio":{"provider":"edge","voice":"zh-CN-YunjianNeural","rate":"+0%"}}
+                {"schema":"native_pptx_enhancement_project.v1","kind":"native_pptx_enhancement","slide_count":1,"source_pptx":"sources/source.pptx","notes_dir":"notes","audio_dir":"audio","exports_dir":"exports","audio":{"provider":"fish","voice":"female_mandarin"}}
                 """);
         ObjectNode index = objectMapper.createObjectNode();
         index.put("schema", "native_pptx_enhancement_slide_index.v1");
@@ -419,15 +416,18 @@ class PptNativeEnhanceCommandExecutorTests {
         job.completeNode(PptJobNode.ENHANCEMENT_PLAN_CONFIRMED, Map.of());
         repository.save(job);
 
+        NotesAudioGateway notesAudio = mock(NotesAudioGateway.class);
         PptNativeEnhanceCommandExecutor failingExecutor = new PptNativeEnhanceCommandExecutor(
                 properties,
                 repository,
                 events,
                 new RoutingNativeEnhanceEngine(
                         new JavaNativeEnhanceEngine(), stubPythonEngine(), PptEngineProperties.defaults()),
-                new PythonNotesAudioGateway(commands),
+                notesAudio,
                 new PythonPptxMarkdownReadback(commands, PythonPptxMarkdownReadback.NATIVE_ENHANCE_SCRIPT),
-                new NativeEnhanceReadinessContributor(tempDir.resolve("no-ffprobe").toString()),
+                new NativeEnhanceReadinessContributor(
+                        tempDir.resolve("no-ffprobe").toString(),
+                        new PptAudioFishProperties(null, "sk-fish-audio-key-123456", null, null, null, null)),
                 new NativeEnhanceOutputVerifier());
 
         assertThatThrownBy(() -> failingExecutor.continueAfterPlanConfirmation(jobId))

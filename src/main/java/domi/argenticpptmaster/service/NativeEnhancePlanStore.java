@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import domi.argenticpptmaster.domain.PptJob;
+import domi.argenticpptmaster.engine.file.fishaudio.FishVoicePresets;
 import domi.argenticpptmaster.exception.PptJobStateException;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -211,15 +212,16 @@ public final class NativeEnhancePlanStore {
                 throw new PptJobStateException("project.json must be an object");
             }
             ObjectNode audio = root.with("audio");
-            String provider = stringAnswer(safe, "provider", audio.path("provider").asText("edge"));
-            String voice = stringAnswer(safe, "voice", audio.path("voice").asText("zh-CN-YunjianNeural"));
-            String rate = stringAnswer(safe, "rate", audio.path("rate").asText("+0%"));
-            if (provider.isBlank() || voice.isBlank()) {
-                throw new PptJobStateException("audio voice confirmation requires provider and voice");
+            String provider = stringAnswer(safe, "provider", FishVoicePresets.PROVIDER);
+            String voice = stringAnswer(safe, "voice", FishVoicePresets.DEFAULT_VOICE);
+            if (!FishVoicePresets.PROVIDER.equals(provider) || !FishVoicePresets.isAllowed(voice)) {
+                throw new PptJobStateException(
+                        "audio voice confirmation requires provider=fish and voice in "
+                                + FishVoicePresets.allowedVoices());
             }
             audio.put("provider", provider);
             audio.put("voice", voice);
-            audio.put("rate", rate);
+            audio.remove("rate");
             atomicWrite(projectJson, writeBytes(root));
         } catch (PptJobStateException ex) {
             throw ex;
@@ -236,16 +238,15 @@ public final class NativeEnhancePlanStore {
         try {
             JsonNode root = OBJECT_MAPPER.readTree(projectJson.toFile());
             JsonNode audio = root.path("audio");
-            String provider = audio.path("provider").asText("edge");
-            String voice = audio.path("voice").asText("zh-CN-YunjianNeural");
-            String rate = audio.path("rate").asText("+0%");
-            if (provider.isBlank() || voice.isBlank()) {
-                throw new PptJobStateException("project.json audio provider/voice is missing");
+            String provider = audio.path("provider").asText("");
+            String voice = audio.path("voice").asText("");
+            if (!FishVoicePresets.PROVIDER.equals(provider) || !FishVoicePresets.isAllowed(voice)) {
+                throw new PptJobStateException(
+                        "project.json audio must use provider=fish and an allowed voice");
             }
             Map<String, String> result = new LinkedHashMap<>();
             result.put("provider", provider);
             result.put("voice", voice);
-            result.put("rate", rate.isBlank() ? "+0%" : rate);
             return Map.copyOf(result);
         } catch (PptJobStateException ex) {
             throw ex;
@@ -350,7 +351,10 @@ public final class NativeEnhancePlanStore {
             if (!ALLOWED_ANSWER_KEYS.contains(key)
                     && !"provider".equals(key)
                     && !"voice".equals(key)
-                    && !"rate".equals(key)) {
+                    && !"rate".equals(key)
+                    && !"type".equals(key)
+                    && !"voices".equals(key)
+                    && !"message".equals(key)) {
                 throw new PptJobStateException("unsupported confirmation answer: " + key);
             }
         }

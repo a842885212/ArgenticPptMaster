@@ -17,8 +17,8 @@ import domi.argenticpptmaster.engine.EngineResult;
 import domi.argenticpptmaster.engine.NativeEnhanceEngine;
 import domi.argenticpptmaster.engine.NotesAudioGateway;
 import domi.argenticpptmaster.engine.PptxMarkdownReadback;
+import domi.argenticpptmaster.engine.file.fishaudio.FishVoicePresets;
 import domi.argenticpptmaster.engine.python.PythonNativeEnhanceEngine;
-import domi.argenticpptmaster.engine.python.PythonNotesAudioGateway;
 import domi.argenticpptmaster.engine.python.PythonPptxMarkdownReadback;
 import domi.argenticpptmaster.repository.PptJobRepository;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -45,7 +45,6 @@ public class PptNativeEnhanceCommandExecutor {
 
     static final String NATIVE_ENHANCE_SCRIPT = PythonNativeEnhanceEngine.SCRIPT;
     static final String PPT_TO_MD_SCRIPT = PythonPptxMarkdownReadback.NATIVE_ENHANCE_SCRIPT;
-    static final String NOTES_TO_AUDIO_SCRIPT = PythonNotesAudioGateway.SCRIPT;
 
     private final PptMasterProperties properties;
     private final PptJobRepository repository;
@@ -323,10 +322,16 @@ public class PptNativeEnhanceCommandExecutor {
     }
 
     private void openAudioVoiceConfirmation(PptJob job) {
+        if (!readiness.isFishAudioAvailable()) {
+            throw new NativeEnhanceExecutionException(
+                    "AUDIO",
+                    NativeEnhanceErrorCode.NATIVE_ENHANCE_FISH_UNAVAILABLE,
+                    "Fish Audio api-key is required before audio voice confirmation");
+        }
         Map<String, Object> contextData = NativeEnhanceConfirmationSummary.audioVoiceContext(job, Map.of());
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("stage", "audio_voice_confirmation");
-        payload.put("message", "Confirm TTS voice before audio generation");
+        payload.put("message", "Confirm Fish Audio voice before narration generation");
         payload.put("contextData", contextData);
         String confirmationId = UUID.randomUUID().toString();
         job.requireConfirmation(confirmationId, payload);
@@ -403,34 +408,41 @@ public class PptNativeEnhanceCommandExecutor {
         if (!nodeCompleted(job, PptJobNode.AUDIO_VOICE_CONFIRMED)) {
             throw new NativeEnhanceExecutionException(
                     "AUDIO", NativeEnhanceErrorCode.NATIVE_ENHANCE_AUDIO_FAILED,
-                    "audio voice must be confirmed before notes_to_audio");
+                    "audio voice must be confirmed before Fish narration synthesis");
+        }
+        if (!readiness.isFishAudioAvailable()) {
+            throw new NativeEnhanceExecutionException(
+                    "AUDIO",
+                    NativeEnhanceErrorCode.NATIVE_ENHANCE_FISH_UNAVAILABLE,
+                    "Fish Audio api-key is required for narration synthesis");
         }
         Map<String, String> audio = NativeEnhancePlanStore.readProjectAudio(job);
+        if (!FishVoicePresets.PROVIDER.equals(audio.get("provider"))
+                || !FishVoicePresets.isAllowed(audio.get("voice"))) {
+            throw new NativeEnhanceExecutionException(
+                    "AUDIO", NativeEnhanceErrorCode.NATIVE_ENHANCE_AUDIO_FAILED,
+                    "project.json audio must use provider=fish and an allowed voice");
+        }
         NativeEnhancePptxProperties limits = properties.nativeEnhancePptx();
         Path audioDir = requireInside(project, project.resolve("audio"), "audio");
         Files.createDirectories(audioDir);
-        List<String> args = buildNotesToAudioArguments(project, audio);
-        run(job, "AUDIO", NOTES_TO_AUDIO_SCRIPT, args, limits.audioTimeout(),
-                NativeEnhanceErrorCode.NATIVE_ENHANCE_AUDIO_FAILED,
-                () -> notesAudioGateway.synthesize(args, limits.audioTimeout()));
+        events.record(job, PptJobEvent.of(PptJobEventType.NODE_STARTED,
+                "native-enhance stage started", Map.of("stage", "AUDIO")));
+        EngineResult result = notesAudioGateway.synthesize(
+                project, audio.get("voice"), limits.audioTimeout());
+        if (!result.successful()) {
+            throw new NativeEnhanceExecutionException(
+                    "AUDIO",
+                    NativeEnhanceErrorCode.NATIVE_ENHANCE_AUDIO_FAILED,
+                    "native-enhance audio failed (exitCode=" + result.exitCode()
+                            + ", timedOut=" + result.timedOut() + "): " + safeMessage(result.output()));
+        }
         int notesReady = NativeEnhanceOutputVerifier.countNotesFiles(project);
         int audioReady = NativeEnhanceOutputVerifier.countAudioFiles(project);
         recordCheckpoint(job, PptJobNode.AUDIO_GENERATED, Map.of(
                 "audioCoverage", Map.of("ready", audioReady, "total", notesReady),
                 "provider", audio.get("provider"),
                 "voice", audio.get("voice")));
-    }
-
-    static List<String> buildNotesToAudioArguments(Path project, Map<String, String> audio) {
-        List<String> args = new ArrayList<>();
-        args.add(project.toString());
-        args.add("--voice");
-        args.add(audio.get("voice"));
-        args.add("--rate");
-        args.add(audio.getOrDefault("rate", "+0%"));
-        args.add("--provider");
-        args.add(audio.getOrDefault("provider", "edge"));
-        return List.copyOf(args);
     }
 
     private void requireFfprobeIfTimingsEnabled(PptJob job) {
@@ -642,9 +654,7 @@ public class PptNativeEnhanceCommandExecutor {
     }
 
     static void rejectUnsafeCommand(String stage, String script, List<String> arguments) {
-        if (!NATIVE_ENHANCE_SCRIPT.equals(script)
-                && !PPT_TO_MD_SCRIPT.equals(script)
-                && !NOTES_TO_AUDIO_SCRIPT.equals(script)) {
+        if (!NATIVE_ENHANCE_SCRIPT.equals(script) && !PPT_TO_MD_SCRIPT.equals(script)) {
             throw new NativeEnhanceExecutionException(
                     stage, NativeEnhanceErrorCode.NATIVE_ENHANCE_INIT_FAILED, "script is not allowed: " + script);
         }

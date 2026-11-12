@@ -1,18 +1,21 @@
 package domi.argenticpptmaster.engine;
 
+import java.nio.file.Path;
 import java.time.Duration;
-import java.util.List;
 
 /**
- * Notes-to-audio synthesis via external TTS.
+ * Notes-to-audio synthesis via Fish Audio (production) or legacy adapters.
  *
- * <p>Documented as out of converter port scope; remains a thin Python adapter.</p>
+ * <p>Semantic contract: project {@code notes/*.md} → {@code audio/<stem>.mp3}.</p>
  */
 public interface NotesAudioGateway {
 
     /**
-     * Runs notes-to-audio with a fully built argument list
-     * (project path plus {@code --voice}/{@code --rate}/{@code --provider}).
+     * Synthesize per-slide narration for the native-enhance project directory.
+     *
+     * @param project project root containing {@code notes/}
+     * @param voice   Fish preset key ({@code female_mandarin} / {@code male_mandarin})
+     * @param timeout overall batch timeout
      */
-    EngineResult synthesize(List<String> arguments, Duration timeout);
+    EngineResult synthesize(Path project, String voice, Duration timeout);
 }

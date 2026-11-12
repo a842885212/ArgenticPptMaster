@@ -67,11 +67,21 @@ class NativeEnhancePlanStoreTests {
     void writeProjectAudio() throws Exception {
         PptJob job = jobWithDraftPlan(true);
         NativeEnhancePlanStore.writeProjectAudio(job, Map.of(
-                "provider", "edge",
-                "voice", "zh-CN-XiaoxiaoNeural",
-                "rate", "+5%"));
+                "provider", "fish",
+                "voice", "male_mandarin"));
         String json = Files.readString(job.projectPath().orElseThrow().resolve("project.json"));
-        assertThat(json).contains("zh-CN-XiaoxiaoNeural").contains("+5%");
+        assertThat(json).contains("fish").contains("male_mandarin");
+        assertThat(json).doesNotContain("\"rate\"");
+    }
+
+    @Test
+    void writeProjectAudioRejectsEdgeVoice() throws Exception {
+        PptJob job = jobWithDraftPlan(true);
+        assertThatThrownBy(() -> NativeEnhancePlanStore.writeProjectAudio(job, Map.of(
+                "provider", "edge",
+                "voice", "zh-CN-XiaoxiaoNeural")))
+                .isInstanceOf(PptJobStateException.class)
+                .hasMessageContaining("fish");
     }
 
     @Test

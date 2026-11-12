@@ -14,27 +14,21 @@ Running jobs continue when creation is disabled; downloads and confirmations sti
 
 Endpoint: `GET /actuator/health` (component `beautifyPptxReadiness`).
 
+Production beautify analysis/export is **Java-authoritative**; Python / upstream `.py` scripts are **not** required for readiness.
+
 Checks (redacted):
 
 | Component | Pass criteria | reasonCode on failure |
 | --- | --- | --- |
-| `python` | Configured interpreter exists and is executable | `PYTHON_MISSING`, `PYTHON_NOT_EXECUTABLE` |
-| `beautify_identity` | Script present under pinned repo layout | `SCRIPT_MISSING` |
-| `beautify_inventory` | Script present under pinned repo layout | `SCRIPT_MISSING` |
-| `pptx_intake` | Script present under pinned repo layout | `SCRIPT_MISSING` |
-| `project_manager` | Script present under pinned repo layout | `SCRIPT_MISSING` |
-| `finalize_svg` | Script present under pinned repo layout | `SCRIPT_MISSING` |
-| `svg_to_pptx` | Script present under pinned repo layout | `SCRIPT_MISSING` |
 | `readiness_marker` | Classpath marker `beautify-pptx/readiness-marker.txt` | `READINESS_MARKER_MISSING` |
 
 **Do not expand allowlist** while readiness is DOWN. `expectedVersion` must match the pinned upstream documented in [`beautify-pptx-upgrade-rollback.md`](beautify-pptx-upgrade-rollback.md).
 
-## Python / ppt-master dependency checks
+## Runtime notes
 
-1. Confirm `ppt-master.python-command` resolves on the host.
-2. Confirm `ppt-master.repo-path` checkout matches pinned version (`BeautifyPptxReadinessContributor.EXPECTED_UPSTREAM_VERSION`).
-3. Verify scripts exist under `skills/ppt-master/scripts/` (list above).
-4. Confirm fonts / PPT-safe fallbacks against the compatibility matrix before canary.
+1. Confirm classpath includes `beautify-pptx/readiness-marker.txt`.
+2. Optional dual-run (`ppt-master.engine.dual-run-enabled=true`) may still invoke Python for diagnostics only; it is off by default and does not gate readiness.
+3. Confirm fonts / PPT-safe fallbacks against the compatibility matrix before canary.
 
 ## Hard constraints
 

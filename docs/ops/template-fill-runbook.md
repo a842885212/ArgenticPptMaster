@@ -14,25 +14,21 @@ Running jobs continue when creation is disabled; downloads and confirmations sti
 
 Endpoint: `GET /actuator/health` (component `templateFillReadiness`).
 
+Production template-fill is **Java-authoritative**; Python / upstream `.py` scripts are **not** required for readiness.
+
 Checks (redacted):
 
 | Component | Pass criteria | reasonCode on failure |
 | --- | --- | --- |
-| `python` | Configured interpreter exists and is executable | `PYTHON_MISSING`, `PYTHON_NOT_EXECUTABLE` |
-| `project_manager` | Script present under pinned repo layout | `SCRIPT_MISSING` |
-| `template_fill_pptx` | Script present under pinned repo layout | `SCRIPT_MISSING` |
 | `readiness_marker` | Classpath marker `template-fill/readiness-marker.txt` | `READINESS_MARKER_MISSING` |
 
 **Do not expand allowlist** while readiness is DOWN. `expectedVersion` must match the pinned upstream documented in [`template-fill-upgrade-rollback.md`](template-fill-upgrade-rollback.md).
 
-## Python / ppt-master dependency checks
+## Runtime notes
 
-1. Confirm `ppt-master.python-command` resolves on the host (`which` / file executable).
-2. Confirm `ppt-master.repo-path` checkout matches pinned version (`expectedVersion`).
-3. Verify scripts exist:
-   - `skills/ppt-master/scripts/project_manager.py`
-   - `skills/ppt-master/scripts/template_fill_pptx.py`
-4. Run contract fixtures from `src/test/resources/template-fill/` against the pinned checkout before production promotion.
+1. Confirm classpath includes `template-fill/readiness-marker.txt`.
+2. Optional dual-run (`ppt-master.engine.dual-run-enabled=true`) may still invoke Python for diagnostics only; it is off by default and does not gate readiness.
+3. Run contract fixtures from `src/test/resources/template-fill/` before production promotion.
 
 ## Common OOXML failures
 
